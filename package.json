@@ -1,0 +1,17 @@
+{
+  "name": "dsp-handcraft",
+  "version": "2.1.0",
+  "description": "戴森球计划蓝图生成器",
+  "license": "GPL-3.0-only",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node web/build.js"
+  },
+  "dependencies": {
+    "pako": "^2.1.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

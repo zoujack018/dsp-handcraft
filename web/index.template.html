@@ -1,0 +1,804 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>手搓产线蓝图</title>
+<link rel="icon" href="favicon.ico">
+<style>
+:root {
+  --desk: #e4e9f0;
+  --paper: #f6f8fb;
+  --ink: #172d46;
+  --ink-2: #65768a;
+  --rule: #c8d1de;
+  --sheet: #163a63;
+  --sheet-deep: #112f52;
+  --line: #e6f0ff;
+  --line-2: rgba(230, 240, 255, 0.62);
+  --alert: #b4351f;
+  --ok: #2f6b4f;
+  --ui: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --num: "DIN Alternate", "DIN Condensed", "Bahnschrift", "Roboto Condensed", var(--ui);
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { background: var(--desk); }
+body { margin: 0; color: var(--ink); font: 14px/1.6 var(--ui); background: var(--desk); }
+.page { max-width: 1480px; margin: 0 auto; padding: 24px 24px 48px; }
+
+.masthead { display: flex; align-items: baseline; gap: 20px; flex-wrap: wrap; margin-bottom: 18px; }
+.masthead h1 { margin: 0; font-size: 22px; line-height: 1.25; font-weight: 600; letter-spacing: 0.02em; }
+.masthead p { margin: 0; color: var(--ink-2); max-width: 64ch; }
+
+.desk { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 20px; align-items: start; }
+
+/* 左侧规格栏 */
+.spec { background: var(--paper); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 14px 16px; display: grid; gap: 12px; }
+.field { display: grid; gap: 4px; }
+.field > label, .field-label, .seg legend, .more summary { font-size: 13px; font-weight: 500; color: var(--ink-2); padding: 0; }
+.field input { font: 15px/1.4 var(--ui); color: var(--ink); background: #fff; border: 1px solid var(--rule); border-radius: 4px; padding: 7px 9px; width: 100%; }
+.field input[type="number"] { font-family: var(--num); font-size: 17px; }
+.field input:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; border-color: var(--sheet); }
+.hint { font-size: 12px; color: var(--ink-2); margin: 0; }
+.chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.chips li { display: flex; align-items: center; gap: 6px; font-size: 13px; background: #fff; border: 1px dashed var(--sheet); border-radius: 3px; padding: 2px 2px 2px 6px; }
+.chips li .gl { width: 18px; height: 18px; }
+.chips button { font: 14px/1 var(--ui); color: var(--ink-2); background: transparent; border: 0; padding: 2px 6px; cursor: pointer; border-radius: 2px; }
+.chips button:hover { color: var(--alert); }
+.chips button:focus-visible { outline: 2px solid var(--sheet); }
+.chips .none { border: 0; background: transparent; padding: 2px 0; color: var(--ink-2); }
+.seg { border: 0; margin: 0; padding: 0; display: grid; gap: 4px; min-width: 0; }
+.seg .opts { display: flex; flex-wrap: wrap; border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; background: #fff; }
+.seg label { flex: 1 1 auto; position: relative; }
+.seg input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.seg span { display: block; text-align: center; padding: 6px 8px; font-size: 13px; white-space: nowrap; border-right: 1px solid var(--rule); cursor: pointer; }
+.seg label:last-child span { border-right: 0; }
+.seg input:checked + span { background: var(--sheet); color: var(--line); }
+.seg input:focus-visible + span { outline: 2px solid var(--sheet); outline-offset: -3px; }
+.seg input:checked:focus-visible + span { outline-color: var(--line); }
+.more { border-top: 1px solid var(--rule); padding-top: 10px; }
+.more summary { cursor: pointer; list-style: none; display: flex; justify-content: space-between; gap: 8px; }
+.more summary::-webkit-details-marker { display: none; }
+.more summary::after { content: "展开"; color: var(--sheet); font-weight: 400; }
+.more[open] summary::after { content: "收起"; }
+.more summary .now { flex: 1 1 auto; font-weight: 400; color: var(--ink); text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.more summary:focus-visible { outline: 2px solid var(--sheet); outline-offset: 2px; }
+.more .inner { display: grid; gap: 12px; margin-top: 10px; }
+.go { margin-top: 2px; font: 600 15px/1 var(--ui); color: var(--line); background: var(--sheet); border: 0; border-radius: 4px; padding: 12px 14px; cursor: pointer; }
+.go:hover { background: var(--sheet-deep); }
+.go:focus-visible { outline: 3px solid #7fb0e8; outline-offset: 2px; }
+.go[disabled] { opacity: 0.6; cursor: progress; }
+.status { margin: 0; min-height: 1.6em; color: var(--ink-2); font-size: 13px; }
+.status.err { color: var(--alert); }
+.suggest { font: 13px/1.3 var(--ui); color: var(--sheet); background: #fff; border: 1px solid var(--sheet); border-radius: 4px; padding: 6px 10px; cursor: pointer; justify-self: start; }
+
+/* 物品图示（自绘线条图形） */
+.gl.pic { object-fit: contain; }
+.gl.pic + .gl { display: none; }
+.gl { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+
+/* 规格里的目标按钮 */
+.target-btn { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 12px; align-items: center; width: 100%; text-align: left; font: inherit; color: inherit; background: #fff; border: 1px solid var(--rule); border-radius: 6px; padding: 8px; cursor: pointer; }
+.target-btn:hover { border-color: var(--sheet); }
+.target-btn:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; }
+.target-btn .tile { width: 64px; cursor: inherit; }
+.target-btn .tile .gl { width: 32px; height: 32px; }
+.tb-label { display: block; font-size: 12px; color: var(--ink-2); }
+.pick-name { display: block; font-size: 17px; font-weight: 600; line-height: 1.3; }
+.tb-hint { display: block; font-size: 12px; color: var(--sheet); }
+/* 多个目标：每个一行，图标按钮（点开物品面板更换）、产量、移除 */
+.goals { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 8px; }
+.goal { display: grid; grid-template-columns: minmax(0, 1fr) 84px 30px; gap: 6px; align-items: stretch; }
+.goal .target-btn { grid-template-columns: 44px minmax(0, 1fr); gap: 10px; padding: 6px; }
+.goal .target-btn .tile { width: 44px; }
+.goal .target-btn .tile .gl { width: 24px; height: 24px; }
+.goal .pick-name { font-size: 15px; }
+.goal input { width: 100%; min-width: 0; font: 600 15px/1 var(--num, inherit); padding: 0 8px; border: 1px solid var(--rule); border-radius: 6px; }
+.goal .rm { font: 18px/1 var(--ui); color: var(--ink-2); background: transparent; border: 1px solid var(--rule); border-radius: 6px; cursor: pointer; }
+.goal .rm:hover { color: var(--alert); border-color: var(--alert); }
+.goal .rm[hidden] { display: none; }
+
+.add-goal { margin-top: 0; }
+.seg[hidden] { display: none; }
+.ext-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.linkish { font: 13px/1 var(--ui); color: var(--sheet); background: transparent; border: 1px solid var(--sheet); border-radius: 4px; padding: 5px 10px; cursor: pointer; }
+.linkish:hover { background: #e8eef6; }
+.linkish:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; }
+
+/* 方块：图示 + 名称；色条表示类别 */
+.tile {
+  --cat: #9aa5b1;
+  aspect-ratio: 1; position: relative; min-width: 0; border: 1px solid var(--rule); border-radius: 4px; background: #fff;
+  padding: 5px 2px 3px; display: grid; grid-template-rows: 1fr auto; justify-items: center; align-items: center; overflow: hidden; cursor: pointer;
+  font: 11px/1.15 var(--ui); color: var(--ink); text-align: center;
+}
+.tile::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; background: var(--cat); }
+.tile .nm { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; max-width: 100%; }
+.tile:hover { border-color: var(--sheet); }
+.tile:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; }
+.tile.st-partial::after { content: ""; position: absolute; top: 0; right: 0; border-style: solid; border-width: 0 10px 10px 0; border-color: transparent #c4882b transparent transparent; }
+.tile.is-target { background: var(--sheet); color: var(--line); border-color: var(--sheet); }
+.tile.is-off { opacity: 0.35; cursor: not-allowed; }
+.tile.is-dim { opacity: 0.15; }
+.tile.is-hit { box-shadow: 0 0 0 2px #7fb0e8; }
+
+/* 弹窗 */
+dialog { border: 0; padding: 0; border-radius: 8px; background: var(--paper); color: var(--ink); box-shadow: 0 18px 48px rgba(17, 47, 82, 0.35); max-width: min(940px, calc(100vw - 32px)); width: 100%; }
+dialog::backdrop { background: rgba(17, 47, 82, 0.45); }
+.dlg { display: grid; gap: 12px; padding: 18px 20px 18px; }
+.dlg-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.dlg-head h2 { margin: 0; font-size: 17px; font-weight: 600; flex: 1 1 auto; }
+.dlg-head p { margin: 0; flex-basis: 100%; color: var(--ink-2); font-size: 13px; }
+.close { font: 13px/1 var(--ui); color: var(--ink-2); background: transparent; border: 1px solid var(--rule); border-radius: 4px; padding: 6px 10px; cursor: pointer; }
+.close:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; }
+.toggle { display: flex; border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; background: #fff; }
+.toggle button { font: 13px/1 var(--ui); padding: 7px 12px; border: 0; border-right: 1px solid var(--rule); background: transparent; color: var(--ink); cursor: pointer; }
+.toggle button:last-child { border-right: 0; }
+.toggle button[aria-pressed="true"] { background: var(--sheet); color: var(--line); }
+.toggle button:focus-visible { outline: 2px solid var(--sheet); outline-offset: -3px; }
+.find { font: 13px/1.3 var(--ui); color: var(--ink); background: #fff; border: 1px solid var(--rule); border-radius: 4px; padding: 6px 9px; width: 160px; }
+.find:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; }
+.slots { display: grid; grid-template-columns: repeat(14, minmax(44px, 1fr)); gap: 3px; overflow: auto; max-height: min(64vh, 640px); padding: 1px; }
+.slot { aspect-ratio: 1; border-radius: 4px; background: #e3e8ee; }
+.pick-msg { margin: 0; font-size: 13px; color: var(--alert); }
+.pick-msg:empty { display: none; }
+.cat-key { margin: 0; font-size: 12px; color: var(--ink-2); display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.cat-key i { display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: -2px; margin-right: 4px; border: 1px solid var(--rule); background: #fff; }
+.cat-key i.k-target { background: var(--sheet); border-color: var(--sheet); }
+.cat-key i.k-partial { background: linear-gradient(225deg, #c4882b 0 30%, #fff 30%); }
+.cat-key i.k-off { opacity: 0.35; }
+
+/* 外部供应弹窗：按离目标的层级排 */
+.tiers { position: relative; display: grid; gap: 22px; max-height: min(62vh, 620px); overflow: auto; padding: 2px; }
+/* 依赖连线：铺在方块后面；悬停某个产物时只亮相连的线 */
+.tiers .links { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 0; overflow: visible; }
+.tiers .tier { position: relative; z-index: 1; }
+.lk { fill: none; opacity: 0.42; transition: opacity 120ms; }
+.lk.st-external { stroke-dasharray: 5 4; }
+.lk.st-dropped { opacity: 0.12; stroke-dasharray: 2 4; }
+.tiers.has-focus .lk { opacity: 0.08; }
+.tiers.has-focus .lk.on { opacity: 0.95; }
+.tiers.has-focus .xt:not(.near) { opacity: 0.45; }
+.xt.is-goal { border-color: var(--sheet); background: #eef3f9; cursor: default; }
+.xt.is-goal .sub::before { content: "目标　"; color: var(--sheet); font-weight: 600; }
+.tier h3 { margin: 0 0 6px; font-size: 13px; font-weight: 500; color: var(--ink-2); }
+.tier-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.xt {
+  --cat: #9aa5b1;
+  position: relative; width: 156px; display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 2px 8px; align-items: center; text-align: left;
+  font: 13px/1.3 var(--ui); color: var(--ink); background: #fff; border: 1px solid var(--rule); border-left: 4px solid var(--cat); border-radius: 4px; padding: 7px 8px; cursor: pointer;
+}
+.xt .gl { grid-row: span 2; width: 28px; height: 28px; }
+.xt .nm { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xt .sub { font-size: 11px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.xt:hover { border-color: var(--sheet); }
+.xt:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; }
+.xt.is-ext { background: repeating-linear-gradient(135deg, #fff 0 5px, #dbe5f1 5px 10px); border-style: dashed; border-color: var(--sheet); border-left-style: solid; }
+.xt.is-ext .sub::before { content: "外部供应　"; color: var(--sheet); font-weight: 600; }
+.xt.is-dropped { opacity: 0.4; cursor: default; }
+.xt.is-dropped .sub::before { content: "已不需要　"; }
+.xt.is-blocking { border-color: #c4882b; box-shadow: inset 0 0 0 1px #c4882b; }
+.xt.is-blocking .sub { color: #8a5a12; }
+.recipes { margin: 0 0 12px; padding: 10px 0 0; border-top: 1px solid var(--rule); }
+.recipes h3 { margin: 0 0 8px; font: 600 13px/1.2 var(--ui); color: var(--ink-2); }
+.rc-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.rc { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 3px; padding: 7px 10px; border: 1px solid var(--rule); border-radius: 4px; background: #fff; color: var(--ink); cursor: pointer; text-align: left; font: 13px/1.2 var(--ui); }
+.rc .rc-line { font-size: 12px; color: var(--ink-2); }
+.rc[aria-pressed="true"] { border-color: var(--sheet); background: #e8eef6; box-shadow: inset 3px 0 0 var(--sheet); }
+.rc[aria-pressed="true"] .rc-name::after { content: "　已开启"; color: var(--sheet); font-weight: 600; }
+.rc:hover { border-color: var(--sheet); }
+.rc:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; }
+.dlg-foot { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
+.dlg-foot .grow { flex: 1 1 260px; font-size: 13px; color: var(--ink-2); }
+.dlg-foot .warn { color: var(--alert); }
+.dlg-foot .go { margin: 0; padding: 10px 18px; }
+
+/* 新版：紧凑工具栏与可平移缩放的大画布。 */
+.sheet { --ink: #e6f0ff; --ink-2: #acc2da; --rule: #416384; background: #112f52; color: var(--ink); border: 1px solid #25486c; min-width: 0; height: calc(100dvh - 80px); min-height: 580px; display: flex; flex-direction: column; }
+.sheet-bar { display: flex; align-items: center; gap: 14px; padding: 9px 12px; border-bottom: 1px solid var(--rule); background: #163a63; flex: none; min-height: 48px; }
+.sheet-bar .name { font-size: 15px; font-weight: 600; margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.layer-controls, .overlays { display: flex; gap: 10px; align-items: center; flex: none; }
+.overlays label { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--ink-2); cursor: pointer; white-space: nowrap; }
+.overlays input { margin: 0; accent-color: #a8cee9; }
+.zoom { display: flex; align-items: center; gap: 4px; flex: none; }
+.zoom button { padding: 6px 8px; font: 12px/1.2 var(--ui); border: 1px solid #5c7c9d; background: #244b73; color: #e6f0ff; cursor: pointer; border-radius: 2px; white-space: nowrap; }
+.zoom button:hover { background: #38658f; }
+.zoom button:disabled { opacity: .35; cursor: default; }
+.zoom output { min-width: 40px; text-align: center; font: 11px ui-monospace, Menlo, monospace; color: #bed3e9; }
+.sheet-workspace { flex: 1; display: flex; min-height: 0; min-width: 0; }
+.viewer-stage { flex: 1; position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+.drawing { position: absolute; inset: 0; overflow: hidden; padding: 0; touch-action: none; overscroll-behavior: contain; user-select: none; }
+/* 预览时手指滑动滚页面，「大图」里才拦下来做平移和双指缩放 */
+.sheet:not(.is-expanded) .drawing { touch-action: pan-x pan-y; overscroll-behavior: auto; }
+.drawing.has-svg { cursor: grab; }
+.drawing.is-panning { cursor: grabbing; }
+.drawing > svg { display: block; max-width: none; margin: 0; }
+.route-hit { cursor: pointer; }
+.route-hit:focus-visible { outline: none; stroke: #ffffff55; }
+.drawing:focus-visible { outline: 1px solid #92bde5; outline-offset: -2px; }
+.empty { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; padding: 24px; color: #abc3df; font-size: 14px; }
+.empty strong { color: #e6f0ff; font-size: 19px; font-weight: 500; }
+.empty p { margin: 10px 0 0; }
+.layer-rail { width: 100px; flex: 0 0 100px; border-left: 1px solid var(--rule); padding: 8px; overflow-y: auto; background: #163a63; }
+.rail-title { font-size: 12px; font-weight: 600; margin: 2px 0 9px; }
+.floor-list { display: grid; gap: 6px; }
+.floor-card { background: transparent; color: #e6f0ff; border: 1px solid #3d6084; padding: 6px; cursor: pointer; text-align: left; min-width: 0; }
+.floor-card:hover { background: #244d76; }
+.floor-card[aria-pressed="true"] { background: #315c86; border-color: #bdd8f1; box-shadow: inset 2px 0 #e6f0ff; }
+.floor-info { display: flex; align-items: baseline; justify-content: space-between; gap: 4px; }
+.floor-info strong { font: 600 14px/1.2 var(--num); }
+.floor-info small { font-size: 9px; color: #b6cce3; }
+.floor-thumb { display: block; margin-top: 5px; }
+.floor-thumb svg { display: block; width: 100%; height: 38px; }
+.viewer-status { display: flex; align-items: center; gap: 12px; min-height: 30px; padding: 5px 12px; font-size: 11px; color: #acc2da; border-top: 1px solid var(--rule); flex: none; }
+.viewer-status strong { font: 600 12px var(--num); color: #e6f0ff; }
+.viewer-hint { margin-left: auto; }
+.route-info { position: absolute; z-index: 3; bottom: 12px; left: 12px; width: min(310px, calc(100% - 24px)); padding: 14px; border: 1px solid #8cafcf; background: #173b60f5; color: #e6f0ff; box-shadow: 0 4px 18px #07172c66; font-size: 12px; user-select: text; }
+.route-info header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.route-info h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.route-info .sw { width: 20px; height: 3px; background: var(--route-color); }
+.route-info button { margin-left: auto; font: 20px/1 var(--ui); color: #d8e8fa; border: 0; background: transparent; padding: 0 3px; cursor: pointer; }
+.route-info dl { display: grid; grid-template-columns: 68px minmax(0, 1fr); gap: 6px 10px; margin: 0; }
+.route-info dt { color: #a9c1db; }
+.route-info dd { margin: 0; overflow-wrap: anywhere; }
+.route-info .route-flow { font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+.sheet.is-expanded { position: fixed; inset: 8px; width: auto; height: auto; min-height: 0; z-index: 100; box-shadow: 0 0 0 30px #0d223beb; }
+body.viewer-expanded { overflow: hidden; }
+.result-details { margin-top: 12px; border: 1px solid #c7d1de; background: #f5f7fa; }
+.result-details > summary { padding: 9px 14px; font-size: 13px; cursor: pointer; }
+.sheet-foot { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 1fr); gap: 20px; padding: 14px; align-items: start; }
+.legend { display: flex; flex-wrap: wrap; list-style: none; margin: 0; padding: 0; gap: 8px 16px; font-size: 12px; }
+.legend li { display: flex; align-items: center; gap: 6px; }
+.legend .sw { width: 18px; height: 3px; border: 1px solid #8495a944; }
+.factory-legend { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px 12px; font-size: 12px; color: #536980; }
+.factory-legend b { font-family: var(--num); margin-right: 4px; }
+.titleblock { width: 100%; border-collapse: collapse; font-size: 12px; }
+.titleblock th, .titleblock td { border: 1px solid #becddd; padding: 6px 8px; text-align: left; }
+.titleblock th { font-weight: 400; color: #65768a; }
+.titleblock td { font-family: var(--num); font-size: 15px; }
+.titleblock td.wide, .titleblock .lens { font-size: 12px; }
+.titleblock caption, .legend-heading { display: none; }
+
+/* 输出 */
+.output { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1fr); gap: 20px; margin-top: 20px; }
+.panel { background: var(--paper); border: 1px solid var(--rule); border-radius: 6px; padding: 16px 18px; min-width: 0; }
+.panel h2 { margin: 0 0 8px; font-size: 15px; font-weight: 600; }
+.panel ul { margin: 0; padding-left: 1.2em; }
+.panel li { margin: 2px 0; }
+.panel li.err { color: var(--alert); }
+.panel li.ok { color: var(--ok); }
+.bp textarea { width: 100%; height: 132px; resize: vertical; font: 12px/1.45 ui-monospace, Menlo, monospace; color: var(--ink); background: #fff; border: 1px solid var(--rule); border-radius: 4px; padding: 8px; word-break: break-all; }
+.bp textarea:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; }
+.bp-row { display: flex; gap: 10px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+.bp-row .go { margin: 0; padding: 10px 14px; }
+.bp-row .meta { color: var(--ink-2); font-size: 13px; font-family: var(--num); }
+.num { font-family: var(--num); }
+
+/* 规格面板：下拉单选，全部布局选项直接可见。 */
+.page { max-width: none; padding: 10px 14px 24px; }
+.masthead { display: flex; align-items: center; gap: 12px; min-height: 42px; margin: 0 0 8px; padding: 0; flex-wrap: nowrap; }
+.masthead h1 { font-size: 18px; margin: 0; font-weight: 600; }
+.brand-mark, .brand .eyebrow, .masthead > p, .header-code, .spec-heading { display: none; }
+.desk { grid-template-columns: 280px minmax(0, 1fr); gap: 12px; align-items: start; }
+.spec { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 8px; padding: 12px; background: #f5f7fa; max-height: calc(100dvh - 80px); overflow-y: auto; border-radius: 3px; }
+.spec > * { min-width: 0; }
+.spec .seg { min-width: 0; }
+.spec .seg > legend, .spec .seg > .opts { display: none; }
+.modern-option { display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: center; gap: 8px; min-width: 0; font-size: 12px; color: #4c6178; }
+.seg .modern-option > span { padding: 0; border: 0; text-align: left; white-space: normal; font-size: 12px; cursor: default; }
+.modern-option select { width: 100%; min-width: 0; padding: 6px 7px; min-height: 31px; color: #142b43; font: 13px var(--ui); border: 1px solid #b9c7d7; border-radius: 3px; background: #fff; cursor: pointer; }
+.modern-option select:disabled { color: #8c99a7; background: #edf1f5; cursor: default; }
+.field > label, .field-label { font-size: 12px; }
+.goal { grid-template-columns: minmax(0, 1fr) 76px 23px; gap: 5px; }
+.goal:has(.rm[hidden]) { grid-template-columns: minmax(0, 1fr) 84px; }
+.goal input::-webkit-inner-spin-button { margin: 0; } /* 4 位数的产量（分馏阵列动辄几千）也放得下 */
+.goal .target-btn { gap: 6px; padding: 5px; grid-template-columns: 36px minmax(0, 1fr); }
+.goal .target-btn .tile { width: 36px; }
+.goal .pick-name { font-size: 13px; }
+.goal .tb-hint { font-size: 10px; }
+.goal input { font-size: 15px; }
+.more { margin-top: 3px; padding-top: 8px; }
+.more > summary { font-size: 12px; font-weight: 600; cursor: default; pointer-events: none; }
+.more > summary::after, .more .now { display: none; }
+.more .inner { gap: 8px; margin-top: 9px; }
+.go { padding: 11px; font-size: 14px; border-radius: 3px; }
+.hint, .status { font-size: 11px; }
+.status { min-height: 0; }
+.linkish { padding: 6px 9px; font-size: 12px; }
+.chips { font-size: 12px; }
+.output { margin-top: 12px; gap: 12px; }
+.panel { border-radius: 3px; }
+:focus-visible { outline: 2px solid #6398ca; outline-offset: 2px; }
+@media (max-width: 1200px) {
+  .desk { grid-template-columns: 260px minmax(0, 1fr); }
+  .sheet-bar { gap: 8px; flex-wrap: wrap; }
+  .sheet-bar .name { flex: 1 1 150px; }
+  .layer-controls { order: 3; flex-basis: 100%; }
+  .layer-rail { width: 88px; flex-basis: 88px; }
+  .viewer-status #floor-meta { display: none; }
+}
+@media (max-width: 850px) {
+  .desk, .output { grid-template-columns: 1fr; }
+  .spec { max-height: none; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .spec > .field, .spec > .more, .spec > .status, .spec > .go { grid-column: 1 / -1; }
+  .more .inner { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sheet { height: 78dvh; min-height: 460px; }
+  .sheet-foot { grid-template-columns: 1fr; }
+  .viewer-hint { font-size: 10px; }
+}
+@media (max-width: 500px) {
+  .page { padding: 8px; }
+  .masthead h1 { font-size: 17px; }
+  .spec { padding: 10px; gap: 8px; }
+  .modern-option { grid-template-columns: 1fr; gap: 3px; }
+  .modern-option select { font-size: 12px; }
+  .layer-rail { width: 70px; flex-basis: 70px; padding: 5px; }
+  .floor-card { padding: 4px; }
+  .floor-info small { display: none; }
+  .floor-thumb svg { height: 28px; }
+  .sheet-bar { padding: 8px; }
+  .sheet-bar .name { flex-basis: 90px; font-size: 13px; }
+  .zoom { gap: 3px; }
+  .zoom button { padding: 6px; font-size: 11px; }
+  .zoom output { display: none; }
+  .viewer-status { padding-inline: 8px; gap: 6px; }
+  .viewer-hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .route-info { padding: 10px; }
+  .route-info dl { gap: 5px; grid-template-columns: 62px minmax(0, 1fr); }
+  .dlg { padding: 14px 12px; }
+  .find { flex: 1 1 120px; width: auto; }
+  .slots { grid-template-columns: repeat(14, 54px); }
+  .xt { width: calc(50% - 4px); }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* ---------- 2026-10-04 第二轮：结果上第一屏、规格分层、简介进侧栏 ---------- */
+/* 规格栏：每次都要想的（目标、外部供应、物流站、供电）在上面，用分段按钮；设备和布局细节收起来，摘要一行 */
+.spec { gap: 10px; }
+.spec .seg > legend { display: block; font-size: 12px; font-weight: 500; color: var(--ink-2); margin-bottom: 4px; padding: 0; }
+.spec .seg > .opts { display: flex; flex-wrap: nowrap; border: 1px solid #b9c7d7; border-radius: 3px; overflow: hidden; background: #fff; }
+.spec .seg label { flex: 1 1 0; min-width: 0; }
+.spec .seg span { padding: 6px 4px; font-size: 12px; border-right: 1px solid #d3dce7; color: #2a425c; overflow: hidden; text-overflow: ellipsis; }
+.spec .seg label:last-child span { border-right: 0; }
+.spec .seg input:checked + span { background: var(--sheet); color: var(--line); }
+.spec .seg label:hover input:not(:checked) + span { background: #eaf0f7; }
+.spec .seg span[data-short] { font-size: 0; }
+.spec .seg span[data-short]::before { content: attr(data-short); font-size: 12px; }
+.modern-option { display: none; }
+#pile-field[hidden], #stitch-field[hidden] { display: none !important; }
+.spec > .field { order: 0; }
+#equip { order: 5; }
+#more { order: 0; }
+.spec > .go { order: 7; }
+.spec > .status { order: 8; }
+.spec > .suggest { order: 9; }
+.group, .more { border-top: 1px solid var(--rule); padding-top: 8px; margin: 0; }
+.group > summary, .more > summary { list-style: none; cursor: pointer; pointer-events: auto; display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-size: 12px; font-weight: 600; color: var(--ink-2); }
+.group > summary::-webkit-details-marker, .more > summary::-webkit-details-marker { display: none; }
+.group > summary::after, .more > summary::after { content: "修改"; display: block; grid-column: 2; grid-row: 1; color: var(--sheet); font-weight: 400; }
+.group[open] > summary::after, .more[open] > summary::after { content: "收起"; }
+.group > summary .now, .more > summary .now { display: block; grid-column: 1 / -1; font-weight: 400; color: var(--ink); white-space: normal; line-height: 1.45; }
+.group[open] > summary .now, .more[open] > summary .now { display: none; }
+.group > summary:focus-visible, .more > summary:focus-visible { outline: 2px solid var(--sheet); outline-offset: 2px; }
+.group .inner, .more .inner { display: grid; gap: 8px; margin-top: 8px; }
+/* 切成几块时图纸上方的标签：一块一个，和标题栏同一个深蓝底 */
+.module-tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px 0; background: #0c2340; }
+.module-tabs button { display: flex; align-items: baseline; gap: 6px; font: 13px/1.2 var(--ui); color: #acc2da; background: #163a63; border: 1px solid #2a5480; border-bottom: 0; border-radius: 3px 3px 0 0; padding: 7px 10px; cursor: pointer; max-width: 100%; }
+.module-tabs button[aria-selected="true"] { color: #10294a; background: #e6f0ff; border-color: #e6f0ff; }
+.module-tabs button small { font-size: 11px; opacity: 0.8; }
+.module-tabs button small.warn { color: #f2c46d; opacity: 1; }
+.module-tabs button[aria-selected="true"] small.warn { color: #9a5b00; }
+.module-tabs button:focus-visible { outline: 2px solid #a8cee9; outline-offset: 2px; }
+/* 图不可行时标题栏下面的红条 */
+.sheet-alert { margin: 0; padding: 9px 14px; font-size: 13px; line-height: 1.5; color: #5c1a12; background: #fbe3dc; border-bottom: 1px solid #e8b4a6; }
+.sheet-alert strong { margin-right: 6px; }
+/* 实时预览（观摩退火）：搜索时图纸区画当前排法，这一条只放轮次切换 */
+.preview { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 12px; border-bottom: 1px solid var(--rule); background: #0e2a4c; }
+.preview-note { font-size: 12px; color: #acc2da; }
+.preview-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+.preview-tabs button { font: 12px/1.2 var(--ui); color: #acc2da; background: #163a63; border: 1px solid #2a5480; border-radius: 3px; padding: 3px 9px; cursor: pointer; }
+.preview-tabs button[aria-pressed="true"] { color: #10294a; background: #e6f0ff; border-color: #e6f0ff; }
+.preview-tabs button:focus-visible { outline: 2px solid #a8cee9; outline-offset: 2px; }
+.preview .take { margin-left: auto; font: 600 12px/1.2 var(--ui); color: #10294a; background: #ffd666; border: 1px solid #ffd666; border-radius: 3px; padding: 4px 12px; cursor: pointer; }
+.preview .take[disabled] { opacity: 0.45; cursor: default; }
+.preview .take:focus-visible { outline: 2px solid #a8cee9; outline-offset: 2px; }
+@media (max-width: 500px) { .preview { padding: 6px 8px; } .preview-note { font-size: 11px; } }
+/* 画布标题栏：生成后直接看到尺寸、利用率、带数、检查结果，最右边复制 */
+.sheet-bar .name { margin-right: 0; flex: 0 1 auto; }
+.sheet-stats { display: flex; align-items: baseline; gap: 0; margin-right: auto; min-width: 0; font-size: 12px; color: #acc2da; white-space: nowrap; overflow: hidden; }
+.sheet-stats > span { padding: 0 12px; border-left: 1px solid #3d6084; }
+.sheet-stats b { font: 600 15px/1 var(--num); color: #e6f0ff; margin: 0 2px; font-variant-numeric: tabular-nums; }
+.sheet-stats .ok { color: #8fd3b0; }
+.sheet-stats .warn { color: #f2c46d; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+.copy-top { flex: none; font: 600 13px/1 var(--ui); color: #10294a; background: #e6f0ff; border: 0; border-radius: 3px; padding: 8px 14px; cursor: pointer; }
+.copy-top:hover { background: #ffffff; }
+.copy-top:focus-visible { outline: 2px solid #a8cee9; outline-offset: 2px; }
+/* 右侧栏：加宽，楼层缩略图能看清；选中线路时简介放在楼层上面，不再盖住图纸 */
+.layer-rail { width: 196px; flex: 0 0 196px; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+.rail-title { margin: 0; }
+.floor-card { padding: 7px 8px; }
+.floor-info small { font-size: 11px; }
+.floor-thumb svg { height: auto; max-height: 92px; }
+.route-info { position: static; width: auto; padding: 12px; border: 1px solid #6f94b8; background: #1b4269; box-shadow: none; }
+.route-info header { margin-bottom: 8px; }
+.route-info h2 { font-size: 15px; }
+.route-info dl { grid-template-columns: 56px minmax(0, 1fr); gap: 5px 8px; font-size: 12px; }
+.route-info .route-flow { font-family: var(--num); }
+@media (max-width: 1200px) {
+  .layer-rail { width: 150px; flex-basis: 150px; }
+  .sheet-stats { order: 2; flex-basis: 100%; margin-right: 0; }
+  .sheet-stats > span:first-child { border-left: 0; padding-left: 0; }
+}
+@media (max-width: 850px) {
+  .spec { grid-template-columns: 1fr; }
+  .layer-rail { width: 120px; flex-basis: 120px; padding: 6px; }
+  /* 窄屏侧栏放不下简介：改成压在画布底部、横跨整个宽度的一条 */
+  .sheet-workspace { position: relative; }
+  .route-info { position: absolute; z-index: 3; left: 8px; right: 8px; bottom: 8px; background: #1b4269f5; box-shadow: 0 4px 18px #07172c66; }
+  .route-info dl { grid-template-columns: 64px minmax(0, 1fr); }
+}
+@media (max-width: 500px) {
+  .layer-rail { width: 84px; flex-basis: 84px; }
+  .floor-thumb { display: none; }
+  .copy-top { padding: 7px 10px; }
+}
+
+/* 2026-10-07 规格栏顺序（用户）：目标、外部供应 → 搜索力度、生成 → 物流站、供电、原料喷增产剂、自动切分 → 设备 → 集装 → 布局细节（不常用，收起，放最后） */
+.spec > .field { order: 0; }
+.spec > [data-name="effort"] { order: 1; }
+.spec > .go { order: 2; }
+.spec > .progress { order: 3; }
+.spec > .status { order: 4; }
+.spec > .suggest { order: 5; }
+.spec > [data-name="station"] { order: 6; }
+.spec > [data-name="power"] { order: 7; }
+.spec > [data-name="spray"] { order: 8; }
+.spec > [data-name="split"] { order: 9; }
+.spec > [data-name="stitch"] { order: 10; }
+#equip { order: 11; }
+#stack { order: 12; }
+#station-slots { order: 12; }
+#station-slots[hidden] { display: none !important; }
+#stack[hidden] { display: none !important; }
+#more { order: 13; }
+.spec .seg .hint { margin: 4px 0 0; }
+.progress { height: 6px; border-radius: 3px; background: #d6dfea; overflow: hidden; }
+.progress[hidden] { display: none; }
+.progress-bar { height: 100%; width: 0; background: var(--sheet); transition: width .3s linear; }
+.progress.slow .progress-bar { background: repeating-linear-gradient(45deg, var(--sheet) 0 8px, #3d6084 8px 16px); }
+</style>
+<style>
+.header-actions { margin-left: auto; display: flex; align-items: center; gap: 20px; }
+@media (max-width: 600px) {
+  .masthead { align-items: center; gap: 12px; }
+  .masthead .brand { order: 0; }
+  .masthead .header-actions { order: 1; gap: 0; }
+  .masthead > p { order: 2; flex-basis: 100%; }
+}
+</style>
+</head>
+<body>
+<!--__SPRITE__-->
+<div class="page">
+  <header class="masthead">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 40 40" fill="none" stroke="currentColor" aria-hidden="true"><path d="M1 1H39V39H1Z"/><path d="M8 8H24V15H32V32H16V25H8Z" stroke-width="1.5"/><path d="M1 14H8M1 25H8M16 32V39M27 32V39M24 8V1M32 20H39"/><path d="M14 14H20V20H26V26H20V20H14Z"/></svg>
+      <div><div class="eyebrow">DYSON SPHERE PROGRAM</div><h1>手搓产线蓝图</h1></div>
+    </div>
+    <div class="header-actions">
+    </div>
+  </header>
+  <main class="desk">
+    <form class="spec" id="spec" novalidate>
+      <div class="spec-heading"><strong>产线规格</strong><span class="eyebrow">01 / INPUT</span></div>
+      <div class="field">
+        <span class="field-label" id="goal-label">目标产物与每分钟产量</span>
+        <ul class="goals" id="goals" aria-labelledby="goal-label"></ul>
+        <button type="button" class="linkish add-goal" id="goal-add" aria-haspopup="dialog">＋ 添加目标</button>
+      </div>
+      <div class="field">
+        <span class="field-label" id="ext-label">外部供应</span>
+        <div class="ext-row">
+          <ul class="chips" id="ext-list" aria-labelledby="ext-label"></ul>
+          <button type="button" class="linkish" id="ext-edit" aria-haspopup="dialog">调整</button>
+        </div>
+      </div>
+      <fieldset class="seg" data-name="effort">
+        <legend>搜索力度</legend>
+        <div class="opts">
+          <label><input type="radio" name="effort" value="quick"><span>快 ≥50%</span></label>
+          <label><input type="radio" name="effort" value="normal"><span>标准 ≥66%</span></label>
+          <label><input type="radio" name="effort" value="fine"><span>细 ≥80%</span></label>
+        </div>
+      </fieldset>
+      <details class="more" id="more" open>
+      <summary>布局细节 <span class="now" id="more-now"></span></summary>
+      <div class="inner">
+      <fieldset class="seg" data-name="maxwidth">
+        <legend>宽度上限</legend>
+        <div class="opts">
+          <label><input type="radio" name="maxwidth" value=""><span>不限</span></label>
+          <label><input type="radio" name="maxwidth" value="25"><span>25</span></label>
+          <label><input type="radio" name="maxwidth" value="50"><span>50</span></label>
+          <label><input type="radio" name="maxwidth" value="100"><span>100</span></label>
+        </div>
+      </fieldset>
+      <fieldset class="seg" data-name="maxheight">
+        <legend>长度上限</legend>
+        <div class="opts">
+          <label><input type="radio" name="maxheight" value=""><span>不限</span></label>
+          <label><input type="radio" name="maxheight" value="25"><span>25</span></label>
+          <label><input type="radio" name="maxheight" value="50"><span>50</span></label>
+          <label><input type="radio" name="maxheight" value="100"><span>100</span></label>
+        </div>
+      </fieldset>
+      <fieldset class="seg" data-name="aspect">
+        <legend>长宽比上限</legend>
+        <div class="opts">
+          <label><input type="radio" name="aspect" value=""><span>不限</span></label>
+          <label><input type="radio" name="aspect" value="3"><span>3 : 1</span></label>
+          <label><input type="radio" name="aspect" value="2"><span>2 : 1</span></label>
+        </div>
+      </fieldset>
+      </div>
+      </details>
+      <details class="group" id="equip">
+      <summary>设备 <span class="now" id="equip-now"></span></summary>
+      <div class="inner">
+      <fieldset class="seg" data-name="assembler">
+        <legend>制造台</legend>
+        <div class="opts">
+          <label><input type="radio" name="assembler" value="2303"><span>Mk.I</span></label>
+          <label><input type="radio" name="assembler" value="2304"><span>Mk.II</span></label>
+          <label><input type="radio" name="assembler" value="2305"><span>Mk.III</span></label>
+          <label><input type="radio" name="assembler" value="2318"><span>重组式</span></label>
+        </div>
+      </fieldset>
+      <fieldset class="seg" data-name="smelter">
+        <legend>熔炉</legend>
+        <div class="opts">
+          <label><input type="radio" name="smelter" value="2302"><span>电弧</span></label>
+          <label><input type="radio" name="smelter" value="2315"><span>位面</span></label>
+          <label><input type="radio" name="smelter" value="2319"><span>负熵</span></label>
+        </div>
+      </fieldset>
+      <fieldset class="seg" data-name="chemical">
+        <legend>化工厂</legend>
+        <div class="opts">
+          <label><input type="radio" name="chemical" value="2309"><span>化工厂</span></label>
+          <label><input type="radio" name="chemical" value="2317"><span>量子化工厂</span></label>
+        </div>
+      </fieldset>
+      <fieldset class="seg" data-name="chemtight">
+        <legend>化工厂赤道间距压缩</legend>
+        <div class="opts">
+          <label><input type="radio" name="chemtight" value="0"><span>关（任何纬度）</span></label>
+          <label><input type="radio" name="chemtight" value="1"><span>开（只限赤道）</span></label>
+        </div>
+      </fieldset>
+      <fieldset class="seg" data-name="lab">
+        <legend>研究站（做矩阵）</legend>
+        <div class="opts">
+          <label><input type="radio" name="lab" value="2901"><span>矩阵</span></label>
+          <label><input type="radio" name="lab" value="2902"><span>自演化</span></label>
+        </div>
+      </fieldset>
+      <div class="field labstack">
+        <label for="labstack">研究站最多叠几层</label>
+        <input type="number" id="labstack" min="1" max="15" step="1" inputmode="numeric">
+        <p class="hint">「垂直建造」1～6 级：5、7、9、11、13、15 层。</p>
+      </div>
+      <fieldset class="seg" data-name="belt">
+        <legend>传送带</legend>
+        <div class="opts">
+          <label><input type="radio" name="belt" value="1"><span>普通</span></label>
+          <label><input type="radio" name="belt" value="2"><span>高速</span></label>
+          <label><input type="radio" name="belt" value="3"><span>极速</span></label>
+        </div>
+      </fieldset>
+      <fieldset class="seg" data-name="sorter">
+        <legend>分拣器</legend>
+        <div class="opts">
+          <label><input type="radio" name="sorter" value="2011"><span>普通</span></label>
+          <label><input type="radio" name="sorter" value="2012"><span>高速</span></label>
+          <label><input type="radio" name="sorter" value="2013"><span>极速</span></label>
+          <label><input type="radio" name="sorter" value="2014"><span>集装</span></label>
+        </div>
+      </fieldset>
+      </div>
+      </details>
+      <fieldset class="seg" data-name="station">
+        <legend>物流站</legend>
+        <div class="opts">
+          <label><input type="radio" name="station" value=""><span data-short="不接">不接（边缘进出）</span></label>
+          <label><input type="radio" name="station" value="ils"><span data-short="放进空地">星际物流站（放进空地）</span></label>
+          <label><input type="radio" name="station" value="ils-side"><span data-short="靠左侧站列">星际物流站（靠左侧站列）</span></label>
+        </div>
+      </fieldset>
+      <fieldset class="seg" data-name="power">
+        <legend>供电</legend>
+        <div class="opts">
+          <label><input type="radio" name="power" value=""><span>不放</span></label>
+          <label><input type="radio" name="power" value="tesla"><span>电力感应塔</span></label>
+          <label><input type="radio" name="power" value="substation"><span>卫星配电站</span></label>
+        </div>
+      </fieldset>
+      <fieldset class="seg" data-name="spray">
+        <legend>喷增产剂</legend>
+        <div class="opts">
+          <label><input type="radio" name="spray" value="0"><span>不喷</span></label>
+          <label><input type="radio" name="spray" value="1"><span>Mk.I</span></label>
+          <label><input type="radio" name="spray" value="2"><span>Mk.II</span></label>
+          <label><input type="radio" name="spray" value="3"><span>Mk.III</span></label>
+        </div>
+      </fieldset>
+      <fieldset class="seg" data-name="split">
+        <legend>自动切分</legend>
+        <div class="opts">
+          <label><input type="radio" name="split" value="1"><span>开（太大就切）</span></label>
+          <label><input type="radio" name="split" value="0"><span>关</span></label>
+        </div>
+      </fieldset>
+      <fieldset class="seg" data-name="stitch" id="stitch-field">
+        <legend>切分后的蓝图</legend>
+        <div class="opts">
+          <label><input type="radio" name="stitch" value="1"><span>拼接成一张</span></label>
+          <label><input type="radio" name="stitch" value="0"><span>分开生成</span></label>
+        </div>
+      </fieldset>
+      <details class="group" id="stack">
+      <summary>集装 <span class="now" id="stack-now"></span></summary>
+      <div class="inner">
+      <fieldset class="seg" data-name="pile" id="pile-field">
+        <legend>物流站出货叠几层</legend>
+        <div class="opts">
+          <label><input type="radio" name="pile" value="1"><span>1</span></label>
+          <label><input type="radio" name="pile" value="2"><span>2</span></label>
+          <label><input type="radio" name="pile" value="3"><span>3</span></label>
+          <label><input type="radio" name="pile" value="4"><span>4</span></label>
+        </div>
+        <p class="hint">没研究「运输站集装物流」就选 1。</p>
+      </fieldset>
+      </div>
+      </details>
+      <details class="group" id="station-slots">
+      <summary>物流站格子 <span class="now" id="slots-now"></span></summary>
+      <div class="inner">
+      <fieldset class="seg" data-name="proslot">
+        <legend>增产剂格（喷增产剂时）</legend>
+        <div class="opts">
+          <label><input type="radio" name="proslot" value="1"><span>留一格</span></label>
+          <label><input type="radio" name="proslot" value="0"><span>不留</span></label>
+        </div>
+        
+      </fieldset>
+      <fieldset class="seg" data-name="warper">
+        <legend>翘曲器格（星际需求）</legend>
+        <div class="opts">
+          <label><input type="radio" name="warper" value="1"><span>整张一格</span></label>
+          <label><input type="radio" name="warper" value="0"><span>不放</span></label>
+        </div>
+        
+      </fieldset>
+      </div>
+      </details>
+      <button class="go" type="submit" id="go">生成蓝图</button>
+      <div class="progress" id="progress" hidden><div class="progress-bar" id="progress-bar"></div></div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <button class="suggest" type="button" id="suggest" hidden></button>
+    </form>
+
+    <section class="sheet" id="sheet" aria-label="布局图">
+      <nav class="module-tabs" id="module-tabs" role="tablist" aria-label="模块" hidden></nav>
+      <div class="sheet-bar">
+        <div class="name" id="sheet-name">布局图</div>
+        <div class="sheet-stats viewer-only" id="sheet-stats" hidden></div>
+        <div class="layer-controls" id="layer-controls" hidden>
+          <div class="overlays" role="group" aria-label="图层叠加">
+            <label><input type="checkbox" data-overlay="buildings" checked>建筑</label>
+            <label><input type="checkbox" data-overlay="sorters" checked>分拣器</label>
+            <label><input type="checkbox" data-overlay="power">供电范围</label>
+          </div>
+        </div>
+        <div class="zoom" id="sheet-tools" role="group" aria-label="看图工具">
+          <button type="button" data-zoom="fit" disabled title="恢复全图（0）">全图</button>
+          <button type="button" class="viewer-only" id="zoom-out" disabled aria-label="缩小">−</button>
+          <output class="viewer-only" id="zoom-label" aria-label="缩放比例">100%</output>
+          <button type="button" class="viewer-only" id="zoom-in" disabled aria-label="放大">＋</button>
+          <button type="button" class="viewer-only" id="expand-view" aria-pressed="false">大图</button>
+        </div>
+        <button type="button" class="copy-top viewer-only" id="copy-top" hidden>复制蓝图</button>
+      </div>
+      <p class="sheet-alert" id="sheet-alert" role="alert" hidden></p>
+      <div class="preview" id="preview" hidden>
+        <span class="preview-note" id="preview-note">搜索中，看第几轮</span>
+        <div class="preview-tabs" id="preview-tabs" role="group" aria-label="观摩第几轮退火"></div>
+        <button type="button" class="take" id="take" disabled title="不等搜完，用正在画的这张出蓝图">就这个蓝图了</button>
+      </div>
+      <div class="sheet-workspace">
+        <div class="viewer-stage">
+          <div class="drawing" id="drawing" tabindex="0" role="region" aria-label="图纸预览，拖动移动、点击线路查看简介，按钮或「大图」里滚轮缩放">
+            <div class="empty"><strong>生成蓝图后在这里查看</strong></div>
+          </div>
+        </div>
+        <aside class="layer-rail" id="layer-rail" aria-label="楼层导航" hidden>
+          <section class="route-info viewer-only" id="route-info" aria-labelledby="route-title" hidden>
+            <header><span class="sw" aria-hidden="true"></span><h2 id="route-title"></h2><button type="button" id="close-route" aria-label="关闭线路简介">×</button></header>
+            <dl id="route-body" aria-live="polite"></dl>
+          </section>
+          <div class="rail-title">楼层</div>
+          <div class="floor-list" id="floor-list" role="group" aria-label="选择预览楼层"></div>
+        </aside>
+      </div>
+      <div class="viewer-status viewer-only"><strong id="floor-name">—</strong><span id="floor-description">等待生成</span><span id="floor-meta"></span></div>
+      <div class="sheet-foot" id="sheet-foot" hidden>
+        <div><ul class="legend" id="legend"></ul><div class="factory-legend" id="factory-legend"></div></div>
+        <table class="titleblock" id="titleblock" hidden></table>
+      </div>
+    </section>
+  </main>
+  <details class="result-details" id="result-details" open hidden><summary>图纸数据与物品表</summary><div id="result-body"></div></details>
+
+  <dialog id="pick-dialog" aria-labelledby="pick-title">
+    <div class="dlg">
+      <div class="dlg-head">
+        <h2 id="pick-title">选择目标产物</h2>
+        <div class="toggle" role="group" aria-label="物品页">
+          <button type="button" data-page="1" aria-pressed="true">物品</button>
+          <button type="button" data-page="2" aria-pressed="false">建筑</button>
+        </div>
+        <input class="find" id="find" type="search" placeholder="搜索物品" aria-label="搜索物品" autocomplete="off">
+        <button type="button" class="close" data-close>关闭</button>
+      </div>
+      <div class="slots" id="slots" role="grid" aria-label="物品"><p class="hint">物品列表加载中…</p></div>
+      <p class="pick-msg" id="pick-msg" role="status" aria-live="polite"></p>
+      <p class="cat-key">
+        <span><i class="k-target"></i>当前目标</span>
+        <span><i class="k-partial"></i>要把部分中间产物设为外部供应</span>
+        <span><i class="k-off"></i>不能作为目标</span>
+      </p>
+    </div>
+  </dialog>
+
+  <dialog id="ext-dialog" aria-labelledby="ext-title">
+    <div class="dlg">
+      <div class="dlg-head">
+        <h2 id="ext-title">外部供应</h2>
+        <button type="button" class="close" data-close>关闭</button>
+        <p>点中间产物设为外部供应（从边缘送进来），再点一下取消。</p>
+      </div>
+      <div class="tiers" id="tiers"></div>
+      <div class="recipes" id="ext-recipes" hidden></div>
+      <div class="recipes" id="ext-burn" hidden></div>
+      <div class="dlg-foot">
+        <span class="grow" id="ext-foot"></span>
+        <button type="button" class="linkish" id="ext-suggest">按建议设置</button>
+        <button type="button" class="go" id="ext-done">完成</button>
+      </div>
+    </div>
+  </dialog>
+
+  <section class="output">
+    <div class="panel bp">
+      <h2><label for="bp">蓝图字符串</label></h2>
+      <textarea id="bp" readonly placeholder="生成后出现在这里"></textarea>
+      <div class="bp-row">
+        <button class="go" type="button" id="copy" disabled>复制蓝图</button>
+        <span class="meta" id="bp-meta"></span>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>接口</h2>
+      <ul id="ports"><li>生成后列在这里。</li></ul>
+    </div>
+    <div class="panel">
+      <h2>检查</h2>
+      <ul id="notes"><li>生成后列在这里。</li></ul>
+    </div>
+  </section>
+</div>
+<script>const WORKER_SRC = /*__WORKER_SRC__*/"";</script>
+<script>/*__APP_SRC__*/</script>
+</body>
+</html>
