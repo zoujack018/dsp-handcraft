@@ -777,6 +777,23 @@ function attachStations0(source, { stack = 1, maxWidth = null, maxHeight = null,
   for (const set of [O.solid, O.ground, O.projection, O.gapNear]) if (set) intCells(set, fitCells);
   L.stations = [];
   const groups = stationGroups(L, slots);
+  // 只有一段的原料带（不串通道、不喷涂、段上全是取料口）流向无所谓：接站时哪头离站位近就从哪头进料，用了另一头就把这一段翻过来。
+  // 不翻的话站在另一边时，接线要沿着段绕回段头，成一个「小 C」白费一截带子（用户 2026/10/08，信息矩阵 30 的硅石、可燃冰、铜矿……）。
+  // 段与段之间的高架（产物的远距离供应）、产物的段一律不动；搜索也不动，只是接站时多比一下两头的横向距离，寻路次数不变
+  const single = new Set();
+  for (const ch of L.chains) if (ch.parts.length === 2 && ch.parts[1].seg != null) single.add(ch.parts[1].seg);
+  /** 这个原料口能翻时，段的另一头（段尾）在第几列；不能翻是 null */
+  const tailOf = (p) => {
+    if (p.kind !== 'in' || !p.direct) return null;
+    const seg = L.segments[L.legs[p.leg].to];
+    if (!single.has(seg.id) || seg.sprayGap || seg.split != null || seg.taps.some((t) => t.io !== 'in')) return null;
+    return seg.dir > 0 ? seg.b : seg.a;
+  };
+  /** 接这个口用哪一列当段头：能翻、段尾离站位 x 横向更近就用段尾（原料口的两头在同一行，只比横向） */
+  const headX = (p, x) => {
+    const t = tailOf(p);
+    return t !== null && Math.abs(t - x) < Math.abs(p.x - x) ? t : p.x;
+  };
   for (const group of groups) {
     const ports = group.flatMap((it) => it.ports);
     // 搜索范围：布局四周各多 1 格（最后会裁掉没用到的），再往外留几格给站；限宽 / 限长时站本身不许把外框撑过上限
@@ -792,6 +809,7 @@ function attachStations0(source, { stack = 1, maxWidth = null, maxHeight = null,
       if (reserveItem === 2212 && reserve.some(([rx, ry]) => Math.abs(rx + 1 - x) <= STATION_CLEAR && Math.abs(ry + 1 - y) <= STATION_CLEAR)) continue;
       if (L.stations.some((st) => Math.hypot(st.x - x, st.y - y) < STATION_GAP)) continue; // 游戏要求两站隔开
       const area = Math.max(L.width, x + 4) * Math.max(L.height, y + 4);
+      // 候选站位照旧按到原来段头的距离排（试的还是那一批站位；按近的那头排，离边远、撑大外框的站位会挤进前几名）
       const distance = ports.reduce((n, p) => n + Math.abs(p.x - x) + Math.abs(p.y - y), 0);
       sites.push({ x, y, score: (area - L.area) * 2 + distance });
     }
@@ -818,7 +836,7 @@ function attachStations0(source, { stack = 1, maxWidth = null, maxHeight = null,
       // 浮点加法对非负数是单调的，所以按同样的式子算出来的下限不会比真算出来的得分高，选出来的站位逐字一样
       const floor = (Math.max(L.width, s.x + 4) * Math.max(L.height, s.y + 4) - L.area) * 2;
       if (prune && best && floor >= best.score) continue;
-      const order = ports.slice().sort((a, b) => (Math.abs(a.x - s.x) + Math.abs(a.y - s.y)) - (Math.abs(b.x - s.x) + Math.abs(b.y - s.y)));
+      const order = ports.slice().sort((a, b) => (Math.abs(headX(a, s.x) - s.x) + Math.abs(a.y - s.y)) - (Math.abs(headX(b, s.x) - s.x) + Math.abs(b.y - s.y)));
       // 还没接的口的得分下限之和（rest[k]：第 k 个口及以后的）。已接的代价 + 还没接的下限 + floor 不比最好站位的得分低，
       // 这个站位就注定选不上（最后的得分只会更高），和接完再跳过是一回事；多加 1e-6 盖住浮点舍入
       const rest = new Float64Array(order.length + 1);
@@ -827,7 +845,11 @@ function attachStations0(source, { stack = 1, maxWidth = null, maxHeight = null,
           const p = order[k];
           const leg = L.legs[p.leg];
           const seg = L.segments[p.kind === 'in' ? leg.to : leg.from];
-          rest[k] = rest[k + 1] + routeFloor(s, [p.kind === 'in' ? seg.entryX : seg.exitX, seg.y], p, leg.cells.length + (leg.direct ? 0 : 1));
+          const own = leg.cells.length + (leg.direct ? 0 : 1);
+          const t = tailOf(p);
+          // 能翻的口两头都可能接（近的那头接不上时退回原来的段头），下限取两头小的
+          const lb = routeFloor(s, [p.kind === 'in' ? seg.entryX : seg.exitX, seg.y], p, own);
+          rest[k] = rest[k + 1] + (t === null ? lb : Math.min(lb, routeFloor(s, [t, seg.y], p, own)));
         }
         if (floor + rest[0] >= best.score + 1e-6) continue;
       }
@@ -847,56 +869,63 @@ function attachStations0(source, { stack = 1, maxWidth = null, maxHeight = null,
         // chosen 只记代价低于 need 的接法：原来的 chosen 最后低于 need 时，就是这些里第一个最小的那个，和这里一样；
         // 不低于 need 时站位注定选不上，这里 chosen 是空的，同样放弃
         let chosen = null;
-        // 只试离目标最近的 4 个空闲站口：更远的口几乎不会更好，A* 失败时却要把预算耗完
-        const slots = STATION_PORTS.filter((q) => freeSlots.has(q.slot)).sort((a, b) =>
-          Math.abs(s.x + a.dx + a.nx * 2 - p.x) + Math.abs(s.y + a.dy + a.ny * 2 - p.y) - Math.abs(s.x + b.dx + b.nx * 2 - p.x) - Math.abs(s.y + b.dy + b.ny * 2 - p.y)).slice(0, 4);
         // 直接接到段的端头（不经过边缘的出入口和原来那段高架），原来那段高架和出入口格让出来
         const leg = L.legs[p.leg];
         const seg = L.segments[p.kind === 'in' ? leg.to : leg.from];
-        const target = [p.kind === 'in' ? seg.entryX : seg.exitX, seg.y, 0];
-        // 终点之后链往哪走（按寻路的方向说）：原料从段首顺着段流下去；成品是从站往段尾反着找，过了段尾就是逆着段回去
-        const targetDir = p.kind === 'in' ? dirIndex(seg.dir, 0) : dirIndex(-seg.dout, 0);
         const own = [...leg.cells.map((c) => cell(...c)), ...(leg.direct ? [] : [cell(leg.edge, leg.py, 0)])];
         const ignore = new Set(own);
-        for (const q of slots) {
-          const stub = [0, 1, 2].map((d) => [s.x + q.dx + q.nx * d, s.y + q.dy + q.ny * d, 0]);
-          // 站口那 3 格（地面）：出界，或者有带子（自己那段让出来的除外）就不行。网格和带子集合逐格一致，直接查网格
-          if (stub.some(([x, y, z]) => x < 0 || y < 0 || x >= W || y >= H || (base.belts[(z * H + y) * W + x] && !ignore.has(cell(x, y, z))))) continue;
-          const start = stub[2];
-          if (base.solid[start[1] * W + start[0]] || base.ground[start[1] * W + start[0]]) continue;
-          const dir = DIRS.findIndex(([dx, dy]) => dx === q.nx && dy === q.ny);
-          // 这个口的接法要有用：得分低于 lim（换掉已选的，或者让站位不至于注定选不上），或者是一条地面直路（下面就不再试别的口）。
-          // 寻路只找代价够低的路（pathfind 的 cut）：得分不低于 lim、又不是直路（代价比曼哈顿距离多出 0.01 以上）的路找到了也用不上，
-          // 找不到时直接退回原来出入口的那次寻路也一样：所以两次寻路都返回 CUT 时这个口跳过，和原来逐字一样
-          const lim = chosen ? chosen.cost : need;
-          const back = target[0] !== p.x || target[1] !== p.y; // 直接接不上时还能退回原来的出入口格
-          const cutD = Math.max(lim - 2, Math.abs(start[0] - target[0]) + Math.abs(start[1] - target[1]) + 0.02);
-          const cutB = Math.max(lim - 2 - own.length, Math.abs(start[0] - p.x) + Math.abs(start[1] - p.y) + 0.02);
-          // 已经选了一个口时，后面的口多半比不过它（实测六七成返回 CUT）：寻路先用桶队列预判（pre）
-          const pre = !!chosen;
-          // 喷涂机骑在这截高架上的（leg.spray，layout/belts.js 的 legIn）不直接接段头：那截高架要留着，只接原来的出入口
-          let path = leg.spray ? null : pathfind(start, target, trial, W, H, maxLevel, dir, ignore, targetDir, cutD, pre);
-          let direct = !!path;
-          if (path === CUT) {
-            // 直接接的路没找完：原来要么找到一条用不上的路（不再退回），要么找不到（退回原来的出入口）。
-            // 退回的那次也用不上，这个口就跳过；退回的那次有用时，直接接的那次照原样找完，才知道原来走的是哪一支
-            if (!back) continue;
-            const alt = pathfind(start, [p.x, p.y, 0], trial, W, H, maxLevel, dir, null, portDir(p, leg), cutB, pre);
-            if (!alt || alt === CUT) continue;
-            path = pathfind(start, target, trial, W, H, maxLevel, dir, ignore, targetDir);
-            direct = !!path;
-            if (!path) path = alt;
-          } else if (!path && back) {
-            path = pathfind(start, [p.x, p.y, 0], trial, W, H, maxLevel, dir, null, portDir(p, leg), cutB, pre);
-            if (path === CUT) continue;
+        // 能翻的原料口：段尾离这个站位近就先接段尾（接上了这一段翻过来），接不上再接原来的段头；别的口照旧只接段头
+        const tail = tailOf(p);
+        const ends = tail !== null && headX(p, s.x) === tail ? [true, false] : [false];
+        for (const flip of ends) {
+          if (chosen) break;
+          const px = flip ? tail : p.x; // 这一次当段头（出入口）的那一列
+          // 只试离目标最近的 4 个空闲站口：更远的口几乎不会更好，A* 失败时却要把预算耗完
+          const slots = STATION_PORTS.filter((q) => freeSlots.has(q.slot)).sort((a, b) =>
+            Math.abs(s.x + a.dx + a.nx * 2 - px) + Math.abs(s.y + a.dy + a.ny * 2 - p.y) - Math.abs(s.x + b.dx + b.nx * 2 - px) - Math.abs(s.y + b.dy + b.ny * 2 - p.y)).slice(0, 4);
+          const target = [flip ? tail : p.kind === 'in' ? seg.entryX : seg.exitX, seg.y, 0];
+          // 终点之后链往哪走（按寻路的方向说）：原料从段首顺着段流下去（翻过来就是反着）；成品是从站往段尾反着找，过了段尾就是逆着段回去
+          const targetDir = p.kind === 'in' ? dirIndex(flip ? -seg.dir : seg.dir, 0) : dirIndex(-seg.dout, 0);
+          for (const q of slots) {
+            const stub = [0, 1, 2].map((d) => [s.x + q.dx + q.nx * d, s.y + q.dy + q.ny * d, 0]);
+            // 站口那 3 格（地面）：出界，或者有带子（自己那段让出来的除外）就不行。网格和带子集合逐格一致，直接查网格
+            if (stub.some(([x, y, z]) => x < 0 || y < 0 || x >= W || y >= H || (base.belts[(z * H + y) * W + x] && !ignore.has(cell(x, y, z))))) continue;
+            const start = stub[2];
+            if (base.solid[start[1] * W + start[0]] || base.ground[start[1] * W + start[0]]) continue;
+            const dir = DIRS.findIndex(([dx, dy]) => dx === q.nx && dy === q.ny);
+            // 这个口的接法要有用：得分低于 lim（换掉已选的，或者让站位不至于注定选不上），或者是一条地面直路（下面就不再试别的口）。
+            // 寻路只找代价够低的路（pathfind 的 cut）：得分不低于 lim、又不是直路（代价比曼哈顿距离多出 0.01 以上）的路找到了也用不上，
+            // 找不到时直接退回原来出入口的那次寻路也一样：所以两次寻路都返回 CUT 时这个口跳过，和原来逐字一样
+            const lim = chosen ? chosen.cost : need;
+            const back = !flip && (target[0] !== p.x || target[1] !== p.y); // 直接接不上时还能退回原来的出入口格（翻过来接段尾时不退，外面那一圈接原来的段头）
+            const cutD = Math.max(lim - 2, Math.abs(start[0] - target[0]) + Math.abs(start[1] - target[1]) + 0.02);
+            const cutB = Math.max(lim - 2 - own.length, Math.abs(start[0] - p.x) + Math.abs(start[1] - p.y) + 0.02);
+            // 已经选了一个口时，后面的口多半比不过它（实测六七成返回 CUT）：寻路先用桶队列预判（pre）
+            const pre = !!chosen;
+            // 喷涂机骑在这截高架上的（leg.spray，layout/belts.js 的 legIn）不直接接段头：那截高架要留着，只接原来的出入口
+            let path = leg.spray ? null : pathfind(start, target, trial, W, H, maxLevel, dir, ignore, targetDir, cutD, pre);
+            let direct = !!path;
+            if (path === CUT) {
+              // 直接接的路没找完：原来要么找到一条用不上的路（不再退回），要么找不到（退回原来的出入口）。
+              // 退回的那次也用不上，这个口就跳过；退回的那次有用时，直接接的那次照原样找完，才知道原来走的是哪一支
+              if (!back) continue;
+              const alt = pathfind(start, [p.x, p.y, 0], trial, W, H, maxLevel, dir, null, portDir(p, leg), cutB, pre);
+              if (!alt || alt === CUT) continue;
+              path = pathfind(start, target, trial, W, H, maxLevel, dir, ignore, targetDir);
+              direct = !!path;
+              if (!path) path = alt;
+            } else if (!path && back) {
+              path = pathfind(start, [p.x, p.y, 0], trial, W, H, maxLevel, dir, null, portDir(p, leg), cutB, pre);
+              if (path === CUT) continue;
+            }
+            if (!path) continue;
+            const cells = [...stub.slice(0, 2), ...path.cells.slice(0, -1)];
+            const score = path.cost + 2 + (direct ? 0 : own.length);
+            if (score < lim) chosen = { port: p, slot: q.slot, cells, cost: score, direct, target, own, flip };
+            // 已找到地面最短路，无需再尝试朝向更远的口。
+            const goal = direct ? target : [p.x, p.y];
+            if (path.cost <= Math.abs(start[0] - goal[0]) + Math.abs(start[1] - goal[1]) + 0.01) break;
           }
-          if (!path) continue;
-          const cells = [...stub.slice(0, 2), ...path.cells.slice(0, -1)];
-          const score = path.cost + 2 + (direct ? 0 : own.length);
-          if (score < lim) chosen = { port: p, slot: q.slot, cells, cost: score, direct, target, own };
-          // 已找到地面最短路，无需再尝试朝向更远的口。
-          const goal = direct ? target : [p.x, p.y];
-          if (path.cost <= Math.abs(start[0] - goal[0]) + Math.abs(start[1] - goal[1]) + 0.01) break;
         }
         if (!chosen) { diagnostics?.push({ station: L.stations.length, site: [s.x, s.y], port: [p.x, p.y], itemId: p.itemId, connected: routes.length }); break; }
         freeSlots.delete(chosen.slot);
@@ -928,6 +957,13 @@ function attachStations0(source, { stack = 1, maxWidth = null, maxHeight = null,
     for (const r of best.routes) {
       const p = r.port;
       const leg = L.legs[p.leg];
+      if (r.flip) {
+        // 接的是段尾：这一段翻过来，段尾变段头（只有取料口的原料段，分拣器不用动）
+        const seg = L.segments[leg.to];
+        seg.dir = -seg.dir;
+        seg.dout = -seg.dout;
+        [seg.entryX, seg.exitX] = [seg.exitX, seg.entryX];
+      }
       leg.stub = r.cells;
       leg.station = { k, slot: r.slot };
       // chainTiles 对成品的 stub 会自行反转；两种方向均保存从站到产线的路径。
