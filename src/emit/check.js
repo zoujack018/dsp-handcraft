@@ -7,7 +7,7 @@ import { POWER, powerReach } from '../plan/power.js';
 const isBelt = (id) => id >= 2001 && id <= 2003;
 const isSorter = (id) => id >= 2011 && id <= 2014;
 const PILER = 2040; // 自动集装机：带子 → 1 号口，0 号口 → 带子，进出两节挤在同一格里（各偏 0.2 格）
-const COATER = 2313; // 喷涂机：骑在带子上，背后那格上方第 1 层有增产剂带横穿
+const COATER = 2313; // 喷涂机：骑在第 z 层的带子上，背后那格上方第 z + 1 层有增产剂带横穿；同一格可以上下叠（z 差 2），不能悬空（用户 2026/10/08 实测）
 const SPRAYS = new Set([1141, 1142, 1143]);
 // 物理碰撞体（格）：熔炉约 2.4×2.4、制造台约 3.2×3.2、研究站约 4.5×4.5（由游戏数据中的占地面积开方得到），
 // 化工厂 6.8×4（中心往上 0.5）、对撞机 9×5（中心往左 0.3），见 gamedata.js 的 FACTORY_GEOMETRY（2026/10/05 两张体积测试图）。
@@ -26,7 +26,7 @@ for (const id of [2302, 2315, 2319, 2303, 2304, 2305, 2318, 2309, 2317, 2901, 29
   BODY[id] = { w: f.collider[0], h: f.collider[1], shift: f.colliderShift ?? [0, 0], slot, kind: f.kind };
 }
 // 火力发电厂（就地烧副产物，plan/burn.js）：槽位照用户 2026/10/07 的蓝图（朝东时量的，这里换回朝北的建筑自己坐标），
-// 碰撞体是按那张蓝图反推的保守估计（gamedata.js 的 THERMAL_BANK.box，推断）。不进 factories（不查配方），燃料来源另查（第 5c 节）
+// 碰撞体 6.5 × 3.5（gamedata.js 的 THERMAL_BANK.box，2026/10/08 验证合集 R 组实测）。不进 factories（不查配方），燃料来源另查（第 5c 节）
 {
   const T = THERMAL_BANK;
   const local = ([wx, wy]) => [-wy, wx]; // 朝东（yaw 90）时的偏移 → 建筑自己坐标
@@ -338,14 +338,21 @@ export function checkBlueprint(str) {
     else if (!taken.has(0)) for (const o of r.outputs) if (!taken.has(o.id)) err(`工厂 ${f.index}（${r.name}）的产物「${name(o.id)}」没有出料分拣器，堆满后会停机`);
   }
 
-  // 5a. 集装机：前后各接一节带子；喷涂机：骑在地面带上，背后那格上方第 1 层有增产剂带横穿
+  // 5a. 集装机：前后各接一节带子；喷涂机：骑在第 z 层的带子上（地面或高架），背后那格上方第 z + 1 层有增产剂带横穿；
+  //     同一格可以上下叠（每台 z 差 2，上一台骑在下一台身上），叠着但脚下没带子的那台什么也喷不到；悬空不行（用户 2026/10/08 的蓝图）
   for (const p of pilers) {
     if (!belts.some((b) => b.outputObjIdx === p.index)) err(`自动集装机 ${p.index} 没有进料带`);
     if (!fromPiler.has(p.index)) err(`自动集装机 ${p.index} 没有出料带`);
   }
   for (const c of coaters) {
-    const under = belts.find((b) => P(b).x === P(c).x && P(b).y === P(c).y && P(b).z === 0);
-    if (!under) err(`喷涂机 ${c.index} 下面没有传送带`);
+    const cz = Math.round(P(c).z);
+    const under = belts.find((b) => P(b).x === P(c).x && P(b).y === P(c).y && Math.round(P(b).z) === cz);
+    const onCoater = !under && coaters.some((o) => o !== c && P(o).x === P(c).x && P(o).y === P(c).y && Math.round(P(o).z) === cz - 2);
+    if (!under && !onCoater) err(`喷涂机 ${c.index} 悬空：第 ${cz} 层脚下既没有传送带，也没有叠在另一台喷涂机上`);
+    if (!under && onCoater) {
+      warnings.push(`喷涂机 ${c.index} 叠在别的喷涂机上、脚下没有带子，什么也喷不到`);
+      continue;
+    }
     const yaw = Math.round(c.yaw[0] / 90) * 90 % 360;
     // 喷涂机顺着带子朝下游（用户的分馏阵列就是这样）；倒过来的话机身伸向上游，接物流站时会撞到站（用户 2026/10/07）
     if (under && ((Math.round((under.yaw?.[0] ?? 0) / 90) * 90 % 360) + 360) % 360 !== (yaw + 360) % 360) err(`喷涂机 ${c.index} 的朝向和脚下传送带的流向不一致（应顺着带子朝下游）`);
@@ -355,14 +362,14 @@ export function checkBlueprint(str) {
     if (under) {
       const up = (b) => belts.find((u) => u.outputObjIdx === b.index);
       const down = (b) => (isBelt(B[b.outputObjIdx]?.itemId) ? B[b.outputObjIdx] : null);
-      const step = (a, b) => P(b).x - P(a).x === -dx && P(b).y - P(a).y === -dy && P(a).z === 0 && P(b).z === 0;
+      const step = (a, b) => P(b).x - P(a).x === -dx && P(b).y - P(a).y === -dy && Math.round(P(a).z) === cz && Math.round(P(b).z) === cz;
       const a1 = up(under), a2 = a1 && up(a1), b1 = down(under), b2 = b1 && down(b1);
       if (!(a1 && b1 && step(a1, under) && step(under, b1) && (!a2 || step(a2, a1)) && (!b2 || step(b1, b2)))) {
-        err(`喷涂机 ${c.index} 压着的 3 格带子要直、在地面，前后再各一格也要顺着同一方向（转弯、升降最近在第 2 格）`);
+        err(`喷涂机 ${c.index} 压着的 3 格带子要直、在同一层，前后再各一格也要顺着同一方向（转弯、升降最近在第 2 格）`);
       }
     }
-    const feed = belts.find((b) => P(b).x === P(c).x + dx && P(b).y === P(c).y + dy && b.localOffset[0].z > 0.5 && b.localOffset[0].z < 1.5);
-    if (!feed) err(`喷涂机 ${c.index} 背后那格上方没有增产剂带`);
+    const feed = belts.find((b) => P(b).x === P(c).x + dx && P(b).y === P(c).y + dy && b.localOffset[0].z > cz + 0.5 && b.localOffset[0].z < cz + 1.5);
+    if (!feed) err(`喷涂机 ${c.index} 背后那格上方（第 ${cz + 1} 层）没有增产剂带`);
     else if (![...carried.get(feed.index)].some((it) => SPRAYS.has(it))) warnings.includes('喷涂机取料的那条带上不是增产剂') || warnings.push('喷涂机取料的那条带上不是增产剂');
   }
 
@@ -372,7 +379,7 @@ export function checkBlueprint(str) {
   let feedSorters = 0;
   let unsprayed = 0;
   {
-    const coaterAt = new Set(coaters.map((c) => `${P(c).x},${P(c).y}`)); // 喷涂机骑着的格
+    const coaterAt = new Set(coaters.map((c) => `${P(c).x},${P(c).y},${Math.round(P(c).z)}`)); // 喷涂机骑着的格（分层）
     const prevOf = new Map(); // 带 index -> 上游的带（可能几条汇进来；过集装机接着算）
     for (const b of belts) {
       const n = b.outputObjIdx >= 0 ? B[b.outputObjIdx] : null;
@@ -389,7 +396,7 @@ export function checkBlueprint(str) {
       memo.set(idx, true); // 环上先按喷过算（纯环没有来源，不会有料）
       const b = B[idx];
       let ok;
-      if (P(b).z === 0 && coaterAt.has(`${P(b).x},${P(b).y}`)) ok = true; // 这一节骑着喷涂机：过了它的料都喷过
+      if (coaterAt.has(`${P(b).x},${P(b).y},${Math.round(P(b).z)}`)) ok = true; // 这一节骑着喷涂机：过了它的料都喷过
       else if (dumpsOn.has(idx)) ok = false;
       else if (b.inputObjIdx >= 0 && isStation(B[b.inputObjIdx]?.itemId)) ok = false; // 从物流站出来的料没喷
       else {
@@ -452,8 +459,8 @@ export function checkBlueprint(str) {
         else if (n.itemId === 2212 && Math.abs(P(st).x - x) <= STATION_CLEAR && Math.abs(P(st).y - y) <= STATION_CLEAR) err(`${what}离物流站 ${st.index} 太近（站身外还有 1 格碰撞圈）`);
         for (const f of solids) if (inside(f, x, y, P)) err(`${what}与工厂 ${f.index} 碰撞`);
       }
-      // 卫星配电站 3×3 和化工厂、叠层研究站、对撞机的碰撞体之间要再隔开一点（gamedata.js 的 substationPad，第六张体积测试：
-      // 化工厂下沿 0.5、叠层研究站四周 1、对撞机四周 0.5）。间隔按工厂自己的朝向，转了方向的蓝图跟着转
+      // 卫星配电站 3×3 和化工厂、叠层研究站、对撞机的碰撞体之间要再隔开一点（gamedata.js 的 substationPad，第六张体积测试 + 2026/10/08 验证合集：
+      // 化工厂左 0.5、下沿 0.5，叠层研究站四周 1，对撞机左 1.5、下 1.5、右 0.5、上 0.5）。间隔按工厂自己的朝向，转了方向的蓝图跟着转
       if (n.itemId === 2212) for (const f of factories) {
         if (P(f).z > 0) continue; // 叠起来的研究站只看最底下那台
         const stacked = isLab(f.itemId) && factories.some((u) => u !== f && isLab(u.itemId) && P(u).x === P(f).x && P(u).y === P(f).y && P(u).z > 0);
@@ -462,13 +469,13 @@ export function checkBlueprint(str) {
         const b = box(f, P);
         // 工厂自己坐标里的四个方向（左右下上）转到蓝图里，各取对应的间隔
         const ext = { x0: 0, x1: 0, y0: 0, y1: 0 };
-        for (const [d, v] of [[[-1, 0], m.side], [[1, 0], m.side], [[0, -1], m.below], [[0, 1], m.above]]) {
+        for (const [d, v] of [[[-1, 0], m.left], [[1, 0], m.right], [[0, -1], m.below], [[0, 1], m.above]]) {
           const [wx, wy] = turn(f, d);
           ext[wx < 0 ? 'x0' : wx > 0 ? 'x1' : wy < 0 ? 'y0' : 'y1'] = v;
         }
         const sx = P(n).x, sy = P(n).y;
         if (sx - 1.5 < b.x + b.w / 2 + ext.x1 - EPS && b.x - b.w / 2 - ext.x0 < sx + 1.5 - EPS && sy - 1.5 < b.y + b.h / 2 + ext.y1 - EPS && b.y - b.h / 2 - ext.y0 < sy + 1.5 - EPS) {
-          err(`卫星配电站 ${n.index} 离工厂 ${f.index} 太近（第六张体积测试：化工厂下沿、叠层研究站和对撞机四周都不能紧贴）`);
+          err(`卫星配电站 ${n.index} 离工厂 ${f.index} 太近（实测：化工厂左边和下沿、叠层研究站四周不能紧贴，对撞机左边和下面要隔 2 格、右边和上面隔 1 格）`);
         }
       }
     }

@@ -114,8 +114,22 @@ function ramp(r, L, x0, y0, x1, y1, groundEnd = 0) {
  */
 /** 一段喷涂空当的候选格（沿流向最多 4 格；被站列截短时更少）。前两格是取料格候选，骑的位置在取料格下游一格 */
 export function sprayGapCells(s) {
-  const fd = s.sprayGap === 'in' ? s.dir : s.dout; // 空当里带子的流向
+  if (s.sprayGap === 'edgeIn') return []; // 喷涂机在边缘入口往外接出的几节上（plan/addons.js 的 pre），图里没有空当格
+  const fd = s.sprayGap === 'in' || s.sprayGap === 'legIn' ? s.dir : s.dout; // 空当里带子的流向
   if (!fd) return [];
+  if (s.sprayGap === 'legIn') {
+    // 原料的喷涂机骑在入口那截高架上：窗口是段头（gapX）上游的 5 格水平走行（layout/belts.js 的 segOf 保证够长），
+    // 候选是紧挨段头的 4 格，顺序沿流向（离段头最远的在前），前两格是取料格候选
+    // 段头还是 gapX：窗口在入口那截高架上（段外）；段头挪了（layout/ports.js 把段在地面一直接到了边缘，高架作废）：
+    // 窗口那几格成了段里的地面直带，只取段内的
+    const cells = [4, 3, 2, 1].map((i) => s.gapX - fd * i);
+    return s.entryX === s.gapX ? cells : cells.filter((x) => x >= s.a && x <= s.b);
+  }
+  if (s.sprayGap === 'legOut') {
+    // 喷涂机骑在段尾接下去那截高架上（layout/belts.js 的 LEG_WINDOW）：窗口是段尾（gapX）下游的 5 格水平走行，
+    // 前 4 格是候选（第 5 格只要直着就行），顺序沿流向，和地面空当一样前两格是取料格候选
+    return [1, 2, 3, 4].map((i) => s.gapX + fd * i);
+  }
   if (s.sprayGap === 'mid') {
     // 放料段和取料段在地面接成一条（layout/belts.js 的 JOIN）：空当是最后一个放料口（gapX）下游的 4 格
     const out = [];
@@ -131,18 +145,39 @@ export function sprayGapCells(s) {
   return offs.map((i) => end + fd * i).filter((x) => x >= s.a && x <= s.b);
 }
 
-export function sprayGuards(segments) {
+/**
+ * placing：正在分层（liftLegs / estimateLegs）：窗口高架的头顶由它们自己管（winFree / winOf），这里不护；
+ * 高架作废了的窗口（layout/ports.js 把段在地面接到了边缘，leg.direct）任何时候都按地面空当护
+ */
+export function sprayGuards(segments, legs = null, placing = false) {
   const guard2 = [];
   const guard1 = [];
+  const guardZ = []; // 高架上的窗口（legOut / legIn）：[x, y, z]，层数按那截高架定下来的层算
+  const winLeg = new Map();
+  if (legs) for (const l of legs) if (l.spray) winLeg.set(l.spray.seg, l);
   for (const s of segments) {
     if (!s.sprayGap) continue;
     const cells = sprayGapCells(s);
+    if (s.sprayGap === 'legOut' || s.sprayGap === 'legIn') {
+      const l = legs && winLeg.get(s.id);
+      if (!l) continue;
+      if (!l.direct) {
+        if (placing) continue;
+        const L = l.level ?? 0;
+        if (L > 0) {
+          for (const x of cells) guardZ.push([x, s.y, L + 1], [x, s.y, L + 2]);
+          for (const x of cells.slice(0, 2)) guardZ.push([x, s.y - 1, L + 1], [x, s.y + 1, L + 1]);
+          continue;
+        }
+      }
+      // 高架作废（窗口格成了段里的地面直带）或落在地面的（没分到层）：按地面空当算
+    }
     for (const x of cells) guard2.push([x, s.y]);
     for (const x of cells.slice(0, 2)) { // 取料格候选：流向上最靠前的两格
       guard1.push([x, s.y - 1], [x, s.y + 1]);
     }
   }
-  return { guard2, guard1 };
+  return { guard2, guard1, guardZ };
 }
 
 /**
@@ -439,7 +474,7 @@ function roadStats(c) {
 
 /** route() 的一步：读写共享的布局上下文 c */
 export function liftLegs(c) {
-  const { P, addPenalty, graph, height, itemBids, legs, opt, stations, xR } = c;
+  const { P, addPenalty, graph, height, itemBids, legs, opt, segments, stations, xR } = c;
   /**
    * 高架段的节点（不含两端的地面格），按流向排列。这里先按「地面格的下一个节点直接在第 L 层」生成水平部分，
    * 升降的那一叠（地面那一端格子的 1..L 层，RAMP_MAX_DZ = 0 时）记在 shadow 里，分配高度时一并占用；
@@ -503,7 +538,7 @@ export function liftLegs(c) {
       }
   }
   // 喷涂机空当的保护区（喷增产剂时才有）：候选格头顶两层、取料格邻格第 1 层不给高架用
-  const guards = sprayGuards(c.segments);
+  const guards = sprayGuards(c.segments, c.legs, true);
   for (let i = 0; i < guards.guard2.length; i++) {
     const x = guards.guard2[i][0];
     const yy = guards.guard2[i][1];
@@ -683,13 +718,49 @@ export function liftLegs(c) {
     todo[i] = l;
     todoN[i] = n;
   }
-  // 先按排好的次序把每段的几何算出来、挑出只有高度变的段，再排形状随层变的段（几何和排没排下无关）
+  // 带喷涂窗口的段（layout/belts.js 的 legOut：喷涂机骑在紧挨段尾的 5 格上）：窗口候选格头顶两层、取料格候选两侧一层也不能有别的段，
+  // 和地面空当的保护区一样，只是层数跟着这截高架定下来的层走。所以这些段先排（和形状随层变的一起、长的先），放下以后保护区当成固定的东西占住
+  const winCells = (l) => sprayGapCells(segments[l.spray.seg]);
+  const winFree = (l, L) => {
+    const cells = winCells(l);
+    const y = segments[l.spray.seg].y;
+    for (let i = 0; i < cells.length; i++) for (const z of [L + 1, L + 2]) {
+      const o = ownerAt(ak(cells[i], y, z));
+      if (o !== NONE && o !== l.id) return false;
+    }
+    for (let i = 0; i < 2 && i < cells.length; i++) for (const yy of [y - 1, y + 1]) {
+      const o = ownerAt(ak(cells[i], yy, L + 1));
+      if (o !== NONE && o !== l.id) return false;
+    }
+    return true;
+  };
+  const winPlace = (l, L) => {
+    const cells = winCells(l);
+    const y = segments[l.spray.seg].y;
+    for (let i = 0; i < cells.length; i++) {
+      for (const z of [L + 1, L + 2]) setOwner(ak(cells[i], y, z), -1);
+      fixAt(cells[i], y);
+    }
+    for (let i = 0; i < 2 && i < cells.length; i++) for (const yy of [y - 1, y + 1]) {
+      setOwner(ak(cells[i], yy, L + 1), -1);
+      fixAt(cells[i], yy);
+    }
+  };
+  // 先按排好的次序把每段的几何算出来、挑出只有高度变的段，再排形状随层变的段和带窗口的段（几何和排没排下无关）
   const flat = [];
-  for (let i = 0; i < todo.length; i++) if (geo(todo[i]).flat) flat.push(todo[i]);
+  for (let i = 0; i < todo.length; i++) if (geo(todo[i]).flat && !todo[i].spray) flat.push(todo[i]);
   for (let i = 0; i < todo.length; i++) {
     const l = todo[i];
-    if (geo(l).flat) continue;
+    if (geo(l).flat && !l.spray) continue;
     let L = 1;
+    if (l.spray) {
+      while (L <= top && !(isFree(l, L) && winFree(l, L))) L++;
+      if (L <= top) {
+        settle(l, L);
+        winPlace(l, L);
+      } else broken(l);
+      continue;
+    }
     while (L <= top && !isFree(l, L)) L++;
     if (L <= top) settle(l, L);
     else broken(l);
@@ -876,7 +947,7 @@ export function estimateLegs(c) {
   paths.sort((a, b) => b.n - a.n);
   const at = new Map(); // 格 -> 已放下的段 [{ L, end }]
   // 喷涂机空当的保护区：当成已经放着的「叠」，候选格头顶按 2 层、取料格邻格按 1 层算，别的段从上面过要更高
-  const guards = sprayGuards(c.segments);
+  const guards = sprayGuards(c.segments, c.legs, true);
   for (const [h, list] of [[2, guards.guard2], [1, guards.guard1]]) {
     for (const [x, y] of list) {
       const k = gk(x, y);
@@ -884,6 +955,18 @@ export function estimateLegs(c) {
       at.get(k).push({ L: h, end: true });
     }
   }
+  // 带喷涂窗口的段（layout/belts.js 的 legOut）：窗口候选格头顶两层、取料格候选两侧一层也不能有别的段（完整算法见 liftLegs 的 winFree）
+  const winOf = (l) => {
+    if (!l.spray) return null;
+    const s = c.segments[l.spray.seg];
+    const cells = sprayGapCells(s);
+    return { head: cells.map((x) => gk(x, s.y)), side: cells.slice(0, 2).flatMap((x) => [gk(x, s.y - 1), gk(x, s.y + 1)]) };
+  };
+  const winBlocked = (w, L) => {
+    for (const k of w.head) for (const o of at.get(k) ?? []) if (!o.end && (o.L === L + 1 || o.L === L + 2)) return true;
+    for (const k of w.side) for (const o of at.get(k) ?? []) if (!o.end && o.L === L + 1) return true;
+    return false;
+  };
   for (const p of paths) {
     const used = new Set();
     let lo = 1;
@@ -898,8 +981,9 @@ export function estimateLegs(c) {
         if (!o.end && !myEnd) used.add(o.L);
       }
     }
+    const w = winOf(p.l);
     let L = lo;
-    while (used.has(L)) L++;
+    while (used.has(L) || (w && winBlocked(w, L))) L++;
     let over = Math.max(0, L - opt.maxLevel);
     if (L > hi) over += 1; // 两头的约束矛盾：完整算法要靠请出重排才可能放下，按多占一层计
     p.l.level = L;
@@ -908,6 +992,17 @@ export function estimateLegs(c) {
     for (const k of p.keys) {
       if (!at.has(k)) at.set(k, []);
       at.get(k).push({ L, end: p.ends.has(k) });
+    }
+    if (w) {
+      // 窗口的保护区当成已经放着的叠：头顶按 L+2 层、两侧按 L+1 层，后排的段从上面过要更高
+      for (const k of w.head) {
+        if (!at.has(k)) at.set(k, []);
+        at.get(k).push({ L: L + 2, end: true });
+      }
+      for (const k of w.side) {
+        if (!at.has(k)) at.set(k, []);
+        at.get(k).push({ L: L + 1, end: true });
+      }
     }
     if (over) addPenalty('level', P.level * over, `${graph.items.get(p.l.itemId).name} 的高架段和别的高架段撞在一起（${opt.maxLevel} 层都占满了，升到第 ${L} 层）`, itemBids(p.l.itemId));
   }

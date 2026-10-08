@@ -22,6 +22,7 @@ export function translateLayout(L, dx, dy) {
   for (const s of L.sorterList) { s.col += dx; s.cx += dx; }
   for (const s of L.stations || []) { s.x += dx; s.y += dy; }
   for (const p of L.power?.nodes || []) { p.x += dx; p.y += dy; }
+  for (const h of L.powerHoles || []) h.x += dx; // 配电站空位按行号记纵向位置，行的 y 在 rowCy 里已经平移
   L.streets = (L.streets || []).map((x) => x + dx);
   for (const p of L.pilers || []) { p.x += dx; p.y += dy; }
   for (const c of L.coaters || []) { c.x += dx; c.y += dy; c.ix += dx; c.iy += dy; }

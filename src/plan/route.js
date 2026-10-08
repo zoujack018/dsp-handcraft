@@ -20,6 +20,7 @@ import { placeTracks } from './layout/tracks.js';
 import { placePorts } from './layout/ports.js';
 import { liftLegs, estimateLegs } from './layout/elevation.js';
 import { scoreLayout } from './layout/score.js';
+import { powerHoles } from './layout/powerholes.js';
 
 export { STATION_SIZE, TRUNK, STATION_COLS, STATION_SLOTS } from './layout/shared.js';
 
@@ -63,6 +64,8 @@ export const DEFAULTS = {
   rawChain: 3, // 同一种原料的一条带最多串几个相邻通道；串与不串按代价（含入口代价 entryWeight）试算后取便宜的
   crowdWeight: 6, // 选竖直列时，这一列每已有一条区间相交的高架段，按多绕这么多格计
   power: null, // 供电方式 'tesla' | 'substation'：搜索时把"附近没空地插塔、只能外沿加地"的面积计入成本
+  // 卫星配电站够不着时在行里挖空位再排一遍（layout/powerholes.js）：每段搜索慢约 1.3 倍，网页标准档、细档打开，快档不开（用户 2026/10/08 定）
+  powerHoles: false,
   powerOptions: {},
   // 星际物流站靠左侧：{ stack: 1|2|4 } 站输出货物的集装数量。原料、成品都进出物流站，不再有边缘接口
   station: null,
@@ -86,6 +89,21 @@ export function route(graph, rows, options = {}, pads = {}, blocks = null, stree
   const opt = { ...DEFAULTS, ...options, penalty: { ...DEFAULTS.penalty, ...(options.penalty || {}) } };
   // 接物流站时进出站的带子都挤在主干走廊里竖直走，多给两层高架
   if (options.station && options.maxLevel == null) opt.maxLevel = 6;
+  const first = layout(graph, rows, options, opt, pads, blocks, streets, null);
+  // 卫星配电站：第一遍估供电有够不着的（以前退火只好另起一行放配电站），按第一遍的位置在行里挖空位（layout/powerholes.js）再排一遍，
+  // 两遍取代价低的；第一遍够得着的一字不变。有辅路时不挖（辅路按列预留，挪动会压上去）。
+  // 第二遍的提前拒绝（2026/10/08，结果逐字不变）：打分算到的下限已经不低于第一遍的代价，第二遍不可能被选上，不再往下算、交回第一遍；
+  // 下限还低于第一遍时才问退火那句（place.js 的 rejectFloor）——那时退火要拒的话两遍都注定被拒，记进 stateMemo 的下限照样成立
+  if (opt.power !== 'substation' || !opt.powerHoles || first.rejected || !first.powerPlan?.lonely?.length || (Array.isArray(streets) && streets.length)) return first;
+  const plan = powerHoles(first, opt);
+  if (!plan.length) return first;
+  const ask = opt.rejectFloor;
+  const second = layout(graph, rows, options, { ...opt, rejectFloor: (floor) => floor >= first.cost || (ask ? ask(floor) : false) }, pads, blocks, streets, plan);
+  return second.cost < first.cost ? second : first;
+}
+
+/** 排一遍：holePlan 是要挖的配电站空位（第二遍才有） */
+function layout(graph, rows, options, opt, pads, blocks, streets, holePlan) {
   // 物流站靠左侧：站在最左侧 7 列，紧挨着一列主干走廊，生产区全在右边
   const side = !!opt.station;
   const R = rows.length;
@@ -97,10 +115,10 @@ export function route(graph, rows, options = {}, pads = {}, blocks = null, stree
   // 上下文 c：后面各步往里写的字段在这里先按写入的先后占好位置（值是 undefined，和还没写时读出来一样；键的先后也和以前一样）。
   // 不先占位的话，一个对象上陆续加进四十多个属性，V8 会把它转成字典模式（每次 route() 都要转一次），之后每一步读 c 都是查哈希表
   const c = {
-    graph, rows, pads, blocks, streets, options, opt, side, R, P, penalties, addPenalty,
+    graph, rows, pads, blocks, streets, options, opt, side, R, P, penalties, addPenalty, holePlan,
     // layout/positions.js
     addLoad: undefined, atPort: undefined, bestColumn: undefined, blocksOf: undefined, corridor: undefined, entryCol: undefined, exitCol: undefined, extraBottom: undefined, extraTop: undefined,
-    itemBids: undefined, pos: undefined, rowAbove: undefined, rowBelow: undefined, stationX: undefined, streetX: undefined, xL: undefined, xR: undefined,
+    itemBids: undefined, pos: undefined, powerHoles: undefined, rowAbove: undefined, rowBelow: undefined, stationX: undefined, streetX: undefined, xL: undefined, xR: undefined,
     // layout/belts.js
     beltCap: undefined, chains: undefined, legs: undefined, rawCap: undefined, segments: undefined, sides: undefined,
     // layout/tracks.js、layout/ports.js（height 两步都写）

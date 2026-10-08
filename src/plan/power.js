@@ -9,7 +9,7 @@
 // 供电范围测试图 T 组电力感应塔接通 3 台、S 组卫星配电站接通 4 台，按中心距排即 7、7.07、8 格和 19、19.8、21、21.21 格，
 // 下一台 8.49 格、22 格没接通）。半径按官方米数在赤道上折成格子（电力感应塔 7.96 格、卫星配电站 20.69 格），
 // 比实测略小一点，可能是测试图贴的位置不在赤道、格子窄一些；赤道上是最紧的情况，不再另扣余量。
-// 连接距离还没实测，仍按官方米数折格再扣 1 格。
+// 连接距离 2026/10/08 实测（验证合集：一排塔间距 16、17、18、19、20 格，只有 16、17 连上）：官方 22 m ÷ 1.2566 = 17.5 格，不扣余量。
 //
 // 放在哪：
 //   电力感应塔 1×1：任何没有工厂、地面带、分拣器经过、头顶也没有高架带的空格。
@@ -27,7 +27,7 @@ export const POWER = {
   substation: { name: '卫星配电站', itemId: 2212, model: 68, size: 3, cover: 26, link: 53 },
 };
 export const COVER_MARGIN = 0; // 覆盖：已实测，按中心点判，不扣余量
-export const LINK_MARGIN = 1; // 连接：未实测，保守扣 1 格
+export const LINK_MARGIN = 0; // 连接：实测 17 格通、18 格不通，和 22 m ÷ 1.2566 = 17.5 一致，不扣（离赤道远格子窄，同样格数更短，只会更宽裕）
 /** 覆盖半径与连接距离（格） */
 export function powerReach(type, { cellM = CELL_M, coverMargin = COVER_MARGIN, linkMargin = LINK_MARGIN } = {}) {
   const s = POWER[type];
@@ -121,14 +121,16 @@ function mark(L, rowGaps, power, occ, T) {
     const hw = ((p.g.bodyWidth ?? 3) - 1) / 2;
     const below = p.g.bodyBelow ?? ((p.g.bodyHeight ?? 3) - 1) / 2;
     const above = (p.g.bodyHeight ?? 3) - 1 - below;
-    // 本体外多算几格：卫星配电站按 gamedata.js 的 substationPad（化工厂左右 1 格、下沿 1 行，叠层研究站和对撞机四周 1 格）；
+    // 本体外多算几格：卫星配电站按 gamedata.js 的 substationPad（化工厂左 1 格、下沿 1 行，叠层研究站四周 1 格，对撞机左 2 下 2 右 1 上 1，2026/10/08 实测）；
     // 别的设施能贴就不多算，不能贴左右各 1 格（只看工厂种类，同一组每台都一样，提到循环外）
-    const sp = rowGaps ? { x: 0, below: 0, above: 0 } : power === 2212 ? substationPad(p.g).pad : { x: power && powerHugs(power, p.g) ? 0 : 1, below: 0, above: 0 };
-    const ex = sp.below || sp.above ? sp.x : 0;
+    const hug = power && powerHugs(power, p.g) ? 0 : 1;
+    const sp = rowGaps ? { left: 0, right: 0, below: 0, above: 0 } : power === 2212 ? substationPad(p.g).pad : { left: hug, right: hug, below: 0, above: 0 };
+    const exL = sp.below || sp.above ? sp.left : 0;
+    const exR = sp.below || sp.above ? sp.right : 0;
     for (const cx of p.centers) {
-      for (let y = cy - below; y <= cy + above; y++) line(cx - hw - sp.x, cx + hw + sp.x, y);
-      for (let k = 1; k <= sp.below; k++) line(cx - hw - ex, cx + hw + ex, cy - below - k);
-      for (let k = 1; k <= sp.above; k++) line(cx - hw - ex, cx + hw + ex, cy + above + k);
+      for (let y = cy - below; y <= cy + above; y++) line(cx - hw - sp.left, cx + hw + sp.right, y);
+      for (let k = 1; k <= sp.below; k++) line(cx - hw - exL, cx + hw + exR, cy - below - k);
+      for (let k = 1; k <= sp.above; k++) line(cx - hw - exL, cx + hw + exR, cy + above + k);
       put(T, cx, cy, p.g.item, p.bid);
     }
   }
@@ -478,7 +480,19 @@ export function placePower(L, type, opt = {}) {
   const b0 = bounds(W, H, { left: 0, right: 0, bottom: 0, top: 0 });
   for (let x = 0; x < W; x++) for (let y = 0; y < H; y++) if (freeIn(x, y, b0)) inner.push({ x, y });
   const need = new Set(targets.map((_, i) => i));
-  let nodes = greedy(inner, need);
+  // 搜索时在行里挪开工厂挖出来的配电站空位（layout/powerholes.js）都放上、后面也不删：空位是为它挪的，不放就白留一段缝；
+  // 还没覆盖的再在所有空地里挑
+  let nodes = [];
+  for (const h of L.powerHoles ?? []) {
+    if (!(h.shift > 0)) continue;
+    const c = inner.find((q) => q.x === h.x && q.y === L.rowCy[h.row]);
+    if (!c || !nodes.every((p) => apart(spec, p, c))) continue;
+    c.cov ??= covers(c);
+    for (const i of c.cov) need.delete(i);
+    nodes.push(c);
+  }
+  const fixed = new Set(nodes);
+  nodes = nodes.concat(greedy(inner, need, nodes));
   const extend = { left: 0, right: 0, bottom: 0, top: 0 };
   if (need.size) {
     // 布局里够不着的，用估算挑出的那几条边的外沿
@@ -500,7 +514,7 @@ export function placePower(L, type, opt = {}) {
   for (const c of nodes) for (const i of c.cov) count.set(i, (count.get(i) || 0) + 1);
   for (let j = nodes.length - 1; j >= 0; j--) {
     const c = nodes[j];
-    if (c.cov.every((i) => count.get(i) > 1)) {
+    if (!fixed.has(c) && c.cov.every((i) => count.get(i) > 1)) {
       for (const i of c.cov) count.set(i, count.get(i) - 1);
       nodes.splice(j, 1);
     }
@@ -531,7 +545,7 @@ export function placePower(L, type, opt = {}) {
         for (let b = a + 1; b < nodes.length; b++) {
           const A = nodes[a];
           const B = nodes[b];
-          if ((A.x - B.x) ** 2 + (A.y - B.y) ** 2 > reach2) continue;
+          if (fixed.has(A) || fixed.has(B) || (A.x - B.x) ** 2 + (A.y - B.y) ** 2 > reach2) continue;
           const only = [];
           for (const i of A.cov) if (cnt.get(i) - 1 - (B.set.has(i) ? 1 : 0) === 0) only.push(i);
           for (const i of B.cov) if (!A.set.has(i) && cnt.get(i) === 1) only.push(i);
@@ -557,7 +571,7 @@ export function placePower(L, type, opt = {}) {
     // 再删一次多余的
     for (let j = nodes.length - 1; j >= 0; j--) {
       const c = nodes[j];
-      if (c.cov.every((i) => cnt.get(i) > 1)) {
+      if (!fixed.has(c) && c.cov.every((i) => cnt.get(i) > 1)) {
         for (const i of c.cov) cnt.set(i, cnt.get(i) - 1);
         nodes.splice(j, 1);
       }

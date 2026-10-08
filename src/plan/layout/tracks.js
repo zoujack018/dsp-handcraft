@@ -21,6 +21,13 @@ export function placeTracks(c) {
   const segsOf = [];
   for (let c = 0; c <= R; c++) segsOf.push([]);
   for (let i = 0; i < segments.length; i++) segsOf[segments[i].ch]?.push(segments[i]);
+  // 不能同轨的两段（layout/belts.js 的 noTrackWith：喷涂时同一通道里由高架相连的放料段、取料段）：对方已经分在这条轨道上就跳过
+  const partnerOn = (s, t) => {
+    const ids = s.noTrackWith;
+    if (!ids) return false;
+    for (let i = 0; i < ids.length; i++) if (segments[ids[i]].track === t) return true;
+    return false;
+  };
   for (let c = 0; c <= R; c++) {
     const ch = channels[c];
     const tracks = ch.tracks;
@@ -39,7 +46,7 @@ export function placeTracks(c) {
       const s = segs[k];
       let t = -1;
       for (let i = 0; i < tracks.length; i++) {
-        if (s.a >= tracks[i] + 1) {
+        if (s.a >= tracks[i] + 1 && !partnerOn(s, i)) {
           t = i;
           break;
         }

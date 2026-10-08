@@ -77,7 +77,7 @@ export function finishOne(cand, ctx) {
   if (spray || pile) {
     addAddons(L, { spray, pile, sprayRate });
     // 有带子没喷上（没地方骑喷涂机或接不上增产剂带）：没喷到的料进工厂就没有增产效果，按不可行处理
-    if (spray && L.sprayMissed) {
+    if (spray && L.sprayMissed && !ctx.allowMissed) { // allowMissed：实验开关（考卷量上界用），漏喷不算不可行
       L.feasible = false;
       L.penalties = [...L.penalties, { kind: 'spray', amount: 0, msg: `${L.sprayMissed} 条进工厂的带没喷上增产剂（${L.addonNotes.join('；')}）` }];
     }
@@ -151,6 +151,7 @@ function* planFrame(calc, options) {
   if (station?.place === 'edge') Object.assign(routeOptions, { externalStack: station.stack, stationHoles: options.stationHoles ?? true, freeEnds: options.freeEnds ?? true, stationSlots: station.slots });
   const power = options.power && options.power !== 'none' ? options.power : null;
   if (power) Object.assign(routeOptions, { power, powerOptions: options.powerOptions });
+  if (options.powerHoles) routeOptions.powerHoles = true; // 卫星配电站在行里挖空位（route.js，标准档、细档开）
   // 喷增产剂：走线要给每条进工厂的带留喷涂机的空当（layout/belts.js 的 sprayAll），不喷时几何一字不动
   if (calc.spray) routeOptions.sprayAll = true;
   // 喷涂时放开第 4 条轨（route.js 的 fourthTrack：每根分拣器都够得着才算数）；不喷的照旧最多 3 条
@@ -165,7 +166,7 @@ function* planFrame(calc, options) {
     // 帮手线程按 snapshotMs 开关自己装钩子（web/src/worker.js 的 task 分支）
     return o;
   };
-  const ctx = (aw = routeOptions.areaWeight ?? 1) => ({ station: station && { ...station }, power, powerOptions: options.powerOptions, maxWidth: routeOptions.maxWidth, maxHeight: routeOptions.maxHeight, noGrounding: !!options.noGrounding, aw, spray: calc.spray ? calc.spray.level : 0, pile: !!options.pile, sprayRate: calc.spray?.rate ?? 0, burn: options.burn || false });
+  const ctx = (aw = routeOptions.areaWeight ?? 1) => ({ station: station && { ...station }, power, powerOptions: options.powerOptions, maxWidth: routeOptions.maxWidth, maxHeight: routeOptions.maxHeight, noGrounding: !!options.noGrounding, aw, spray: calc.spray ? calc.spray.level : 0, pile: !!options.pile, sprayRate: calc.spray?.rate ?? 0, burn: options.burn || false, allowMissed: !!routeOptions.allowMissed });
 
   let result = yield { kind: 'search', graph, options: searchOpts(routeOptions, options.timeLimit ?? null) };
 
@@ -283,7 +284,7 @@ function* planFrame(calc, options) {
 export function finishContext(calc, options) {
   const ro = options.routeOptions || {};
   const station = ro.station ? { place: 'side', stack: ro.station.stack, slots: ro.station.slots } : ro.externalStack != null ? { place: 'edge', stack: ro.externalStack, slots: ro.stationSlots } : null;
-  return { station, power: ro.power ?? null, powerOptions: ro.powerOptions, maxWidth: ro.maxWidth, maxHeight: ro.maxHeight, noGrounding: !!options.noGrounding, aw: ro.areaWeight ?? 1, spray: calc.spray ? calc.spray.level : 0, pile: !!options.pile, sprayRate: calc.spray?.rate ?? 0, burn: options.burn || false };
+  return { station, power: ro.power ?? null, powerOptions: ro.powerOptions, maxWidth: ro.maxWidth, maxHeight: ro.maxHeight, noGrounding: !!options.noGrounding, aw: ro.areaWeight ?? 1, spray: calc.spray ? calc.spray.level : 0, pile: !!options.pile, sprayRate: calc.spray?.rate ?? 0, burn: options.burn || false, allowMissed: !!ro.allowMissed };
 }
 
 /** 就地执行一个请求 */

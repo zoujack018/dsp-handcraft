@@ -300,11 +300,16 @@ export function powerHugs(powerItemId, g) {
  * 下沿照旧隔 1 行；独立检查只按实测报（P4 紧贴能放），不跟着收紧。量清楚哪种撞了再放宽。
  */
 export function substationPad(g) {
-  if (g.kind === 'chemical') return { pad: { x: 1, below: 1, above: 0 }, margin: { side: 0, below: 0.5, above: 0 } };
-  if (g.kind === 'lab' && (g.levels ?? 1) > 1) return { pad: { x: 1, below: 1, above: 1 }, margin: { side: 1, below: 1, above: 1 } };
-  if (g.kind === 'collider') return { pad: { x: 1, below: 1, above: 1 }, margin: { side: 0.5, below: 0.5, above: 0.5 } };
-  if (g.kind === 'smelter' || g.kind === 'assembler' || g.kind === 'lab') return { pad: { x: 0, below: 0, above: 0 }, margin: null };
-  return { pad: { x: 1, below: 0, above: 0 }, margin: null };
+  // 2026/10/08 验证合集实测（S 组），接着第六张图：
+  //   化工厂：左边紧贴撞、左边隔 1 格能放；右边紧贴（含上下错 1 行）能放；下沿紧贴撞；上沿、斜角能放 → 左 1 格、下 1 行，右、上不留
+  //   研究站叠 2~8 层右边紧贴都撞，叠 5 层斜角、上面紧贴也撞（单层能贴）→ 叠层四周 1 格（实测 2~8 层、10 层）
+  //   对撞机：右边、上面、右上斜角隔 1 格能放；左边隔 1 格撞、下面紧贴和隔 1 格都撞 → 左 2 格、下 2 行（隔 2 没量，推断），右、上 1 格
+  // pad 是规划器留的格数，margin 是独立检查里配电站 3×3 和碰撞体之间要隔开的距离（紧贴能放的为 0）
+  if (g.kind === 'chemical') return { pad: { left: 1, right: 0, below: 1, above: 0 }, margin: { left: 0.5, right: 0, below: 0.5, above: 0 } };
+  if (g.kind === 'lab' && (g.levels ?? 1) > 1) return { pad: { left: 1, right: 1, below: 1, above: 1 }, margin: { left: 1, right: 1, below: 1, above: 1 } };
+  if (g.kind === 'collider') return { pad: { left: 2, right: 1, below: 2, above: 1 }, margin: { left: 1.5, right: 0.5, below: 1.5, above: 0.5 } };
+  if (g.kind === 'smelter' || g.kind === 'assembler' || g.kind === 'lab') return { pad: { left: 0, right: 0, below: 0, above: 0 }, margin: null };
+  return { pad: { left: 1, right: 1, below: 0, above: 0 }, margin: null };
 }
 /**
  * 分拣器在工厂一端的落点（相对工厂中心）。off = 分拣器所在列（接的那格带子的 x）− 工厂中心。
@@ -353,7 +358,9 @@ export const THERMAL_BANK = {
   yaw: 90,
   modelIndex: 54,
   slot: { 1: [0, 1.6854], 0: [0.8601, 1.6862], 3: [0, -0.6916], 4: [0.8655, -0.6908] },
-  box: { dx: 0.43, dy: 0.5, w: 6, h: 3.4 },
+  // 碰撞框（2026/10/08 验证合集 R 组实测）：两台左右中心隔 7 能放、隔 6 撞；上下隔 4 能放、隔 3 撞；电力感应塔在左右 3 格撞、4 格能放
+  // → 横向 6.5、竖向 3.5，不偏（以前按用户蓝图反推的 6 × 3.4、往右偏 0.43 是估计）。框往上挪半格仍是推断（上下只测了对称的两台）
+  box: { dx: 0, dy: 0.5, w: 6.5, h: 3.5 },
 };
 const isSupported = (r) => r.factories.some((f) => FACTORY_GEOMETRY[FACTORY_KIND[f]]?.supported);
 /**

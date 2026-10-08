@@ -9,6 +9,12 @@ import { CH_PITCH, STATION_COLS, TOL, permutations } from './shared.js';
  * 留 4 格刚好有两个能骑的位置（头顶被别的高架压住一个还有备胎）。
  */
 const SPRAY_GAP = 4;
+/**
+ * 喷涂机骑在高架上（用户 2026/10/08 实测：喷涂机能骑在高架带上，增产剂带在它上一层横穿）：最后一个生产访问的段尾不再在地面
+ * 多留 4 格空当，喷涂机骑在接下去那截高架段紧挨段尾的 5 格水平走行上（layout/elevation.js 的 legWindow），
+ * 所以那截高架的竖直列离段尾至少 LEG_WINDOW 格。opt.sprayOnLegs 关掉时回到地面空当
+ */
+const LEG_WINDOW = 5;
 /** 喷涂时放料段和取料段在地面接成一条（见 consider 里的 joinCost）：cols 里这一截不是竖直列，用这个标记 */
 const JOIN = 'join';
 
@@ -99,6 +105,11 @@ export function routeItems(c) {
   const { P, R, addLoad, addPenalty, atPort, bestColumn, blocksOf, entryCol, exitCol, graph, itemBids, opt, pos, rows, side, xL, xR } = c;
   // 喷增产剂（所有原料和中间产物）：走线给每条要进工厂的带留出喷涂机的空当，见 SPRAY_GAP 和下面标 sprayAll 的几处
   const sprayAll = !!opt.sprayAll;
+  const legSpray = sprayAll && opt.sprayOnLegs !== false; // 中间产物的喷涂机骑在段尾那截高架上（见 LEG_WINDOW）
+  // 实验开关（考卷量上界用，网页不暴露）：opt.sprayGapOff 写 'in' / 'mid'（可用 + 连），那种地面空当不留、喷涂机也不放（配合 routeOptions.allowMissed）
+  const gapOff = new Set(String(opt.sprayGapOff ?? '').split(/[+,]/).filter(Boolean));
+  const offIn = gapOff.has('in');
+  const offMid = gapOff.has('mid');
   // ---------- B. 每种物品的路线 ----------
   const sides = new Map(); // 块 ID -> { bottom, top }，各是 itemId -> 'in' | 'out'
   for (const bid of pos.keys()) sides.set(bid, { bottom: new Map(), top: new Map() });
@@ -157,20 +168,20 @@ export function routeItems(c) {
   const CHN = R + 1;
   const colMemo = new Map();
   let loadVer = 0; // addLoad 调过几次：试算过的方案在这之后没变过 colLoad 就还能直接用
-  const column = (xs, d0, xd, d1, c1, c2) => {
+  const column = (xs, d0, xd, d1, c1, c2, g0min = 1) => {
     let lo = xL;
     let hi = xR + 1;
-    if (d0 > 0) lo = Math.max(lo, xs + 1);
-    else if (d0 < 0) hi = Math.min(hi, xs - 1);
+    if (d0 > 0) lo = Math.max(lo, xs + g0min);
+    else if (d0 < 0) hi = Math.min(hi, xs - g0min);
     else return null;
     if (d1 > 0) hi = Math.min(hi, xd - 1);
     else if (d1 < 0) lo = Math.max(lo, xd + 1);
     else return null;
     if (lo > hi) return null;
-    if (!(xs + XO >= 0 && xs + XO < XW && xd + XO >= 0 && xd + XO < XW && c1 >= 0 && c1 < CHN && c2 >= 0 && c2 < CHN)) return bestColumn(xs, d0, xd, d1, c1, c2);
-    const key = ((((xs + XO) * XW + xd + XO) * 3 + d0 + 1) * 3 + d1 + 1) * CHN * CHN + c1 * CHN + c2;
+    if (!(xs + XO >= 0 && xs + XO < XW && xd + XO >= 0 && xd + XO < XW && c1 >= 0 && c1 < CHN && c2 >= 0 && c2 < CHN)) return bestColumn(xs, d0, xd, d1, c1, c2, g0min);
+    const key = (((((xs + XO) * XW + xd + XO) * 3 + d0 + 1) * 3 + d1 + 1) * CHN * CHN + c1 * CHN + c2) * 2 + (g0min > 1 ? 1 : 0);
     let r = colMemo.get(key);
-    if (r === undefined) colMemo.set(key, (r = bestColumn(xs, d0, xd, d1, c1, c2)));
+    if (r === undefined) colMemo.set(key, (r = bestColumn(xs, d0, xd, d1, c1, c2, g0min)));
     return r;
   };
   const addLoadM = (x, c1, c2) => {
@@ -538,7 +549,8 @@ export function routeItems(c) {
   const bCols = [];
   /**
    * 访问 j 排在第 i 个、流向 d（back = d < 0）时的段只取决于 j、i、d：各种顺序、各种流向组合共用一份。
-   * 返回下标 at = (j·k + i)·2 + back：段的两端是 GA[at]、GB[at]，GH[at] 为 1 是喷涂机的空当被站列截短了
+   * 返回下标 at = (j·k + i)·2 + back：段的两端是 GA[at]、GB[at]，GH[at] 第 0 位是喷涂机的空当被站列截短了、
+   * 第 1 位是原料的喷涂机骑在入口那截高架上（legIn）、第 2 位是骑在入口往外接出的那几节上（edgeIn）
    */
   const segOf = (j, i, back) => {
     const at = (j * vk + i) * 2 + back;
@@ -550,9 +562,28 @@ export function routeItems(c) {
     const exit = i < vk - 1 || outRate > 0;
     let a = v.tmin;
     let b = v.tmax;
-    // 喷涂机的空当：原料在入口那头、中间产物在最后一个生产访问的段尾，各多留 SPRAY_GAP 格直带
-    const gIn = sprayAll && isRaw && i === 0 ? SPRAY_GAP : 0;
-    const gOut = i === gapAt ? SPRAY_GAP : 0;
+    // 喷涂机的空当：原料在入口那头、中间产物在最后一个生产访问的段尾，各多留 SPRAY_GAP 格直带；
+    // 中间产物骑高架（legSpray）时段尾不留，窗口在接下去那截高架上
+    let gIn = sprayAll && isRaw && i === 0 && !offIn ? SPRAY_GAP : 0;
+    const gOut = i === gapAt && !legSpray ? SPRAY_GAP : 0;
+    // 原料的喷涂机骑在入口那截高架上（legIn）：不留地面空当时的段头离入口列至少 LEG_WINDOW + 1 格（高架在段头前水平走够 5 格），
+    // 窗口就是紧挨段头的那 5 格；不够长时（段头贴着边缘 / 走廊）照旧留地面空当。
+    // 边缘放站（freeEnds）时入口没有高架、站用 A* 直接接到段头，没处骑，照旧留地面空当。
+    // 不接站时这一行地面到边缘都空着的话，layout/ports.js 会把段在地面一直接到边缘（高架作废）：窗口那几格就成了段里的地面直带，
+    // 喷涂机落地骑在原来段头前的那几格上（sprayGuards 按地面空当护着）
+    // 不接站（没有站列、也不是边缘放站）时原料入口的空当一律不留在地面：高架够长就骑高架（legIn），不够长时喷涂机骑在
+    // 入口往外接出的两三节上（'edgeIn'，plan/addons.js 的 pre：那几格在图外的边距里，比段头多留 4 格便宜）
+    let win = 0;
+    if (gIn && legSpray && !opt.freeEnds) {
+      const head = d > 0 ? (side ? Math.max(v.tmin - 1, STATION_COLS - 1) : v.tmin - 1) : v.tmax + 1;
+      if (Math.abs(head - entryCol(d)) - 1 >= LEG_WINDOW) {
+        gIn = 0;
+        win = 2;
+      } else if (!side) {
+        gIn = 0;
+        win = 4;
+      }
+    }
     if (entry) d > 0 ? (a -= 1 + gIn) : (b += 1 + gIn);
     if (exit) d > 0 ? (b += 1 + gOut) : (a -= 1 + gOut);
     // 物流站靠左侧时段不许伸进站列（站体、车道都在那边）；被截短的空当骑不了喷涂机，按走不通重罚
@@ -564,7 +595,7 @@ export function routeItems(c) {
     if (v.s < 0) sortEv(v);
     GA[at] = a;
     GB[at] = b;
-    GH[at] = short;
+    GH[at] = short | win;
     return at;
   };
   /** 顺序 ix 下枚举各段流向，逐个和最好的比；split：第 0 段从 m 劈开（和流向无关，mask 第 0 位恒为 0） */
@@ -646,7 +677,7 @@ export function routeItems(c) {
           acc += SV[t];
           worst = Math.min(worst, acc);
         }
-        sh += GH[at];
+        sh += GH[at] & 1;
         len += GB[at] - GA[at] + 1;
         sAcc[off + p] = acc;
         sWorst[off + p] = worst;
@@ -699,7 +730,7 @@ export function routeItems(c) {
       if (gapAt >= 0 && gapAt < k - 1) {
         const vp = visits[ix[gapAt]];
         const vc = visits[ix[gapAt + 1]];
-        if (vp.ch === vc.ch && mD[gapAt] === mD[gapAt + 1] && (mD[gapAt] > 0 ? vc.tmin - vp.tmax : vp.tmin - vc.tmax) >= 1 + SPRAY_GAP) {
+        if (vp.ch === vc.ch && mD[gapAt] === mD[gapAt + 1] && (mD[gapAt] > 0 ? vc.tmin - vp.tmax : vp.tmin - vc.tmax) >= (offMid ? 1 : 1 + SPRAY_GAP)) {
           const ap = mAt[gapAt];
           const ac = mAt[gapAt + 1];
           canJoin = true;
@@ -733,7 +764,8 @@ export function routeItems(c) {
         }
         const li = i * 4 + ((mask >> i) & 3);
         let bc = lk[li];
-        if (bc === undefined) bc = lk[li] = column(mOut[i], mDout[i], mIn[i + 1], mD[i + 1], mCh[i], mCh[i + 1]);
+        // 段尾骑喷涂机的那截高架（legSpray 的 gapAt）：竖直列离段尾至少 LEG_WINDOW 格，窗口的 5 格直带才放得下
+        if (bc === undefined) bc = lk[li] = column(mOut[i], mDout[i], mIn[i + 1], mD[i + 1], mCh[i], mCh[i + 1], legSpray && i === gapAt ? LEG_WINDOW : 1);
         const x = bc?.x ?? null;
         cols[i] = x;
         if (x === null) bad++;
@@ -863,7 +895,7 @@ export function routeItems(c) {
       const a = GA[at];
       const b = GB[at];
       // gap：喷涂机的空当在哪头；'mid' 是这一段和下一个访问在地面接成一条（bCols 里是 JOIN），空当在中间
-      TG[i] = { v: visits[bJ[i]], a, b, d, split: null, cont: null, entryX: d > 0 ? a : b, exitX: d > 0 ? b : a, dout: d, gap: sprayAll && isRaw && i === 0 ? 'in' : i === gapAt ? (bCols[i] === JOIN ? 'mid' : 'out') : null };
+      TG[i] = { v: visits[bJ[i]], a, b, d, split: null, cont: null, entryX: d > 0 ? a : b, exitX: d > 0 ? b : a, dout: d, gap: sprayAll && isRaw && i === 0 ? (offIn ? null : GH[at] & 2 ? 'legIn' : GH[at] & 4 ? 'edgeIn' : 'in') : i === gapAt ? (bCols[i] === JOIN ? (offMid ? 'join' : 'mid') : 'out') : null };
     }
     return { cost: bCost, shortfall: bShortfall, bad: bBad, sprayShort: bSpray, geo: TG.slice(0, k), cols: bCols.slice(0, k - 1), flow };
   };
@@ -888,7 +920,7 @@ export function routeItems(c) {
       const g = geo[i];
       const v = g.v;
       // 喷涂时在地面接成一条的放料段 + 取料段（gap 'mid'）：和下一个访问合成一段，取放口先放后取，空当在最后一个放料口（gapX）下游
-      const g2 = g.gap === 'mid' ? geo[i + 1] : null;
+      const g2 = g.gap === 'mid' || g.gap === 'join' ? geo[i + 1] : null; // 'join'：实验开关 offMid 下接成一条但不留空当
       let nt = 0;
       for (const p of v.P) TT[nt++] = { bid: p.bid, io: 'out', rate: f.perFactory };
       for (const c of v.C) TT[nt++] = { bid: c.p.bid, io: 'in', rate: c.d };
@@ -908,8 +940,11 @@ export function routeItems(c) {
         entryX: g.entryX,
         exitX: g2 ? g2.exitX : g.exitX,
         rate: flow,
-        sprayGap: g.gap ?? null, // 喷涂机的直带空当留在哪头（'in' 入口那头 / 'out' 段尾 / 'mid' 最后一个放料口之后），见 SPRAY_GAP
-        gapX: g2 ? (g.d > 0 ? v.tmax : v.tmin) : null, // 'mid' 的空当从哪一格的下游起（最后一个放料口所在的列）
+        // 喷涂机的直带空当留在哪头：'in' 入口那头 / 'out' 段尾 / 'mid' 最后一个放料口之后 / 'legOut' 段尾接下去那截高架上 /
+        // 'legIn' 段头前面入口那截高架上（都是 LEG_WINDOW 格）/ 'edgeIn' 边缘入口往外接出的几节上（plan/addons.js 放）
+        sprayGap: g.gap === 'out' && legSpray && !g2 ? 'legOut' : g.gap === 'join' ? null : g.gap ?? null,
+        // 'mid'：空当从哪一格的下游起（最后一个放料口所在的列）；'legOut'：段尾那格（窗口从它的下游一格起）；'legIn'：段头那格（窗口是它上游的格）
+        gapX: g2 ? (g.d > 0 ? v.tmax : v.tmin) : g.gap === 'out' && legSpray ? g.exitX : g.gap === 'legIn' ? g.entryX : null,
         taps: TT.slice(0, nt),
         id: segments.length,
       });
@@ -921,12 +956,23 @@ export function routeItems(c) {
         for (const c of v.C) sides.get(c.p.bid)[sideOf(c.p, v.ch)].set(f.itemId, 'in');
         if (g2) for (const c of g2.v.C) sides.get(c.p.bid)[sideOf(c.p, v.ch)].set(f.itemId, 'in');
       }
-      if (pending) pending.to = seg.id; // 高架段的 to 先占好位置（-1），这里填上
+      if (pending) {
+        pending.to = seg.id; // 高架段的 to 先占好位置（-1），这里填上
+        if (pending.kind === 'in' && seg.sprayGap === 'legIn') pending.spray = { seg: seg.id, side: 'in' }; // 入口那截高架紧挨段头的 5 格骑喷涂机
+        // 同一个通道里前后两段（喷涂时拆开的放料段、取料段，没在地面接成一条）：两段不能同轨——同轨时高架从取料段进口的上空
+        // 走过去、再折回来落进进口，会压到自己那格（layout/tracks.js 据此分轨；不喷时一个通道只有一个访问，用不到）
+        if (sprayAll && pending.kind === 'link' && segments[pending.from].ch === seg.ch) {
+          const from = segments[pending.from];
+          (from.noTrackWith ||= []).push(seg.id);
+          (seg.noTrackWith ||= []).push(from.id);
+        }
+      }
       TQ[nq++] = { seg: seg.id };
       pending = null;
       if (g2) i++; // 下一个访问已经并进这一段
       if (i < geo.length - 1) {
         pending = addLeg({ itemId: f.itemId, kind: 'link', from: seg.id, xv: best.cols[i] ?? (g.dout > 0 ? xR + 1 : xL), rate: flow, id: legs.length, cells: [], to: -1 });
+        if (seg.sprayGap === 'legOut') pending.spray = { seg: seg.id, side: 'out' }; // 这截高架紧挨段尾的 5 格骑喷涂机（elevation.js 的 legWindow）
         TQ[nq++] = { leg: pending.id };
       } else if (outRate > 0) {
         const l = addLeg({ itemId: f.itemId, kind: 'out', from: seg.id, edge: exitCol(g.dout), rate: outRate, id: legs.length, cells: [] });

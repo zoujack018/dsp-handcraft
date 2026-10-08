@@ -38,8 +38,8 @@ function splitFraction(targets, raw, recipes) {
 // 放大 3 倍那套全部可行，线程时间 1.4~1.6 倍；每轮上限跟着 10 → 20 秒，不然 Mac 上引力矩阵 30 一轮（约 12 秒）会被截掉
 const EFFORT = {
   quick: { iterations: 3000, restarts: 2, timeLimit: 20000, targetSpace: 0.5, retries: 1, untilTarget: { maxMs: 15 * 60000 } },
-  normal: { iterations: 3000, restarts: 4, timeLimit: 30000, targetSpace: 0.66, retries: 2, untilTarget: { maxMs: 60 * 60000 } },
-  fine: { iterations: 8000, restarts: 6, timeLimit: null, targetSpace: 0.8, retries: 4, untilTarget: { maxMs: 200 * 60000 } },
+  normal: { iterations: 3000, restarts: 4, timeLimit: 30000, targetSpace: 0.66, retries: 2, untilTarget: { maxMs: 60 * 60000 }, powerHoles: true },
+  fine: { iterations: 8000, restarts: 6, timeLimit: null, targetSpace: 0.8, retries: 4, untilTarget: { maxMs: 200 * 60000 }, powerHoles: true },
 };
 
 /**

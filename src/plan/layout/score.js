@@ -107,7 +107,7 @@ function tracksMsg(t) {
 // 退火里每一步都要打一次分：下面的循环都按下标走（不用 for…of、不解构、不拼临时数组），
 // 函数还没被优化编译时也不会每一步都造迭代结果和小数组；算出的数和以前逐项按同样的先后相加，一字不差
 export function scoreLayout(c) {
-  const { P, R, addPenalty, beltCap, blocks, blocksOf, chains, channels, corridor, graph, height, itemBids, legs, opt, pads, penalties, ports, pos, rawCap, roads, rowAbove, rowBelow, rowCy, rows, segments, side, sides, stations, streetX, xR } = c;
+  const { P, R, addPenalty, beltCap, blocks, blocksOf, chains, channels, corridor, graph, height, itemBids, legs, opt, pads, penalties, ports, pos, powerHoles, rawCap, roads, rowAbove, rowBelow, rowCy, rows, segments, side, sides, stations, streetX, xR } = c;
   // ---------- F. 约束检查与计数 ----------
   // 每块上下两侧要接的物品种数不能超过分拣器位（Map.forEach：不造 [键, 值] 数组）
   sides.forEach((sd, bid) => {
@@ -393,13 +393,17 @@ export function scoreLayout(c) {
       }
       return solid.has(gk(qx, qy));
     };
+    // 高架上的窗口（legOut，喷涂机骑在段尾那截高架上）：地面的分拣器碰不到它，只看取料格两侧有没有一侧能让增产剂带进来
+    const winLeg = new Set();
+    for (let i = 0; i < legs.length; i++) if (legs[i].spray && !legs[i].direct) winLeg.add(legs[i].spray.seg);
     for (let si = 0; si < segments.length; si++) {
       const s = segments[si];
-      if (!s.sprayGap) continue;
+      if (!s.sprayGap || s.sprayGap === 'edgeIn') continue; // edgeIn：喷涂机在图外边距里的入口接出段上，图里没有要护的格
       const cells = sprayGapCells(s);
+      const elevated = winLeg.has(s.id);
       const ok = (ki) => {
         if (ki + 2 >= cells.length) return false; // 空当被站列截短，骑不下
-        for (let j = ki; j <= ki + 2; j++) if (crossed(cells[j], s.y)) return false;
+        if (!elevated) for (let j = ki; j <= ki + 2; j++) if (crossed(cells[j], s.y)) return false;
         return !solidAt(cells[ki], s.y - 1) || !solidAt(cells[ki], s.y + 1);
       };
       if (!ok(0) && !ok(1)) addPenalty('spray', P.spray, `${graph.items.get(s.itemId).name} 的喷涂空当被分拣器或工厂堵住`, itemBids(s.itemId));
@@ -507,6 +511,7 @@ export function scoreLayout(c) {
     hot,
     feasible,
     powerPlan,
+    powerHoles, // 卫星配电站在行里留的空位（layout/powerholes.js），挖出来的供电时必放
     streets: streetX,
     roads,
     trunk: side ? corridor : null, // 主干走廊所在的列（只用于显示和统计）

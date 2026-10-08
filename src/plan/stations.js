@@ -55,13 +55,15 @@ export function obstacles(L) {
     for (let y = Math.min(y0, y1); y <= Math.max(y0, y1); y++) ground.add(key(s.col, y));
   }
   // 喷涂机空当的保护区（喷增产剂时才有）：候选格头顶两层、取料格邻格第 1 层不许别的带子经过，
-  // 接站的线、翘曲器带都绕开（addAddons 自己会把这些格再放开，增产剂带就是要横穿这里）
-  const g = sprayGuards(L.segments);
+  // 接站的线、翘曲器带都绕开（addAddons 自己会把这些格再放开，增产剂带就是要横穿这里；real 是放开前真有带子的格）
+  const real = new Set(belts);
+  const g = sprayGuards(L.segments, L.legs);
   for (const [x, y] of g.guard2) for (const z of [1, 2]) belts.add(cell(x, y, z));
   for (const [x, y] of g.guard1) belts.add(cell(x, y, 1));
+  for (const [x, y, z] of g.guardZ) belts.add(cell(x, y, z)); // 高架上的喷涂窗口：头顶两层、取料格两侧一层
   // 物流站也别贴着喷涂机的空当（站身 ±3 格内不放喷涂机、增产剂带也进不去）
-  const gapNear = new Set([...g.guard2, ...g.guard1].map(([x, y]) => key(x, y)));
-  return { solid, ground, belts, projection, sprayGuard: g, gapNear };
+  const gapNear = new Set([...g.guard2, ...g.guard1, ...g.guardZ].map(([x, y]) => key(x, y)));
+  return { solid, ground, belts, real, projection, sprayGuard: g, gapNear };
 }
 
 // 在有界网格上找一条接线。地面优先，升降昂贵，每拐一次弯多付 TURN 格的代价（走线成直路，不在空地里蛇行）；
@@ -872,7 +874,8 @@ function attachStations0(source, { stack = 1, maxWidth = null, maxHeight = null,
           const cutB = Math.max(lim - 2 - own.length, Math.abs(start[0] - p.x) + Math.abs(start[1] - p.y) + 0.02);
           // 已经选了一个口时，后面的口多半比不过它（实测六七成返回 CUT）：寻路先用桶队列预判（pre）
           const pre = !!chosen;
-          let path = pathfind(start, target, trial, W, H, maxLevel, dir, ignore, targetDir, cutD, pre);
+          // 喷涂机骑在这截高架上的（leg.spray，layout/belts.js 的 legIn）不直接接段头：那截高架要留着，只接原来的出入口
+          let path = leg.spray ? null : pathfind(start, target, trial, W, H, maxLevel, dir, ignore, targetDir, cutD, pre);
           let direct = !!path;
           if (path === CUT) {
             // 直接接的路没找完：原来要么找到一条用不上的路（不再退回），要么找不到（退回原来的出入口）。

@@ -26,12 +26,14 @@ export function groundRoutes(L) {
     for (const p of [...t.main, ...t.extra.flat()]) occupied.add(key(...p));
   }
   // 喷涂机空当的保护区（喷增产剂时才有）：落地的带子也不许压到候选格头顶两层、取料格邻格第 1 层
-  const g = sprayGuards(L.segments);
+  const g = sprayGuards(L.segments, L.legs);
   for (const [x, y] of g.guard2) for (const z of [1, 2]) occupied.add(key(x, y, z));
   for (const [x, y] of g.guard1) occupied.add(key(x, y, 1));
+  for (const [x, y, z] of g.guardZ) occupied.add(key(x, y, z));
   let saved = 0;
   for (const l of L.legs) {
     if (!l.cells.length) continue;
+    if (l.spray) continue; // 喷涂机骑在这截高架上（layout/belts.js 的 legOut）：窗口那几格要在同一层直走，这段不落地
     const ch = L.chains.find((c) => c.parts.some((p) => p.leg === l.id));
     if (!ch) continue;
     const main = chainTiles(L, ch).main;

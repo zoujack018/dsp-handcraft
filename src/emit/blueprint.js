@@ -316,7 +316,7 @@ export function emitBlueprint(graph, layout, opt = {}) {
   }
   for (const c of layout.coaters || []) {
     const b = fresh(2313);
-    b.localOffset = at(c.x, c.y, 0);
+    b.localOffset = at(c.x, c.y, c.z ?? 0); // 骑在第 z 层的带子上（高架上的喷涂窗口，plan/addons.js）
     const yaw = coaterYaw(c.ix - c.x, c.iy - c.y);
     b.yaw = [yaw, yaw];
     b.parameters = null;

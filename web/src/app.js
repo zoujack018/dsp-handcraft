@@ -92,7 +92,7 @@ function handle(m) {
     renderCatalog();
     renderSpec();
   } else if (m.type === 'progress' && m.id === reqId) {
-    progress = { ...progress, ...m }; // 估算 / 轮数（tracked）和每轮的最好结果（onRound）分开报来，合在一起
+    progress = { ...progress, ...m, est0: progress?.est0 ?? m.est ?? null }; // est0 是开搜前报的第一个预计，之后不改
   } else if (m.type === 'preview' && m.id === reqId) {
     onPreview(m); // 搜索中的快照：观摩退火
   } else if (m.type === 'chain' && m.id === chainId) {
@@ -697,23 +697,19 @@ function setBusy(on) {
     const t0 = performance.now();
     timer = setInterval(() => {
       const used = (performance.now() - t0) / 1000;
-      if (!progress?.est) {
+      if (!progress?.est0) {
         setStatus(`正在排布，已用 ${used.toFixed(1)} 秒`);
         return;
       }
-      // 进度：按用时占估算的比例走，后台报来的阶段更靠后就跟上；没出结果前最多到 95%。
-      // est：跑约一秒后是后台按「剩余步数 ÷ 实测速度」估的（自动适应机器快慢），之前是开搜前按配方组数估的公式
-      const est = progress.est;
+      // 预计就是开搜前报的那个数，中途不改；过了预计进度条停在 99%，只提示比预计久
+      const est = Math.ceil(progress.est0);
       const stage = progress.finish?.[1] ? 0.85 + 0.1 * (progress.finish[0] / progress.finish[1]) : progress.search?.[1] ? 0.85 * (progress.search[0] / progress.search[1]) : 0;
-      // 一轮搜完还没达标、接着搜：进度条改按时间上限走，文字说目前最好多少、最多搜多久
-      const short = progress.round && progress.best != null && (!progress.feasible || progress.best < progress.target);
-      const cap = progress.maxMs ? progress.maxMs / 1000 : 0;
-      const frac = short && cap ? used / cap : Math.max(used / est, stage);
-      $('progress-bar').style.width = `${Math.min(95, frac * 100).toFixed(1)}%`;
-      const slow = !short && used > est * 1.15 + 1;
+      const frac = Math.max(used / est, stage);
+      $('progress-bar').style.width = `${Math.min(99, frac * 100).toFixed(1)}%`;
+      const slow = used > est;
       $('progress').classList.toggle('slow', slow);
-      if (short) setStatus(`正在排布，已用 ${used.toFixed(0)} 秒${progress.feasible ? ` · 目前最好 ${Math.round(progress.best * 100)}%` : ''}`);
-      else setStatus(slow ? `正在排布，已用 ${used.toFixed(0)} 秒` : `正在排布：预计约 ${Math.ceil(est)} 秒，已用 ${used.toFixed(1)} 秒`);
+      const best = progress.round && progress.best != null && progress.feasible ? ` · 目前最好 ${Math.round(progress.best * 100)}%` : '';
+      setStatus(slow ? `比预计（约 ${est} 秒）久，还在算，已用 ${used.toFixed(0)} 秒${best}` : `正在排布：预计约 ${est} 秒，已用 ${used.toFixed(1)} 秒${best}`);
     }, 100);
   }
 }

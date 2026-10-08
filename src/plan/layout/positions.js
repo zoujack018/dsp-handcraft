@@ -9,7 +9,7 @@ let busyRowBuf = new Uint8Array(0);
 
 /** route() 的一步：读写共享的布局上下文 c */
 export function placeBlocks(c) {
-  const { blocks, graph, opt, pads, rows, side, streets } = c;
+  const { blocks, graph, holePlan, opt, pads, rows, side, streets } = c;
   // ---------- A. 横向位置 ----------
   const pos = new Map(); // 块 ID -> 位置
   const blocksOf = new Map(); // 组 ID -> 块位置[]
@@ -47,6 +47,28 @@ export function placeBlocks(c) {
     let x = x0;
     for (let i = 0; i < row.length; i++) x = put(row[i], r, x);
     rowWidth = Math.max(rowWidth, x - opt.leftMargin);
+  }
+  // 卫星配电站的空位（第二遍，route.js 按第一遍挖好的 layout/powerholes.js）：照挖的先后把缝右边的工厂往右挪（同一块里缝右边那几台，
+  // 块的右沿跟着挪；后面的块整块挪）。只挖比最宽那行短的行，图的宽不变
+  const holes = holePlan ?? [];
+  if (holes.length) {
+    const F = rows.map((row) => row.flatMap((bid) => pos.get(bid).centers.map((_, i) => ({ p: pos.get(bid), i }))));
+    for (const h of holes) {
+      let last = null;
+      for (let j = h.k; h.shift > 0 && j < F[h.row].length; j++) {
+        const { p, i } = F[h.row][j];
+        p.centers[i] += h.shift;
+        if (p === last) continue;
+        last = p;
+        if (i === 0) {
+          p.x0 += h.shift;
+          p.tmin += h.shift;
+        }
+        p.x1 += h.shift;
+        p.tmax += h.shift;
+      }
+    }
+    for (const row of rows) if (row.length) rowWidth = Math.max(rowWidth, Math.max(...row.map((bid) => pos.get(bid).x1)) + 1 - opt.leftMargin);
   }
   // 主干走廊（物流站右侧那一列）：原料从这里出站、成品从这里进站
   const corridor = TRUNK;
@@ -112,6 +134,8 @@ export function placeBlocks(c) {
       }
       if (side) for (let x = 0; x < STATION_SIZE && x < WB; x++) busyBitsBuf[base + (x >> 5)] |= 1 << (x & 31);
     }
+    // 配电站的空位：竖着走的高架带不从这里穿（行尾、块与块之间的空位不在块的范围里，单独记上）
+    for (const h of holes) for (let x = h.x - 1; x <= h.x + 1; x++) if (x >= 0 && x < WB) busyBitsBuf[h.row * NW + (x >> 5)] |= 1 << (x & 31);
   }
   const busyBits = busyBitsBuf;
   // 备用的按行累计表（按线程复用的缓冲）：表里只有前 NB 格是这一次的（第 0 行清零，后面每行整行写过）；
@@ -133,6 +157,7 @@ export function placeBlocks(c) {
         for (let x = p.x0; x <= p.x1; x++) busy[x] = 1;
       }
       if (side) for (let x = 0; x < STATION_SIZE; x++) busy[x] = 1;
+      for (const h of holes) if (h.row === r) for (let x = h.x - 1; x <= h.x + 1; x++) busy[x] = 1;
       for (let x = 0; x < WB; x++) acc[(r + 1) * WB + x] = acc[r * WB + x] + busy[x];
     }
     busyAcc = acc;
@@ -165,13 +190,14 @@ export function placeBlocks(c) {
   // 前面那份记住以后这里一次都没再碰上，去掉了）
   // crowd 不小于 0：crowdWeight 不为负时，不算拥挤已经不比当前最好的便宜的列不用再数（浮点加非负数不会变小，NaN 照常算）
   const crowdSkip = opt.crowdWeight >= 0;
-  const bestColumn = (xs, d0, xd, d1, c1, c2) => {
-    // 两头各至少隔 1 格（g0、g1 ≥ 1）：流向是 ±1 的整数时，只有 xs、xd 之间那一段列可能合格，不用从 xL 扫到 xR + 1
+  const bestColumn = (xs, d0, xd, d1, c1, c2, g0min = 1) => {
+    // 两头各至少隔 1 格（g0、g1 ≥ 1）：流向是 ±1 的整数时，只有 xs、xd 之间那一段列可能合格，不用从 xL 扫到 xR + 1。
+    // g0min：出段那头至少隔几格（喷涂机骑在这截高架上时要 5 格直带，见 layout/belts.js 的 legOut）
     let x0 = xL;
     let x1 = xR + 1;
     if (isInt(xs, -1e9, 1e9) && isInt(xd, -1e9, 1e9) && (d0 === 1 || d0 === -1) && (d1 === 1 || d1 === -1)) {
-      if (d0 > 0) x0 = Math.max(x0, xs + 1);
-      else x1 = Math.min(x1, xs - 1);
+      if (d0 > 0) x0 = Math.max(x0, xs + g0min);
+      else x1 = Math.min(x1, xs - g0min);
       if (d1 > 0) x1 = Math.min(x1, xd - 1);
       else x0 = Math.max(x0, xd + 1);
     }
@@ -196,7 +222,7 @@ export function placeBlocks(c) {
           const x = (w << 5) + 31 - Math.clz32(low);
           const g0 = (x - xs) * d0;
           const g1 = (xd - x) * d1;
-          if (g0 < 1 || g1 < 1) continue;
+          if (g0 < g0min || g1 < 1) continue;
           const base = Math.abs(x - xs) + Math.abs(xd - x) + (g0 < 2 ? 3 : 0) + (g1 < 2 ? 3 : 0);
           if (found && crowdSkip && base >= bc) continue;
           const cost = base + crowd(x, c1, c2) * opt.crowdWeight;
@@ -214,7 +240,7 @@ export function placeBlocks(c) {
       for (let x = x0; x <= x1; x++) {
         const g0 = (x - xs) * d0;
         const g1 = (xd - x) * d1;
-        if (g0 < 1 || g1 < 1) continue;
+        if (g0 < g0min || g1 < 1) continue;
         // 在通道 c1、c2 之间竖直穿行的高架带能用的列：穿过的各行在这一列都没有工厂（表外的列当空着）。
         // 复用的缓冲比这一次的表长：下标到了 NB 就和原来的定长表一样当读不到（undefined 相减是 NaN，这一列不能用）
         if (!(x < 0 || x >= WB || (rHi + x < NB && acc[rHi + x] - acc[rLo + x] === 0))) continue;
@@ -249,6 +275,7 @@ export function placeBlocks(c) {
   c.extraTop = extraTop;
   c.itemBids = itemBids;
   c.pos = pos;
+  c.powerHoles = holes;
   c.rowAbove = rowAbove;
   c.rowBelow = rowBelow;
   c.stationX = stationX;
