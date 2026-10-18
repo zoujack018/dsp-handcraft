@@ -197,6 +197,7 @@ function mark(L, rowGaps, power, occ, T) {
     const hi = Math.max(edge, seg.y);
     for (let y = lo + 1; y < hi; y++) add(s.col, y);
     // 覆盖按分拣器两端的中点算，和独立检查一致（化工厂下侧落点带 0.284 的小数，研究站、对撞机的分拣器对齐槽位的 x）
+    if (s.stub) continue; // 储液罐口那截是带子，不用电
     const pt = slotPoint(p.g, s.side, s.col - s.cx);
     put(T, s.cx + pt.dx, (L.rowCy[p.row] + pt.dy + seg.y) / 2, '分拣器', s.bid);
   }

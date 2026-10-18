@@ -1,6 +1,7 @@
 // 迷你量化计算器：只为基准测试和单元测试生成输入。
 // 正式集成时，输入来自 antian369/dsp-calc 的计算结果（produceUnits），这里的输出结构与之对应。
 import { item, recipe as recipeOf, factory, RAW_ITEM_IDS, defaultRecipe, SPRAY_LEVELS } from '../gamedata.js';
+import { storeUnits } from '../plan/storage.js';
 
 const idOrName = (v) => (typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : v);
 
@@ -30,10 +31,13 @@ const EPS = 1e-9;
  * @param {number[]} [o.sprayFor] 吃到增产的是哪些物品的配方（默认就是目标）：大产线切块时（plan/modules.js）各块的目标是中间产物，
  *   这里传整条线的最终产物，最终产物不在这一块里时这一块不喷
  * @param {'equator'|'high'} [o.latitude='high'] 化工厂、量子化工厂的间距：默认 'high' 加宽（任何纬度都能放，gamedata.js 的 GEOMETRY_HIGH_LATITUDE），
- *   'equator' 赤道压缩（化工厂隔 7、量子化工厂隔 8，只在赤道附近放得下；网页左栏「化工厂赤道间距压缩」）。
+ *   'equator' 赤道压缩（化工厂隔 7、量子化工厂隔 8，只在赤道附近放得下；网页默认这套，左栏「化工厂高纬度间距展开」打开才加宽）。
  *   只影响排布，不影响台数；原样放进返回值，buildGraph 按它取工厂几何
+ * @param {string} [o.supply] 箱子供货（不接物流站时，plan/storage.js 的 SUPPLY）：原料、成品、副产物换成排进行里的储物仓
+ *   （plan/storage.js 的 storeUnits，液体、一条带装不下的原料、要烧掉的副产物除外）；storeSorter 左栏的分拣器、storeLayers 最多叠几层、
+ *   storeBelt 传送带等级、burn 要烧掉的副产物
  */
-export function calculate({ target, rate, targets, smelter = 2302, assembler = 2303, chemical = 2309, lab = 2901, labStack = 15, recipes = {}, raw = [], spray = 0, sprayScope = 'final', sprayFor = null, latitude = 'high' }) {
+export function calculate({ target, rate, targets, smelter = 2302, assembler = 2303, chemical = 2309, lab = 2901, labStack = 15, recipes = {}, raw = [], spray = 0, sprayScope = 'final', sprayFor = null, latitude = 'high', supply = null, storeSorter = 2013, storeLayers = 15, storeBelt = 3, burn = false }) {
   const goals = (targets?.length ? targets : [{ target, rate }]).map((t) => ({ item: item(t.target), rate: Number(t.rate) }));
   const targetItem = goals[0].item;
   const rawIds = new Set([...RAW_ITEM_IDS, ...raw.map((n) => item(n).id)]);
@@ -144,7 +148,7 @@ export function calculate({ target, rate, targets, smelter = 2302, assembler = 2
     sprayInfo.to = units.filter((u) => u.spray).map((u) => u.id);
   }
   // target/targetId/rate 保留给单目标的老代码；多目标时 target 是「A+B」，rate 是第一个目标的产量
-  return {
+  const result = {
     spray: sprayInfo,
     target: goals.map((g) => g.item.name).join('+'),
     targetId: targetItem.id,
@@ -157,4 +161,5 @@ export function calculate({ target, rate, targets, smelter = 2302, assembler = 2
     flows,
     latitude: latitude === 'equator' ? 'equator' : 'high',
   };
+  return supply ? storeUnits(result, { supply, sorter: storeSorter, maxLayers: storeLayers, burn, belt: storeBelt }) : result;
 }

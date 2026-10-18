@@ -1,14 +1,14 @@
 // 页面逻辑：物品面板选目标 → 外部供应弹窗 → 交给后台线程规划 → 画图纸、填标题栏、给出蓝图字符串。
 /* global WORKER_SRC */
 import { SPRITE, glyphSvg } from './glyphs.js';
-import { sliceRoutes, drawingSvg, routeColor } from './drawing.js';
+import { sliceRoutes, drawingSvg, routeColor, linkedRuns, LINE } from './drawing.js';
 import { createViewer } from './viewer.js';
 import { readHandoff, readDefs } from './handoff.js';
 
 const $ = (id) => document.getElementById(id);
 const STORE = 'dsp-handcraft:settings';
-const DEFAULTS = { targetId: 1204, rate: 90, ext: [], recipes: {}, assembler: '2303', smelter: '2302', chemical: '2309', lab: '2901', labstack: 15, belt: '3', sorter: '2013', power: 'tesla', station: '', pile: '1', spray: '0', split: '0', stitch: '1', proslot: '1', warper: '0', maxwidth: '', maxheight: '', aspect: '3', orient: 'h', effort: 'quick', page: 1, chemtight: '0', burn: [], defs: null, supply: '', dist: '0' };
-const OPTION_NAMES = ['assembler', 'smelter', 'chemical', 'chemtight', 'lab', 'belt', 'sorter', 'station', 'supply', 'dist', 'pile', 'power', 'spray', 'split', 'stitch', 'proslot', 'warper', 'maxwidth', 'maxheight', 'aspect', 'effort']; // 排布方向去掉了，统一横排（用户 2026/10/07）
+const DEFAULTS = { targetId: 1204, rate: 90, ext: [], recipes: {}, assembler: '2303', smelter: '2302', chemical: '2309', lab: '2901', labstack: 15, belt: '3', sorter: '2013', power: 'tesla', station: '', pile: '1', spray: '0', split: '0', stitch: '1', proslot: '1', warper: '0', maxwidth: '', maxheight: '', aspect: '3', orient: 'h', effort: 'quick', page: 1, chemwide: '0', burn: [], defs: null, supply: '', dist: '0' };
+const OPTION_NAMES = ['assembler', 'smelter', 'chemical', 'chemwide', 'lab', 'belt', 'sorter', 'station', 'supply', 'dist', 'pile', 'power', 'spray', 'split', 'stitch', 'proslot', 'warper', 'maxwidth', 'maxheight', 'aspect', 'effort']; // 排布方向去掉了，统一横排（用户 2026/10/07）
 // 物品类别色条（游戏物品类型）：原矿、材料、组件、成品、物流、生产设施、防御、黑雾、矩阵
 const CAT_COLOR = { 1: '#9aa5b1', 2: '#6f8fb3', 3: '#5f9b8b', 4: '#b48b52', 5: '#7c80c0', 6: '#4f7cc9', 8: '#b56262', 9: '#b56262', 10: '#707070', 11: '#9a72cf' };
 const STATUS_TEXT = {
@@ -25,7 +25,7 @@ let catalog = [];
 let byId = new Map();
 const state = { ...DEFAULTS, ext: new Set() };
 let floors = [];
-const view = { level: 'all', focus: '', selected: '', buildings: true, sorters: true, power: false }; // level：'all' 是总览，数字是第几层（0 = L1 地面）
+const view = { level: 'all', focus: '', selected: '', factory: '', buildings: true, sorters: true, power: false }; // level：'all' 是总览，数字是第几层（0 = L1 地面）；selected 是单击的线段，factory 是单击的工厂的介绍，最多有一个
 let last = null;
 let split = null; // 切成几块时整个结果（每块的结果在 split.modules 里），不切时为空
 let busy = false;
@@ -37,7 +37,7 @@ let autoSuggest = false;
 let iconMode = false; // 页面旁边有 icons/ 目录时改用其中的图片
 let pickMode = { add: true }; // 物品面板这次是添加目标还是更换第 i 个目标
 
-const viewer = createViewer({ box: $('drawing'), enabled: () => true, onSelect: selectRoute, onClear: clearRoute, onZoom: (n) => $('zoom-label').textContent = `${n}%`, zoomable: () => $('sheet').classList.contains('is-expanded') });
+const viewer = createViewer({ box: $('drawing'), enabled: () => true, onSelect: selectRoute, onFactory: selectFactory, onClear: clearRoute, onZoom: (n) => $('zoom-label').textContent = `${n}%`, zoomable: () => $('sheet').classList.contains('is-expanded') });
 
 // ---------- 后台线程（打不开时退回到主线程运行） ----------
 // 有的浏览器不允许本地文件启动后台线程，而且是异步报错；在第一条回复到达之前出错就整体切到主线程。
@@ -119,6 +119,8 @@ function loadSettings() {
   Object.assign(state, DEFAULTS, s);
   // 排布方向：上一版默认「自动」，效果不好，改回默认横排；那时存下的「自动」当作没选过（以后自己选的才记，见 orientPicked）
   if (state.orient === 'auto' && !s.orientPicked) state.orient = 'h';
+  // 化工厂间距 2026/10/19 改成默认只限赤道，换了新键 chemwide：旧键 chemtight（那时默认任何纬度）不认，以前存过的也拿新的默认值
+  delete state.chemtight;
   // 旧版本存的是物品名和逗号分隔的外部供应
   // 新配方：{ 物品 ID: 配方 ID }，只记开了新配方的物品
   state.recipes = s.recipes && typeof s.recipes === 'object' ? Object.fromEntries(Object.entries(s.recipes).filter(([, v]) => Number(v) > 0)) : {};
@@ -616,7 +618,7 @@ function renderMore() {
   $('stack-now').textContent = connected ? `物流站出货叠 ${pick('pile')} 层` : '';
   $('slots-now').textContent = `增产剂格${pick('proslot')}，翘曲器格${pick('warper') === '不放' ? '不放' : '整张一格'}`;
   const a = pick('assembler');
-  $('equip-now').textContent = `${a === '重组式' ? '重组式' : `${a} `}制造台，${pick('smelter')}熔炉，${pick('chemical')}${document.querySelector('input[name="chemtight"]:checked')?.value === '1' ? '（赤道压缩）' : ''}，${pick('lab')}研究站叠 ${labStackOf($('labstack').value)} 层，${pick('belt')}带，${pick('sorter')}分拣器`;
+  $('equip-now').textContent = `${a === '重组式' ? '重组式' : `${a} `}制造台，${pick('smelter')}熔炉，${pick('chemical')}${document.querySelector('input[name="chemwide"]:checked')?.value === '1' ? '（高纬度展开）' : ''}，${pick('lab')}研究站叠 ${labStackOf($('labstack').value)} 层，${pick('belt')}带，${pick('sorter')}分拣器`;
 }
 // 长宽比上限和宽度、长度上限容易打架：开了长宽比，宽、长回到不限；开了宽或长，长宽比回到不限
 $('more').addEventListener('change', (e) => {
@@ -978,6 +980,7 @@ function show(d) {
   view.level = 'all'; // 出图先看总览（地面实线、高架虚线叠在一起），要看单层再点右边的 L1、L2…（用户 2026/10/18）
   view.focus = '';
   view.selected = '';
+  view.factory = '';
   viewer.reset();
   renderFloorNav(d);
   const secs = (d.ms / 1000).toFixed(1);
@@ -1055,7 +1058,8 @@ function drawSheet(d) {
   const count = shown.reduce((n, f) => n + f.cells.size, 0);
   const name = all ? '总览' : `L${view.level + 1}`;
   $('floor-name').textContent = name;
-  $('floor-description').textContent = all ? '实线地面 · 虚线高架' : `${view.level === 0 ? '地面' : '高架'} · z=${view.level}`;
+  // 单层图画了别层接着走的那几段淡虚线（drawing.js 的 linkedRuns）时补一句
+  $('floor-description').textContent = all ? '实线地面 · 虚线高架' : `${view.level === 0 ? '地面' : '高架'} · z=${view.level}${linkedRuns(floors, view.level).length ? ' · 虚线：别的层' : ''}`;
   $('floor-meta').textContent = `${d.model.rotated ? d.model.height : d.model.width} × ${d.model.rotated ? d.model.width : d.model.height} 格 · ${count} 带格`;
   box.innerHTML = drawingSvg(d.model, floors, { ...view, label: `${d.title ?? d.target} · ${name} 布线图` });
   document.querySelectorAll('[data-floor]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.floor === String(view.level))));
@@ -1094,6 +1098,7 @@ $('floor-list').addEventListener('click', (e) => {
   view.level = b.dataset.floor === 'all' ? 'all' : Number(b.dataset.floor);
   view.selected = '';
   view.focus = '';
+  view.factory = '';
   drawSheet(last);
 });
 $('floor-list').addEventListener('keydown', (e) => {
@@ -1113,21 +1118,41 @@ function selectRoute(id) {
   if (!last || !run) return;
   view.selected = id;
   view.focus = String(run.itemId);
+  view.factory = '';
   drawSheet(last);
   $('drawing').focus({ preventScroll: true });
 }
+/** 单击工厂：简介框（和线路简介同一个）里写它的介绍，就是图上悬停提示那段字；原来选着的线路取消 */
+function selectFactory(hint) {
+  if (busy || !last) return; // 和点线路一样：搜索预览期间、看整张拼接图时不响应
+  view.factory = hint;
+  if (!view.selected) return showRouteInfo();
+  view.selected = '';
+  view.focus = '';
+  drawSheet(last); // 去掉线路的高亮，顺带写简介框
+}
 function clearRoute() {
   $('route-info').hidden = true;
+  view.factory = '';
   if (!view.selected) return;
   view.selected = '';
   view.focus = '';
   if (last && !busy) drawSheet(last); // 搜索预览期间别把上一张图画回来
 }
+/** 简介框：选着线路写线路简介，选着工厂写工厂的介绍 */
 function showRouteInfo() {
   const [z, index] = view.selected.split(':').map(Number);
   const run = view.selected && floors[z]?.runs[index];
   const info = $('route-info');
-  info.hidden = !run;
+  info.hidden = !run && !view.factory;
+  if (view.factory) {
+    // 悬停提示按「 · 」分段：第一段（物品或建筑名）当标题，后面一段一行；色条用工厂轮廓的白线色
+    const [name, ...rest] = view.factory.split(' · ');
+    $('route-title').textContent = name;
+    info.style.setProperty('--route-color', LINE);
+    $('route-body').innerHTML = rest.map((s) => `<p>${esc(s)}</p>`).join('');
+    return;
+  }
   if (!run) return;
   const model = last.model;
   const item = model.items[run.itemId];
@@ -1139,16 +1164,17 @@ function showRouteInfo() {
   const nextLevels = [...new Set(vias.map((v) => `L${v.to + 1}`))];
   $('route-title').textContent = item.name;
   info.style.setProperty('--route-color', routeColor(model, run.itemId));
-  $('route-body').innerHTML = line('当前线段', `L${z + 1} · ${run.cells.length} 格${nextLevels.length ? ` · 接 ${nextLevels.join('、')}` : ''}`)
+  $('route-body').innerHTML = '<dl>' + line('当前线段', `L${z + 1} · ${run.cells.length} 格${nextLevels.length ? ` · 接 ${nextLevels.join('、')}` : ''}`)
     + line('输送方向', `${point(run.cells[0])} → ${point(run.cells.at(-1))}`)
     + line('产线总量', `${fmt(item.rate)}/分`)
     + line('物料来源', sources.length ? sources.map((name) => `${name}产线`).join('、') : model.stations.length ? '物流站输入' : '外部输入')
-    + line('用于生产', consumers.length ? consumers.join('、') : '成品送出');
+    + line('用于生产', consumers.length ? consumers.join('、') : '成品送出') + '</dl>';
 }
 $('close-route').addEventListener('click', clearRoute);
 $('layer-controls').addEventListener('change', (e) => {
   if (!e.target.dataset.overlay || !last || busy) return;
   view[e.target.dataset.overlay] = e.target.checked;
+  if (!view.buildings) view.factory = ''; // 建筑不画了，工厂的介绍也收起
   drawSheet(last);
 });
 
@@ -1194,11 +1220,11 @@ function fillPorts(d) {
       .join('');
     return;
   }
-  // 箱子供货（plan/storage.js）：每组写在哪边哪一行、几个仓、叠几层、装满够多少分钟；没接上的照旧按出入口写
+  // 箱子供货（plan/storage.js）：每组写在哪几行（排进行里的储物仓）或哪边哪一行（外面的储液罐）、几个仓、叠几层、装满够多少分钟；没接上的照旧按出入口写
   const stores = (d.stores || [])
     .slice()
     .sort((a, b) => (a.kind === b.kind ? b.y - a.y : a.kind === 'in' ? -1 : 1))
-    .map((s) => `<li>${s.kind === 'in' ? '' : '成品 '}${esc(s.item)} <span class="num">${fmt(s.rate)}</span>/分：${s.side}边第 <span class="num">${s.y}</span> ${s.unit}的${s.what} <span class="num">${s.count}</span> 个${s.layers > 1 ? `，每个叠 <span class="num">${s.layers}</span> 层` : ''}${s.dist ? `，顶上放物流配送器（${s.kind === 'in' ? '向其他配送器需求' : '向其他配送器供应'}）` : ''}，装满够 <span class="num">${Math.floor(s.minutes)}</span> 分钟</li>`);
+    .map((s) => `<li>${s.kind === 'in' ? '' : '成品 '}${esc(s.item)} <span class="num">${fmt(s.rate)}</span>/分：${s.rows ? `第 ${s.rows.map((y) => `<span class="num">${y}</span>`).join('、')} ${s.unit}` : `${s.side}边第 <span class="num">${s.y}</span> ${s.unit}`}的${s.what} <span class="num">${s.count}</span> 个${s.layers > 1 ? `，每个叠 <span class="num">${s.layers}</span> 层` : ''}${s.dist ? `，顶上放物流配送器（${s.kind === 'in' ? '向其他配送器需求' : '向其他配送器供应'}）` : ''}，装满够 <span class="num">${Math.floor(s.minutes)}</span> 分钟</li>`);
   const lines = d.ports
     .filter((p) => p.store == null)
     .sort((a, b) => (a.kind === b.kind ? b.y - a.y : a.kind === 'in' ? -1 : 1))
@@ -1265,7 +1291,7 @@ function fillNotes(d) {
   if (!d.metrics.power) li.push('<li>没放供电，贴好后自己补。</li>');
   for (const b of d.burn ?? []) li.push(`<li>多余的${esc(b.item)} ${fmt(b.rate)}/分就地烧掉：火力发电厂 ${b.plants} 台，约 ${fmt(b.mw)} MW，要接在用得完这些电的电网上。</li>`);
   for (const n of d.burnNotes ?? []) li.push(`<li>${esc(n)}</li>`);
-  if (d.latitude && !d.latitude.high) li.push(`<li>${esc(d.latitude.factory)}按赤道压缩的间距排，只能贴在赤道附近。</li>`);
+  if (d.latitude && !d.latitude.high) li.push(`<li>${esc(d.latitude.factory)}按赤道的紧凑间距排，只能贴在赤道附近。要贴到高纬度，打开「化工厂高纬度间距展开」。</li>`);
   const ad = d.addons;
   if (ad?.spray) {
     // 增产剂从哪进：只说哪几座物流站（站口编号进控制台），没有站时从边缘入口

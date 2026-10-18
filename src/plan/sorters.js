@@ -233,6 +233,9 @@ export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15
         // 同一块里每台工厂接的是同一段带、同样的需求，算一次就够
         const tap = g.tap ?? 0;
         const cx0 = p.centers[0] + tap;
+        // 排进行里的储液罐（箱子供货）：罐口那截带子当一根分拣器记（出蓝图换成两节带子），只能拐进紧贴的那条带的头一格，
+        // 所以要长 1、那条带不劈开、罐在带子的上游头上（从侧面汇进带子的接法没实测过，不用）
+        const tank = !!g.store?.tank;
         const wants = [];
         io.forEach((dir, itemId) => {
           const seg = segFor(itemId, c, cx0, bid);
@@ -243,8 +246,8 @@ export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15
           const total = dir === 'out' ? graph.items.get(itemId).rate : graph.items.get(itemId).consumers.find((x) => x.to === gid)?.rate ?? 0;
           const rate = total / g.count;
           // 留余量：分拣器按平均需求刚好够用时，带上的空隙和取放节奏会让工厂间歇断料
-          const k = Math.max(1, Math.ceil((rate * headroom) / (speed[length] ?? Infinity) - 1e-9));
-          wants.push({ itemId, dir, seg, track, length, rate, k });
+          const k = tank ? 1 : Math.max(1, Math.ceil((rate * headroom) / (speed[length] ?? Infinity) - 1e-9));
+          wants.push({ itemId, dir, seg, track, length, rate, k, ...(tank ? { stubOk: length === 1 && !!seg && seg.split == null && (seg.dir > 0 ? seg.a : seg.b) === cx0 } : null) });
         });
         let total = wants.reduce((a, w) => a + w.k, 0);
         const cap = sideCap(g, side);
@@ -258,12 +261,12 @@ export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15
         for (const w of wants) for (let j = 0; j < w.k; j++) needs.push(w);
         for (const w of wants) if (w.length > 3) tooLong.push({ group: g.item, item: graph.items.get(w.itemId).name, length: w.length, bid });
         // 速度不够的物品和工厂中心无关，每台工厂各记一遍（顺序和原来一样：按工厂、再按物品）
-        const slowW = wants.filter((w) => w.rate * headroom > w.k * (speed[w.length] ?? 0) + 1e-9);
+        const slowW = wants.filter((w) => (tank ? !w.stubOk : w.rate * headroom > w.k * (speed[w.length] ?? 0) + 1e-9));
         const slotMask = slotMaskOf(g, side, tap);
         const centers = p.centers;
         for (let bi = 0; bi < centers.length; bi++) {
           const cx = centers[bi];
-          for (const w of slowW) slow.push({ group: g.item, item: graph.items.get(w.itemId).name, rate: w.rate, length: w.length, k: w.k, bid });
+          for (const w of slowW) slow.push({ group: g.item, item: graph.items.get(w.itemId).name, rate: w.rate, length: w.length, k: w.k, bid, ...(tank ? { tank: true } : null) });
           // cx：分拣器那三列的中间一列（下面的排列、动态规划都按它算）；fcx：工厂中心（出蓝图查槽位用）
           // options：合法排列（偏移数组），pick：选中的那个；列号 = cx + 偏移
           units.push({ g, gid, bid, bi, cx: cx + tap, fcx: cx, side, from, needs, slotMask, options: null, pick: null });
@@ -603,7 +606,7 @@ export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15
       const needs = u.needs;
       for (let i = 0; i < needs.length; i++) {
         const nd = needs[i];
-        sorters.push({ gid: u.gid, bid: u.bid, building: u.bi, cx: u.fcx, side: u.side, io: nd.dir, itemId: nd.itemId, segId: nd.seg?.id ?? null, col: u.cx + u.pick[i], length: nd.length });
+        sorters.push({ gid: u.gid, bid: u.bid, building: u.bi, cx: u.fcx, side: u.side, io: nd.dir, itemId: nd.itemId, segId: nd.seg?.id ?? null, col: u.cx + u.pick[i], length: nd.length, ...(u.g.store?.tank ? { stub: true } : null) });
       }
     }
   }

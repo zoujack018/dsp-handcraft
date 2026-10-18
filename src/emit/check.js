@@ -39,7 +39,8 @@ const TANK = 2106;
 const DISTRIBUTOR = 2107;
 const isBox = (id) => id === SMALL_BOX || id === BIG_BOX;
 const isStore = (id) => isBox(id) || id === TANK;
-const BOX_SLOT_GUESS = new Set(); // 大型仓长边两头的口（0、2、6、8）体积测试第八张 H1 验证过，不再提醒
+// 大型仓长边两头的口（0、2、6、8）体积测试第八张 H1 验证过，不再提醒；小型仓南边两头、东西两边的角口是照用户 10/19 那张图（北边 0 1 2、东北角 3）对称推断的
+const BOX_SLOT_GUESS = { [BIG_BOX]: new Set(), [SMALL_BOX]: new Set([5, 6, 8, 9, 11]) };
 // 物流站：7×7 的地归站；站口那节带子在中心 ±2 处（左 3/4/5 号口上中下，右 11/10/9 号口上中下，antian 已验证）
 const isStation = (id) => id === 2103 || id === 2104;
 const STATION_SLOT = { 3: [-2, 1], 4: [-2, 0], 5: [-2, -1], 9: [2, -1], 10: [2, 0], 11: [2, 1], 0: [1, 2], 1: [0, 2], 2: [-1, 2], 6: [-1, -2], 7: [0, -2], 8: [1, -2] };
@@ -309,7 +310,8 @@ export function checkBlueprint(str) {
         if (!off) err(`分拣器 ${s.index} ${which}接在储物仓 ${o.index} 的 ${slot} 号口（位置未知）`);
         else if (Math.abs(P(o).x + off[0] - p.x) > 0.02 || Math.abs(P(o).y + off[1] - p.y) > 0.02) err(`分拣器 ${s.index} ${which}槽位 ${slot} 与储物仓 ${o.index} 的位置不符`);
         if (P(o).z !== 0) err(`分拣器 ${s.index} ${which}接在叠在上面的储物仓 ${o.index} 上（只接最下面那个）`);
-        if (o.itemId === BIG_BOX && BOX_SLOT_GUESS.has(slot) && !warnings.includes('用到了大型储物仓长边两头的口（0、2、6、8 号），口位是推断的，请在游戏里确认')) warnings.push('用到了大型储物仓长边两头的口（0、2、6、8 号），口位是推断的，请在游戏里确认');
+        const guess = '用到了小型储物仓南边两头或东西两边角上的口（5、6、8、9、11 号），口位是照北边推断的，请在游戏里确认';
+        if (BOX_SLOT_GUESS[o.itemId].has(slot) && !warnings.includes(guess)) warnings.push(guess);
       } else if (BODY[o.itemId]) {
         const off = BODY[o.itemId].slot[slot] && turn(o, BODY[o.itemId].slot[slot]);
         if (!off) err(`分拣器 ${s.index} ${which}槽位 ${slot} 未知`);

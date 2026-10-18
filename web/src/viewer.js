@@ -11,7 +11,7 @@ export function zoomAround(camera, factor, anchor, width, height, fitScale) {
   };
 }
 
-export function createViewer({ box, enabled, onSelect, onClear, onZoom, zoomable = () => true }) {
+export function createViewer({ box, enabled, onSelect, onFactory, onClear, onZoom, zoomable = () => true }) {
   let svg = null, base = null, camera = null;
   const pointers = new Map();
   const fitScale = () => Math.max(0.01, Math.min((box.clientWidth - 36) / base.width, (box.clientHeight - 36) / base.height));
@@ -53,7 +53,9 @@ export function createViewer({ box, enabled, onSelect, onClear, onZoom, zoomable
     e.preventDefault();
     box.focus({ preventScroll: true });
     const point = local(e);
-    pointers.set(e.pointerId, { ...point, start: point, moved: false, run: e.target.closest('[data-route-run]')?.dataset.routeRun, button: e.button });
+    // 按在工厂上（储物仓、储液罐、火力发电厂也画成 factory）记下它的介绍，就是悬停提示 <title> 那段字
+    const factory = e.target.closest('.factory')?.querySelector('title')?.textContent;
+    pointers.set(e.pointerId, { ...point, start: point, moved: false, run: e.target.closest('[data-route-run]')?.dataset.routeRun, factory, button: e.button });
     if (pointers.size > 1) for (const p of pointers.values()) p.moved = true;
     box.setPointerCapture(e.pointerId);
     box.classList.add('is-panning');
@@ -81,7 +83,7 @@ export function createViewer({ box, enabled, onSelect, onClear, onZoom, zoomable
     pointers.delete(e.pointerId);
     if (box.hasPointerCapture(e.pointerId)) box.releasePointerCapture(e.pointerId);
     if (!pointers.size) box.classList.remove('is-panning');
-    if (!cancelled && !p.moved && p.button === 0) p.run ? onSelect(p.run) : onClear();
+    if (!cancelled && !p.moved && p.button === 0) p.run ? onSelect(p.run) : p.factory ? onFactory(p.factory) : onClear();
   }
   box.addEventListener('pointerup', (e) => release(e));
   box.addEventListener('pointercancel', (e) => release(e, true));

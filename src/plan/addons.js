@@ -15,7 +15,8 @@ import { chainTiles } from '../emit/blueprint.js';
 import { translateLayout } from './coordinates.js';
 import { obstacles, obstacleGrid, pathfind, dirIndex, STATION_PORTS, CUT } from './stations.js';
 import { sprayGapCells } from './layout/elevation.js';
-import { SPRAY_LEVELS, ITEMS, realItem } from '../gamedata.js';
+import { SPRAY_LEVELS, ITEMS, realItem, baseItem } from '../gamedata.js';
+import { storeSites } from './storage.js';
 
 const key = (x, y) => `${x},${y}`;
 const cell = (x, y, z) => `${x},${y},${z}`;
@@ -95,7 +96,7 @@ function alignCoaters(wants, blocked) {
  *   L.proLines [{cells, station: {k, slot} | null, edge, itemId, rate}]  增产剂带（逐格，从源头起），可能有几条
  *   L.addonNotes 放不下的说明；L.sprayMissed 没喷上的带数（应为 0，finishOne 据此判不可行）
  */
-export function addAddons(L, { spray = 0, sprayItems = null, sprayTo = null, pile = false, sprayRate = 0 } = {}) {
+export function addAddons(L, { spray = 0, sprayItems = null, sprayTo = null, pile = false, sprayRate = 0, supply = null, sorter = 2013, maxLayers = 15 } = {}) {
   L.pilers = [];
   L.coaters = [];
   L.proLines = [];
@@ -223,7 +224,7 @@ export function addAddons(L, { spray = 0, sprayItems = null, sprayTo = null, pil
     const missed = [];
     tiles.forEach((t, ci) => {
       const taps = tapsByChain.get(ci) || [];
-      if (onlyItems && !onlyItems.has(L.chains[ci].itemId)) return; // 不是最终产物的直接原料，不喷
+      if (onlyItems && !onlyItems.has(baseItem(L.chains[ci].itemId))) return; // 不是最终产物的直接原料，不喷
       if (!taps.some((q) => q.fin)) return; // 没有（最终那几组的）取料口：不进工厂（成品、副产物）或只进上游的工厂，不用喷
       const m = t.main;
       const idxOf = new Map();
@@ -319,6 +320,8 @@ export function addAddons(L, { spray = 0, sprayItems = null, sprayTo = null, pil
     const tput = (c) => tset(c, 1);
     const tdrop = (c) => tset(c, 0);
     const hasB = (x, y, z) => (inGrid(x, y, z) ? GB[(z * H + y) * W + x] === 1 : O.belts.has(cell(x, y, z)));
+    // 工厂、物流站、仓身（包括正在试的增产剂仓）：横穿喷涂机背后那格时前后两格也不能落在上面
+    const solidAt = ([x, y]) => inside(x, y) && O.grid.solid[y * W + x] === 1;
     const unserved = [];
     let todoAll = wants.slice();
     while (todoAll.length) {
@@ -341,16 +344,41 @@ export function addAddons(L, { spray = 0, sprayItems = null, sprayTo = null, pil
         }
       });
       if (!L.stations?.length) {
+        // 箱子供货：先在蓝图里面的空地上放一叠增产剂仓（storage.js 的 storeSites），带子从仓下面那截进料带出发；放不下才从左右边缘进来、
+        // 在外面接仓组（storage.js 的 addProStores）
+        if (supply) {
+          const free = (x, y) => {
+            if (O.solid.has(key(x, y)) || O.ground.has(key(x, y)) || O0.projection.has(key(x, y))) return false;
+            for (let z = 0; z <= PRO_MAX_Z; z++) if (hasB(x, y, z)) return false;
+            return true;
+          };
+          const rate = todoAll.reduce((a, w) => a + w.rate, 0);
+          for (const site of storeSites({ itemId: eff.item, rate, supply, sorter, maxLayers, W, H, free, cx, cy }))
+            sources.push({ start: [...site.store.gate, 0], dir: dirIndex(-site.store.side, 0), lead: site.feed, station: null, needsItem: false, site, d: site.d });
+        }
         for (const [x, nx] of [[0, 1], [W - 1, -1]]) for (let y = 0; y < H; y++) {
           if (O.belts.has(cell(x, y, 0)) || O.solid.has(key(x, y)) || O.ground.has(key(x, y)) || O.belts.has(cell(x + nx, y, 0))) continue;
           sources.push({ start: [x, y, 0], dir: dirIndex(nx, 0), lead: [], station: null, needsItem: false, d: Math.abs(x - cx) + Math.abs(y - cy) });
         }
       }
       sources.sort((a, b) => (a.needsItem ? 1 : 0) - (b.needsItem ? 1 : 0) || a.d - b.d);
+      // 蓝图里面的仓位、边缘各试最近的 8 个（没有仓位时和原来一样）；串上的台数一样时用里面的仓
+      const tries = [...sources.filter((q) => q.site).slice(0, 8), ...sources.filter((q) => !q.site).slice(0, 8)];
       let best = null;
-      for (const src of sources.slice(0, 8)) {
+      const better = (n, inside, len) => !best || n > best.done.length || (n === best.done.length && (!!inside !== !!best.src.site ? !!inside : len < best.cells.length));
+      for (const src of tries) {
         const cells = [...src.lead, src.start];
         for (const c of cells) tput(c);
+        // 试的仓位：仓身那几格当工厂挡住（进料带那一行已经当带子放上了）
+        const solidUndo = [];
+        if (src.site) {
+          const r = src.site.store.rect;
+          for (let x = r[0]; x <= r[2]; x++) for (let y = r[1] + 1; y <= r[3]; y++) {
+            const i = y * W + x;
+            solidUndo.push(i, O.grid.solid[i]);
+            O.grid.solid[i] = 1;
+          }
+        }
         // 还没接到的取料格先当障碍，免得增产剂带顺路压过去（方向不对）
         for (const o of all) tput([o.ix, o.iy, o.z + 1]);
         let cur = src.start;
@@ -378,7 +406,7 @@ export function addAddons(L, { spray = 0, sprayItems = null, sprayTo = null, pil
               const b = [o.ix + px, o.iy + py, o.z + 1];
               // 出口那格正好是另一条要喷的带的取料格、而且也是横穿：可以接着穿过去（一条增产剂带顺路喂两台喷涂机）
               const serves = (x, y) => todo.some((w2) => w2.options.some((o2) => o2.ix === x && o2.iy === y && o2.perps.some(([qx, qy]) => Math.abs(qx) === Math.abs(px) && Math.abs(qy) === Math.abs(py))));
-              if (hasB(...a) || (hasB(...b) && !serves(b[0], b[1]))) continue;
+              if (hasB(...a) || (hasB(...b) && !serves(b[0], b[1])) || solidAt(a) || solidAt(b)) continue;
               // 出口那格找路时也不许经过（不然先路过出口、再从 a 横穿回来，同样压回自己）
               const bFree = !hasB(...b);
               if (bFree) tput(b);
@@ -398,7 +426,7 @@ export function addAddons(L, { spray = 0, sprayItems = null, sprayTo = null, pil
             for (const c of head) tput(c);
             for (const [px, py] of o.halfPerps) {
               const a = [o.ix - px, o.iy - py, o.z + 1]; // 空的那一侧：先到它，再横着迈进取料格
-              if (hasB(...a)) continue;
+              if (hasB(...a) || solidAt(a)) continue;
               const path = pathfind(cur, a, O, W, H, PRO_MAX_Z, dir, null, dirIndex(px, py), got ? got.cost : Infinity);
               if (path && path !== CUT && (!got || path.cost < got.cost)) got = { o, cells: [...path.cells.slice(1), [o.ix, o.iy, o.z + 1]], cost: path.cost, dir: dirIndex(px, py), dead: true };
             }
@@ -418,7 +446,7 @@ export function addAddons(L, { spray = 0, sprayItems = null, sprayTo = null, pil
             const [dx, dy] = [[1, 0], [-1, 0], [0, 1], [0, -1]][dir];
             const hit = todo.findIndex((w2) => w2.options.some((o2) => o2.ix === cur[0] && o2.iy === cur[1] && o2.z + 1 === cur[2] && o2.perps.some(([qx, qy]) => Math.abs(qx) === Math.abs(dx) && Math.abs(qy) === Math.abs(dy))));
             const nxt = [cur[0] + dx, cur[1] + dy, cur[2]];
-            if (hit < 0 || !inside(nxt[0], nxt[1]) || hasB(...nxt) || O.solid.has(key(nxt[0], nxt[1]))) break;
+            if (hit < 0 || !inside(nxt[0], nxt[1]) || hasB(...nxt) || O.solid.has(key(nxt[0], nxt[1])) || solidAt(nxt)) break;
             const w2 = todo.splice(hit, 1)[0];
             const o2 = w2.options.find((q) => q.ix === cur[0] && q.iy === cur[1] && q.z + 1 === cur[2]);
             for (const z of [o2.z + 1, o2.z + 2]) tput([o2.x, o2.y, z]);
@@ -431,7 +459,8 @@ export function addAddons(L, { spray = 0, sprayItems = null, sprayTo = null, pil
         // 网格改回试串这个源头之前
         for (let u = undo.length - 2; u >= 0; u -= 2) GB[undo[u]] = undo[u + 1];
         undo.length = 0;
-        if (!hopeless && done.length && (!best || done.length > best.done.length || (done.length === best.done.length && cells.length < best.cells.length))) {
+        for (let u = solidUndo.length - 2; u >= 0; u -= 2) O.grid.solid[solidUndo[u]] = solidUndo[u + 1];
+        if (!hopeless && done.length && better(done.length, src.site, cells.length)) {
           best = { done, cells, src };
           if (done.length === todoAll.length) break;
         }
@@ -450,12 +479,23 @@ export function addAddons(L, { spray = 0, sprayItems = null, sprayTo = null, pil
       }
       for (const c of best.cells) put(O, c);
       const rate = best.done.reduce((a, { w }) => a + w.rate, 0);
-      L.proLines.push({ cells: best.cells, station: best.src.station, itemId: eff.item, rate, edge: best.src.station ? null : best.src.start.slice(0, 2) });
+      const site = best.src.site;
+      if (site) {
+        // 蓝图里面的增产剂仓：仓身挡住后开的线
+        L.stores ||= [];
+        L.stores.push({ ...site.store, rate, minutes: (site.store.minutes * site.store.rate) / Math.max(rate, 1e-9), leg: null, pro: true, inside: true });
+        const r = site.store.rect;
+        for (let x = r[0]; x <= r[2]; x++) for (let y = r[1] + 1; y <= r[3]; y++) {
+          O.solid.add(key(x, y));
+          O.grid.solid[y * W + x] = 1;
+        }
+      }
+      L.proLines.push({ cells: best.cells, station: best.src.station, itemId: eff.item, rate, edge: best.src.station || site ? null : best.src.start.slice(0, 2), ...(site ? { store: L.stores.length - 1 } : null) });
       if (best.src.station) {
         const st = L.stations[best.src.station.k];
         if (!st.items.some((it) => realItem(it.itemId) === eff.item)) st.items.push({ itemId: eff.item, role: 'demand' });
         st.ports.push({ slot: best.src.station.slot, itemId: eff.item, dir: 'out', spray: true });
-      } else {
+      } else if (!site) {
         L.ports.push({ kind: 'in', itemId: eff.item, x: best.src.start[0], y: best.src.start[1], rate, spray: true });
       }
       L.belts += best.cells.length;

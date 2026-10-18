@@ -1,6 +1,6 @@
 // 给页面的精简绘图模型（不带 Map 和循环引用）。从 worker.js 拆出来单独一个文件：
 // 除了最终结果，实时预览的快照（搜索中的布局，还没接物流站、供电）也用它转成同一种模型，页面同一套 drawingSvg 来画。
-import { ITEMS, slotPoint, THERMAL_BANK } from '../../src/gamedata.js';
+import { ITEMS, slotPoint, THERMAL_BANK, baseItem } from '../../src/gamedata.js';
 import { chainTiles } from '../../src/emit/blueprint.js';
 import { bankSorters } from '../../src/plan/burn.js';
 
@@ -12,30 +12,36 @@ export function renderModel(graph, L) {
     groups: row.map((bid) => {
       const p = L.pos.get(bid);
       const g = p.g;
-      return { id: bid, letter: g.letter, item: g.item, factory: g.factory, kind: g.kind, count: p.n, levels: g.levels ?? 1, centers: p.centers, w: g.collider?.[0], h: g.collider?.[1], below: g.bodyBelow, above: g.bodyAbove };
+      return { id: bid, letter: g.letter, item: g.item, factory: g.factory, kind: g.kind, count: p.n, levels: g.levels ?? 1, centers: p.centers, w: g.collider?.[0], h: g.collider?.[1], below: g.bodyBelow, above: g.bodyAbove, ...(g.store ? { store: { kind: g.store.kind, dist: g.store.dist, tank: !!g.store.tank }, levelZ: g.levelZ } : null) };
     }),
   }));
-  const items = Object.fromEntries([...graph.items.values()].map((f) => [f.itemId, { name: f.name, letter: f.letter, rate: f.rate }]));
+  // 箱子供货时同一种原料分给几组工厂的几组仓（编号见 gamedata.js 的 STORE_COPY）：页面上当同一种物品画、同一个颜色
+  const items = {};
+  for (const f of graph.items.values()) {
+    const k = baseItem(f.itemId);
+    if (items[k]) items[k].rate += f.rate;
+    else items[k] = { name: f.name, letter: f.letter, rate: f.rate };
+  }
   for (const pl of L.proLines || []) items[pl.itemId] = { name: ITEMS.get(pl.itemId).name, letter: 'p', rate: (items[pl.itemId]?.rate ?? 0) + (pl.rate ?? 0) };
-  const segments = L.segments.map((s) => ({ id: s.id, itemId: s.itemId, a: s.a, b: s.b, y: s.y, dir: s.dir, split: s.split, rate: s.rate }));
-  const legs = L.legs.map((l) => ({ itemId: l.itemId, kind: l.kind, level: l.level, cells: l.cells, road: l.road }));
+  const segments = L.segments.map((s) => ({ id: s.id, itemId: baseItem(s.itemId), a: s.a, b: s.b, y: s.y, dir: s.dir, split: s.split, rate: s.rate }));
+  const legs = L.legs.map((l) => ({ itemId: baseItem(l.itemId), kind: l.kind, level: l.level, cells: l.cells, road: l.road }));
   const sorters = L.sorterList.map((s) => {
     const cy = L.rowCy[L.pos.get(s.bid).row];
     const seg = L.segments[s.segId];
     const g = L.pos.get(s.bid).g;
     const pt = slotPoint(g, s.side, s.col - s.cx); // 研究站、对撞机的分拣器对齐槽位（x 带小数）
-    return { x: s.cx + pt.dx, y0: cy + pt.dy, y1: seg.y, io: s.io, itemId: s.itemId, factoryItem: g.item };
+    return { x: s.cx + pt.dx, y0: cy + pt.dy, y1: seg.y, io: s.io, itemId: baseItem(s.itemId), factoryItem: g.item };
   });
   const power = L.power ? { name: L.power.name, size: L.power.size, cover: L.power.cover, nodes: L.power.nodes } : null;
   const stations = (L.stations || []).map((st) => ({ x: st.x, y: st.y }));
   // 搜索中还没接站：打分时估的站位（holes.js，7×7 空地的中心），实时预览画成虚线框；真正接站在搜索结束后，位置可能不同
   const stationSites = L.stations?.length ? [] : (L.holes?.sites || []).map((st) => ({ x: st.x, y: st.y }));
-  const stubs = L.legs.filter((l) => l.stub).map((l) => ({ itemId: l.itemId, cells: l.stub }));
+  const stubs = L.legs.filter((l) => l.stub).map((l) => ({ itemId: baseItem(l.itemId), cells: l.stub }));
   // 使用与蓝图导出完全相同的有向逐格路径，包含站口接线的真实高度。
   const routes = L.chains.flatMap((ch) => {
     const tiles = chainTiles(L, ch);
     const burned = ch.parts.some((q) => q.leg != null && L.legs[q.leg].burn != null); // 送去火力发电厂烧掉的副产物：带尾是死胡同，不画出口
-    return [tiles.main, ...tiles.extra].map((cells, i) => ({ itemId: ch.itemId, cells, inPort: i === 0 && tiles.inPort && !tiles.inStation, outPort: i === 0 && tiles.outPort && !tiles.outStation && !burned })).filter((r) => r.cells.length);
+    return [tiles.main, ...tiles.extra].map((cells, i) => ({ itemId: baseItem(ch.itemId), cells, inPort: i === 0 && tiles.inPort && !tiles.inStation, outPort: i === 0 && tiles.outPort && !tiles.outStation && !burned })).filter((r) => r.cells.length);
   });
   // 增产剂带（可能几条：从物流站空口或边缘入口出来，横穿各台喷涂机背后那格）
   for (const pl of L.proLines || []) routes.push({ itemId: pl.itemId, cells: pl.cells, inPort: !pl.station, outPort: false });
@@ -55,7 +61,7 @@ export function renderModel(graph, L) {
   });
   // 箱子供货的储物仓、储液罐（plan/storage.js）：各个仓（叠起来的画一个）、储液罐，仓口的分拣器和工厂的一起画
   const stores = (L.stores || []).map((s) => {
-    for (const so of s.sorters) sorters.push({ x: so.belt[0], y0: s.kind === 'in' ? so.p0[1] : so.p1[1], y1: so.belt[1], io: s.kind === 'in' ? 'out' : 'in', itemId: s.itemId, factoryItem: '储物仓' });
+    for (const so of s.sorters) sorters.push({ x: (s.kind === 'in' ? so.p0 : so.p1)[0], y0: s.kind === 'in' ? so.p0[1] : so.p1[1], y1: so.belt[1], io: s.kind === 'in' ? 'out' : 'in', itemId: s.itemId, factoryItem: '储物仓' });
     return { kind: s.kind, itemId: s.itemId, type: s.type, dist: s.dist, layers: s.layers, boxes: s.boxes, tank: s.tank ? { x: s.tank.x, y: s.tank.y } : null };
   });
   return { width: L.width, height: L.height, rotated: !!L.rotated, origin: L.origin ?? { x: 0, y: 0 }, rows, items, segments, legs, sorters, power, stations, stationSites, stubs, routes, devices, burners, stores, streets: L.streets || [], trunk: L.trunk ?? null };

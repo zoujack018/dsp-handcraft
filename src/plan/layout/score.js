@@ -83,6 +83,7 @@ const noteMsg = () => {
 };
 /** 「用 k 根 length 格长的分拣器也不够快」 */
 function slowMsg(sl) {
+  if (sl.tank) return `储液罐「${sl.item}」的罐口接不上：罐口那截带子只能拐进紧贴的那条带，罐要在那条带的上游头上`;
   const { k, length, rate } = sl;
   if (k !== k || length !== length || rate !== rate) return `${sl.group} 的「${sl.item}」用 ${k} 根 ${length} 格长的分拣器也不够快（每台需 ${rate.toFixed(0)}/分），换更快的分拣器`;
   const list = memoList(slowMemo, sl.group, sl.item);
@@ -542,7 +543,7 @@ export function scoreLayout(c) {
   let factories = 0;
   for (let i = 0; i < graph.groups.length; i++) {
     const g = graph.groups[i];
-    factories += g.count * (g.levels ?? 1);
+    if (!g.store) factories += g.count * (g.levels ?? 1); // 排进行里的储物仓（箱子供货）不算工厂
   }
   const result = {
     rows,

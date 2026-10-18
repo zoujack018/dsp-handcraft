@@ -32,7 +32,9 @@ export function placeBlocks(c) {
     const centers = [];
     for (let i = 0; i < b.n; i++) centers.push(x + i * g.pitch + g.center);
     const w = b.n * g.pitch + g.trailing;
-    const p = { bid, gid: b.gid, g, n: b.n, row: r, x0: x, x1: x + w - 1, centers, tmin: centers[0] + (g.tap ?? 0) - 1, tmax: centers[b.n - 1] + (g.tap ?? 0) + 1 };
+    // 取放料的列：中心左右各 1 列（三个槽位）；储液罐（箱子供货）只有中间那一列
+    const reach = g.store?.tank ? 0 : 1;
+    const p = { bid, gid: b.gid, g, n: b.n, row: r, x0: x, x1: x + w - 1, centers, tmin: centers[0] + (g.tap ?? 0) - reach, tmax: centers[b.n - 1] + (g.tap ?? 0) + reach };
     pos.set(bid, p);
     const list = blocksOf.get(b.gid);
     if (list) list.push(p);

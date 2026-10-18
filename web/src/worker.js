@@ -209,9 +209,28 @@ function chain({ targets, raw: raw0 = [], recipes: recipes0 = {}, lab = 2901, la
   };
 }
 
-/** 箱子供货的各组（plan/storage.js）：在哪边哪一行、什么仓、几个、叠几层、装满够几分钟 */
+/** 箱子供货的各组（plan/storage.js）：在哪几行（排进行里的储物仓）或哪边哪一行（外面的储液罐、增产剂仓）、什么仓、几个、叠几层、装满够几分钟 */
 function stores(graph, L) {
-  return (L.stores || []).map((s) => {
+  const inRow = new Map();
+  for (const p of L.pos.values()) {
+    if (!p.g.store) continue;
+    if (!inRow.has(p.g.id)) inRow.set(p.g.id, { g: p.g, ys: new Set() });
+    inRow.get(p.g.id).ys.add(L.rowCy[p.row] + (L.origin?.y ?? 0));
+  }
+  const rows = [...inRow.values()].map(({ g, ys }) => ({
+    kind: g.store.kind,
+    item: g.item,
+    rate: g.store.rate,
+    what: g.factoryId === 2106 ? '储液罐' : g.factoryId === 2101 ? '小型储物仓' : '大型储物仓',
+    count: g.count,
+    layers: g.levels ?? 1,
+    dist: g.store.dist,
+    minutes: g.store.minutes,
+    rows: [...ys].sort((a, b) => b - a),
+    unit: L.rotated ? '列' : '行',
+    y: Math.max(...ys),
+  }));
+  return rows.concat((L.stores || []).map((s) => {
     const left = s.side < 0;
     return {
       kind: s.kind,
@@ -225,8 +244,9 @@ function stores(graph, L) {
       side: L.rotated ? (left ? '上' : '下') : left ? '左' : '右',
       unit: L.rotated ? '列' : '行',
       y: s.gate[1] + (L.origin?.y ?? 0),
+      ...(s.inside ? { rows: [s.boxes[0][1] + (L.origin?.y ?? 0)] } : null), // 摆在蓝图里面的增产剂仓（plan/addons.js）：照行里的仓说第几行
     };
-  });
+  }));
 }
 
 /** 原料入口与成品出口，告诉玩家从哪接 */
@@ -490,9 +510,12 @@ function takeShown(id) {
 }
 const PREVIEW_EVERY = 25000; // 预览的图多久换一张
 
-/** 页面参数 → calculate() 的参数。chemtight：左栏「化工厂赤道间距压缩」，开了化工厂、量子化工厂才按赤道压缩的间距排，默认加宽（任何纬度都能放） */
+/** 页面参数 → calculate() 的参数。chemwide：左栏「化工厂高纬度间距展开」，默认化工厂、量子化工厂按赤道的紧凑间距排（只在赤道附近放得下），开了才加宽（任何纬度都能放） */
 function lineInput(p, targets, frac) {
-  return { targets, assembler: Number(p.assembler), smelter: Number(p.smelter), chemical: Number(p.chemical || 2309), lab: Number(p.lab || 2901), labStack: Number(p.labstack || 15), raw: frac.raw, recipes: frac.recipes, spray: Number(p.spray || 0), latitude: p.chemtight === '1' ? 'equator' : 'high' };
+  // 供货（不接物流站时）：原料、成品换成排进行里的储物仓（plan/storage.js 的 storeUnits），液体照旧在外面接储液罐
+  const supply = !p.station && p.supply ? (p.dist === '1' ? p.supply.replace('box', 'dist') : p.supply) : null;
+  const store = supply ? { supply, storeSorter: Number(p.sorter), storeLayers: Number(p.labstack || 15), storeBelt: Number(p.belt || 3), burn: Array.isArray(p.burn) && p.burn.length ? p.burn.map(Number) : false } : null;
+  return { targets, assembler: Number(p.assembler), smelter: Number(p.smelter), chemical: Number(p.chemical || 2309), lab: Number(p.lab || 2901), labStack: Number(p.labstack || 15), raw: frac.raw, recipes: frac.recipes, spray: Number(p.spray || 0), latitude: p.chemwide === '1' ? 'high' : 'equator', ...store };
 }
 
 async function run(p, id = 0) {
@@ -665,7 +688,7 @@ function describePlan(plan, calc, p, effort, threadCount) {
     // 就地烧掉的副产物（plan/burn.js）：烧什么、每分钟多少、几台火力发电厂、满负荷发多少电；没烧成的原因
     burn: (L.burners || []).map((b) => ({ item: ITEMS.get(b.itemId).name, rate: b.rate, plants: b.plants.length, mw: b.mw, cols: b.cols, depth: b.depth })),
     burnNotes: L.burnNotes ?? [],
-    // 化工厂按赤道压缩的间距排的（页面检查栏写一句：只在赤道附近放得下）
+    // 化工厂按赤道的紧凑间距排的（左栏默认；页面检查栏写一句：只在赤道附近放得下）
     latitude: (() => {
       const g = plan.graph.groups.find((x) => hasHighLatitude(x.factoryId));
       return g ? { factory: g.factory, high: g.latitude === 'high' } : null;

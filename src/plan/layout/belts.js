@@ -1,5 +1,5 @@
 // 每种物品的路线：挂通道（贪心集合覆盖）、定访问顺序和流向、落实成地面段和高架段
-import { BELT_SPEED } from '../../gamedata.js';
+import { BELT_SPEED, baseItem } from '../../gamedata.js';
 import { CH_PITCH, STATION_COLS, TOL, permutations } from './shared.js';
 
 /**
@@ -513,7 +513,7 @@ export function routeItems(c) {
     sprayHere = sprayAll;
     if (sprayItems) {
       sprayHere = false;
-      if (sprayItems.has(f.itemId)) for (let i = 0; i < nCons; i++) if (toFinal(cons[i])) sprayHere = true;
+      if (sprayItems.has(baseItem(f.itemId))) for (let i = 0; i < nCons; i++) if (toFinal(cons[i])) sprayHere = true;
     }
     legSpray = sprayHere && opt.sprayOnLegs !== false;
     nEv = 0; // 上一条带的访问用完了，事件池从头用

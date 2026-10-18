@@ -79,7 +79,7 @@ export function finishOne(cand, ctx) {
   if (station?.slots?.warper && L.stations?.length) linkWarpers(L);
   // 增产剂（所有原料和中间产物进工厂前喷）和自动集装机（产物出线前叠层）：在供电之前加，供电要给喷涂机、集装机通电
   if (spray || pile) {
-    addAddons(L, { spray, sprayItems, sprayTo, pile, sprayRate });
+    addAddons(L, { spray, sprayItems, sprayTo, pile, sprayRate, supply: station ? null : supply, sorter, maxLayers: storeLayers });
     // 有带子没喷上（没地方骑喷涂机或接不上增产剂带）：没喷到的料进工厂就没有增产效果，按不可行处理
     if (spray && L.sprayMissed && !ctx.allowMissed) { // allowMissed：实验开关（考卷量上界用），漏喷不算不可行
       L.feasible = false;

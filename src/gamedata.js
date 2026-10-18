@@ -229,7 +229,8 @@ const GEOMETRY_BY_ID = {
 };
 /**
  * 高纬度版的化工厂、量子化工厂（用户 2026/10/07：不在赤道上，隔 7 的化工厂就会撞，无法建造的概率很高。
- * 先做了生成时弹窗问，用户随后改主意：默认一律用这套加宽的间距，左栏「化工厂赤道间距压缩」打开才用赤道那套，bug 少）。
+ * 先做了生成时弹窗问，用户随后改主意：默认一律用这套加宽的间距，bug 少。用户 2026/10/19 又把网页改成默认赤道那套，
+ * 左栏「化工厂高纬度间距展开」打开才用这套；命令行、考卷照旧默认这套）。
  * 为什么：游戏的格子南北方向一样宽，东西方向一圈的格数按纬度分段（PlatformSystem.DetermineLongitudeSegmentCount + segmentTable，
  * 半径 200 的星球：赤道 1000 格，28.8° 起 800、46.8° 起 600、55.8° 起 500、64.8° 起 400、70.2° 起 300、75.6° 起 200……），
  * 同一段里越往北格子越窄：东西向格宽 = cos(纬度) × 1000 ÷ 这一段的格数，赤道到 28.8° 从 100% 缩到 88%，往后每段在 83%~100% 之间来回。
@@ -251,6 +252,7 @@ const FACTORY_KIND = {
   2308: 'refinery',
   2310: 'collider',
   2901: 'lab', 2902: 'lab',
+  2101: 'store', 2102: 'store', 2106: 'store', // 箱子供货时储物仓、储液罐当工厂排进行里（几何见 STORE_GEOMETRY）
 };
 
 /**
@@ -263,7 +265,7 @@ export function factory(id, latitude = 'equator') {
   if (!kind) throw new Error(`未知工厂 ID ${id}`);
   const it = ITEMS.get(id);
   const high = latitude === 'high' ? GEOMETRY_HIGH_LATITUDE[id] : null;
-  const geo = { ...FACTORY_GEOMETRY[kind], ...GEOMETRY_BY_ID[id], ...high };
+  const geo = kind === 'store' ? STORE_GEOMETRY[id] : { ...FACTORY_GEOMETRY[kind], ...GEOMETRY_BY_ID[id], ...high };
   return { id, name: it.name, speed: it.speed, kind, ...geo, bodyHeight: (geo.bodyBelow ?? 1) + (geo.bodyAbove ?? 1) + 1, ...(id in GEOMETRY_HIGH_LATITUDE ? { latitude: high ? 'high' : 'equator' } : null) };
 }
 /** 这台工厂有没有高纬度版（化工厂、量子化工厂） */
@@ -371,7 +373,13 @@ export function slotPoint(g, side, off) {
  * 生产图里它的物品编号是「真实编号 + BYPRODUCT」，出蓝图、物流站存储时用 realItem 换回真实编号。
  */
 export const BYPRODUCT = 100000;
-export const realItem = (id) => (id >= BYPRODUCT ? id - BYPRODUCT : id);
+/**
+ * 箱子供货时同一种原料按用料的工厂组分成几组仓（plan/storage.js 的 storeUnits），第 k 组（k ≥ 1）在生产图里的编号是
+ * 「真实编号 + STORE_COPY × k」，各走各的带；baseItem 换回原来的编号（页面画图、喷不喷按它）
+ */
+export const STORE_COPY = 1000000;
+export const realItem = (id) => id % BYPRODUCT;
+export const baseItem = (id) => (id >= STORE_COPY ? id % STORE_COPY : id);
 
 /**
  * 每种物品一格能放几个（储物仓按这个算装得下多少），来自原版游戏的物品表导出（github.com/dsp2b/dsp2b 的
@@ -399,6 +407,8 @@ export const STACK_SIZE = {
 export const stackSize = (id) => STACK_SIZE[realItem(id)] ?? 100;
 // 储物仓、储液罐、物流配送器（用户 2026/10/18 的蓝图 test/fixtures/ref-box.bp.txt，docs/game-rules.md 30）。
 // 分拣器口（建筑自己坐标，朝北）：每边中间那个是那张蓝图量的；大型仓长边另外两个（0、2、6、8）在中心左右各 1 格（编号照制造台，体积测试第八张 H1 验证过）。
+// 小型仓每边也是三个口（用户 2026/10/19 的蓝图：北边 0、1、2 号在中心左、中、右 0.797 格，东北角的 3 号往东出），一圈 12 个、顺时针编号；
+// 南边 6、8 号和东、西两边的角口（5、9、11 号）是照这个对称推断的（独立检查用到时提醒）。
 // 储液罐不用分拣器，带子直接接四边的口（北 0、东 1、南 2、西 3）。
 // 碰撞体（STORE_BODY，体积测试第八张 2026/10/18 实测 + 用户 10/04 那张图）：小型仓 2.4×2.4——两个隔 2 撞、隔 3 能放，
 // 带子紧贴上沿（隔 1）、塔紧挨都撞，所以大于 2；10/04 那张图里它和制造台 Mk.II 中心隔 3 能放，所以不超过 2.8（制造台 3.2），取 2.4（和熔炉差不多）。
@@ -406,12 +416,26 @@ export const stackSize = (id) => STACK_SIZE[realItem(id)] ?? 100;
 // 分拣器可以伸进仓的碰撞体（口就在里面）。叠一层的高度：小型仓 2、大型仓 3、储液罐 3（实测）；
 // 配送器在一叠最上面那个仓的顶上，比那个仓高 1.875（小型）/ 2.981（大型）
 export const BOX_SLOT = {
-  2101: { 1: [0, 0.795], 4: [0.824, 0], 7: [0, -0.795], 10: [-0.823, 0] },
+  2101: { 0: [-0.797, 0.795], 1: [0, 0.795], 2: [0.797, 0.795], 3: [0.797, 0.795], 4: [0.824, 0], 5: [0.797, -0.795], 6: [0.797, -0.795], 7: [0, -0.795], 8: [-0.797, -0.795], 9: [-0.797, -0.795], 10: [-0.823, 0], 11: [-0.797, 0.795] },
   2102: { 0: [-1, 0.874], 1: [0, 0.874], 2: [1, 0.874], 4: [1.894, 0], 6: [1, -0.874], 7: [0, -0.874], 8: [-1, -0.874], 10: [-1.894, 0] },
 };
 export const TANK_PORT = { 0: [0, 1.11], 1: [1.15, 0], 2: [0, -1.11], 3: [-1.15, 0] };
+/** 储液罐北、南口出来的两节带子（用户 2026/10/18 的蓝图）：口上那节在中心外 1.113 格、高 0.0037，下一节在外 1.987 格、高 0.0117，再下一节才落到外 3 格的整格上 */
+export const TANK_STUB = { port: 1.113, mid: 1.987, zPort: 0.0037, zMid: 0.0117 };
 export const STORE_BODY = { 2101: { w: 2.4, h: 2.4, lift: 2, cap: 30 }, 2102: { w: 4.4, h: 2.4, lift: 3, cap: 60 }, 2106: { w: 3.5, h: 3.5, lift: 3 } };
 export const DISTRIBUTOR_LIFT = { 2101: 1.875, 2102: 2.981 };
+/**
+ * 箱子供货时储物仓当工厂排进生产行里（用户 2026/10/19：小型仓和熔炉一样大，紧挨着摆，不用另外摆在外面）：
+ * 小型仓碰撞体 2.4×2.4 和电弧熔炉一样，宽 3、隔 3（体积测试第八张 F2：隔 3 能放），上下各三个口（北 0 1 2、南 8 7 6，左中右，用户 10/19 的蓝图）；
+ * 大型仓 4.4×2.4，宽 5、隔 5（推断：照小型仓隔 3 留的 0.6 格），长边各三个口。一叠算一台，levelZ 是叠一层抬多高。
+ * 储液罐（2026/10/19，液体原料）：碰撞体按 3.5×3.5（推断：两个隔 3 还撞），上下各占 2 行，带子落在离罐中心 3 格那条（罐口在外 1.11 格，
+ * 口上那节和外 1.99 格那节是罐口出来的带子，TANK_STUB），宽 5、隔 5（推断，隔 4 没测）；上下各一个口（北 0、南 2），不用分拣器
+ */
+const STORE_GEOMETRY = {
+  2101: { bodyWidth: 3, bodyBelow: 1, bodyAbove: 1, edgeBelow: 1, edgeAbove: 1, edgeShiftBelow: 0, trailing: 0, pitch: 3, center: 1, collider: [2.4, 2.4], supported: true, slots: SLOTS_3x3, slotPos: BOX_SLOT[2101], levelZ: STORE_BODY[2101].lift },
+  2102: { bodyWidth: 5, bodyBelow: 1, bodyAbove: 1, edgeBelow: 1, edgeAbove: 1, edgeShiftBelow: 0, trailing: 0, pitch: 5, center: 2, collider: [4.4, 2.4], supported: true, slots: SLOTS_3x3, slotPos: BOX_SLOT[2102], levelZ: STORE_BODY[2102].lift },
+  2106: { bodyWidth: 5, bodyBelow: 2, bodyAbove: 2, edgeBelow: 2, edgeAbove: 2, edgeShiftBelow: 0, trailing: 0, pitch: 5, center: 2, collider: [3.5, 3.5], supported: true, slots: { bottom: { 0: 2 }, top: { 0: 0 } }, slotPos: { 0: [0, TANK_STUB.port], 2: [0, -TANK_STUB.port] }, levelZ: STORE_BODY[2106].lift },
+};
 /** 液体（同一份物品表的 IsFluid）：箱子供货时用储液罐直接接带（用户 2026/10/18），不用储物仓 */
 export const FLUIDS = new Set([1000, 1007, 1114, 1116, 1120, 1121]); // 水、原油、精炼油、硫酸、氢、重氢
 /**

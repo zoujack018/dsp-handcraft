@@ -5,7 +5,7 @@ const PAPER = '#112f52';
 // 建筑按蓝图的画法：蓝底白线，不填色块。粗线是机器轮廓，细线是机壳、炉口、罐体；
 // 轮廓就是规规矩矩的长方形（不出头），轮廓里面沿右边和下边排一道 45° 斜线的「手打阴影」，两头 45° 收口，
 // 像制图员用三角板一笔笔排出来的；阴影不出轮廓，图面干净。
-const LINE = '#eef5ff'; // 轮廓（粗）
+export const LINE = '#eef5ff'; // 轮廓（粗）
 const FINE = '#a9c4e0'; // 机壳、中心标记（细）
 const FAINT = '#6f90b3'; // 管道等次要线
 const HEAVY = 0.085;
@@ -43,7 +43,8 @@ export function sliceRoutes(routes) {
       floor.items.add(String(itemId));
       floor.cells.add(`${x},${y}`);
       if (!run || run.z !== z) {
-        run = { z, itemId, cells: [] };
+        // prev：同一条带换层之前的那一段（在别的层；带头那段是 null），单层图据此找别层接着走的那几段（linkedRuns）
+        run = { z, itemId, cells: [], prev: run };
         floor.runs.push(run);
       }
       if (!run.cells.length || run.cells.at(-1)[0] !== x || run.cells.at(-1)[1] !== y) run.cells.push([x, y, z]);
@@ -62,6 +63,32 @@ export function sliceRoutes(routes) {
   }
   const max = Math.max(2, ...levels.keys());
   return Array.from({ length: max + 1 }, (_, z) => ensure(z));
+}
+
+/**
+ * 单看第 level 层时，本层的带在升降点前后接着走的别层那几段：本层每段往前、往后各找一段。
+ * 竖着穿过某层的那一格（只有一格、前后都接着别的层）不算那层的带：往外找时跳过去接着找，本层的这种格也不往外找，
+ * 免得看 L2 时把从 L2 穿过去的 L3、L4 整层都带出来。
+ */
+export function linkedRuns(floors, level) {
+  const next = new Map(); // 每段 → 同一条带的下一段
+  for (const f of floors) for (const r of f.runs) if (r.prev) next.set(r.prev, r);
+  const out = new Set();
+  for (const f of floors) {
+    if (f.z !== level) continue;
+    for (const run of f.runs) {
+      if (run.cells.length === 1 && run.prev && next.has(run)) continue;
+      for (const step of [(r) => r.prev, (r) => next.get(r)]) {
+        for (let r = step(run); r && r.z !== level; r = step(r)) {
+          if (r.cells.length > 1) {
+            out.add(r);
+            break;
+          }
+        }
+      }
+    }
+  }
+  return [...out];
 }
 
 const F3 = (n) => +n.toFixed(3);
@@ -174,9 +201,11 @@ export function drawingSvg(model, floors, { level = 0, focus = '', selected = ''
         const x = X(cx), y = Y(row.cy + dy);
         // 工厂约三层高（研究站每层 3 格高，叠几层就高几倍）：高过机器的楼层只剩一个虚线占地
         const levels = g.levels ?? 1;
-        const above = !all && level >= (g.kind === 'lab' ? 3 * levels : 3);
-        const hint = g.kind === 'lab' ? `${g.item} · ${g.factory} · 每叠 ${levels} 层` : `${g.item} · ${g.factory} · 约三层体量示意`;
-        parts.push(`<g class="factory">${title(hint)}${factoryShape(g.kind, x, y, w, h, { letter: g.letter, mini, text, hidden: above, hatch, levels, yaw: g.yaw })}</g>`);
+        // 排进行里的储物仓（箱子供货）：和外面那种一样写「仓」（顶上放了配送器写「配」，储液罐写「罐」），一叠多高按层数 × 每层抬多高
+        const st = g.store;
+        const above = !all && level >= (st ? Math.ceil(levels * (g.levelZ ?? 2)) : g.kind === 'lab' ? 3 * levels : 3);
+        const hint = st ? `${g.factory}${st.dist ? ' + 物流配送器' : ''} · ${st.kind === 'in' ? '原料' : '成品'} ${g.item} · 叠 ${levels} 层` : g.kind === 'lab' ? `${g.item} · ${g.factory} · 每叠 ${levels} 层` : `${g.item} · ${g.factory} · 约三层体量示意`;
+        parts.push(`<g class="factory">${title(hint)}${factoryShape(g.kind, x, y, w, h, { letter: st ? (st.tank ? '罐' : st.dist ? '配' : '仓') : g.letter, mini, text, hidden: above, hatch, levels, yaw: g.yaw })}</g>`);
       }
     }
     // 就地烧副产物的火力发电厂（朝东摆，碰撞体按估计画）：方框 + 右上一个烟囱圈，框里写「火」
@@ -233,6 +262,12 @@ export function drawingSvg(model, floors, { level = 0, focus = '', selected = ''
     const mid = yb - d * 0.5;
     const arrow = Math.abs(yb - yf) > 0.62 ? `<path d="M${F3(x - 0.13)} ${F3(mid - 0.08 * k)}L${F3(x)} ${F3(mid + 0.06 * k)}L${F3(x + 0.13)} ${F3(mid - 0.08 * k)}" fill="none" stroke="${c}" stroke-width="${THIN * 1.4}"/>` : '';
     parts.push(`<g ${attrs(so.itemId)}>${seg(x, yf + d * 0.12, x, end, c, MED)}${ring(x, yf, 0.12, c, MED, PAPER)}${seg(x - 0.17, end, x + 0.17, end, c, MED)}${arrow}</g>`);
+  }
+  // 单看一层时，本层的带在升降点前后接着走的别层那几段（linkedRuns）画在本层下面：照带的颜色，又淡又细的虚线，
+  // 一眼能分出不是这一层的；只是示意，不带 route-hit、点不中。总览和缩略图不画（用户 2026/10/19）
+  if (!all && !mini) {
+    const linked = linkedRuns(floors, level).map((run) => `<polyline points="${run.cells.map(([x, y]) => `${X(x)},${Y(y)}`).join(' ')}" fill="none" stroke="${tint(run.itemId, routeColor(model, run.itemId))}" stroke-width="0.12" stroke-opacity="0.65" stroke-dasharray="0.25 0.3"/>`);
+    if (linked.length) parts.push(`<g class="linked-runs" pointer-events="none">${linked.join('')}</g>`);
   }
   // 蓝底套线将跨层交叉隔开；层内保持真实格点，绝不平移线路。
   for (const floor of shown) {

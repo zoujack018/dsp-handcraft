@@ -34,7 +34,7 @@ export function contentBox(L) {
 }
 
 /** 这个物品能不能在火力发电厂里烧（有燃料值的副产物） */
-export const burnable = (itemId) => itemId >= BYPRODUCT && burnPerMinute(itemId) > 0;
+export const burnable = (itemId) => itemId >= BYPRODUCT && itemId < 2 * BYPRODUCT && burnPerMinute(itemId) > 0;
 /** 一列最多串几台：最上面那两根集装分拣器要把整列的燃料都送进去（满负荷算）；接卫星配电站时另有覆盖限制 */
 export function maxDepthFor(itemId, power) {
   const byRate = Math.max(1, Math.floor((2 * T.sorterRate * 60) / burnPerMinute(itemId) + 1e-9));

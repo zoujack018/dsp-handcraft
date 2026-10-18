@@ -216,6 +216,7 @@ dialog::backdrop { background: rgba(17, 47, 82, 0.45); }
 .drawing > svg { display: block; max-width: none; margin: 0; }
 .route-hit { cursor: pointer; }
 .route-hit:focus-visible { outline: none; stroke: #ffffff55; }
+.drawing:not(.is-panning) .factory { cursor: pointer; } /* 工厂也能单击看介绍；按下拖动时照旧是抓手 */
 .drawing:focus-visible { outline: 1px solid #92bde5; outline-offset: -2px; }
 .empty { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; padding: 24px; color: #abc3df; font-size: 14px; }
 .empty strong { color: #e6f0ff; font-size: 19px; font-weight: 500; }
@@ -425,6 +426,9 @@ body.viewer-expanded { overflow: hidden; }
 .route-info h2 { font-size: 15px; }
 .route-info dl { grid-template-columns: 56px minmax(0, 1fr); gap: 5px 8px; font-size: 12px; }
 .route-info .route-flow { font-family: var(--num); }
+/* 单击工厂时写它的介绍（同悬停提示），一段一行 */
+.route-info p { margin: 0; overflow-wrap: anywhere; }
+.route-info p + p { margin-top: 5px; }
 @media (max-width: 1200px) {
   .layer-rail { width: 150px; flex-basis: 150px; }
   .sheet-stats { order: 2; flex-basis: 100%; margin-right: 0; }
@@ -572,11 +576,11 @@ body.viewer-expanded { overflow: hidden; }
           <label><input type="radio" name="chemical" value="2317"><span>量子化工厂</span></label>
         </div>
       </fieldset>
-      <fieldset class="seg" data-name="chemtight">
-        <legend>化工厂赤道间距压缩</legend>
+      <fieldset class="seg" data-name="chemwide">
+        <legend>化工厂高纬度间距展开</legend>
         <div class="opts">
-          <label><input type="radio" name="chemtight" value="0"><span>关（任何纬度）</span></label>
-          <label><input type="radio" name="chemtight" value="1"><span>开（只限赤道）</span></label>
+          <label><input type="radio" name="chemwide" value="0"><span>关（只限赤道）</span></label>
+          <label><input type="radio" name="chemwide" value="1"><span>开（任何纬度）</span></label>
         </div>
       </fieldset>
       <fieldset class="seg" data-name="lab">
@@ -742,7 +746,7 @@ body.viewer-expanded { overflow: hidden; }
         <aside class="layer-rail" id="layer-rail" aria-label="楼层导航" hidden>
           <section class="route-info viewer-only" id="route-info" aria-labelledby="route-title" hidden>
             <header><span class="sw" aria-hidden="true"></span><h2 id="route-title"></h2><button type="button" id="close-route" aria-label="关闭线路简介">×</button></header>
-            <dl id="route-body" aria-live="polite"></dl>
+            <div id="route-body" aria-live="polite"></div>
           </section>
           <div class="rail-title">楼层</div>
           <div class="floor-list" id="floor-list" role="group" aria-label="选择预览楼层"></div>

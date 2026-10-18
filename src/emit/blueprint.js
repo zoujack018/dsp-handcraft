@@ -13,7 +13,7 @@
 //     antian 原来的写法落下时往去路方向错开，一叠里的节点会先往前再往回，游戏里画出来是折返的。
 import buildingsData from '../../data/Buildings.json' with { type: 'json' };
 import { toStr } from '../codec/parser.js';
-import { BELT_IDS, realItem, slotPoint, THERMAL_PLANT, THERMAL_BANK, STORE_BODY, DISTRIBUTOR_LIFT } from '../gamedata.js';
+import { BELT_IDS, realItem, slotPoint, THERMAL_PLANT, THERMAL_BANK, STORE_BODY, DISTRIBUTOR_LIFT, TANK_STUB } from '../gamedata.js';
 import { coaterYaw } from '../plan/addons.js';
 import { bankSorters } from '../plan/burn.js';
 import { rotateBlueprint } from './rotate.js';
@@ -132,6 +132,30 @@ export function emitBlueprint(graph, layout, opt = {}) {
     { x: x + ox, y: y + oy, z },
   ];
 
+  // 一叠储物仓 / 储液罐（叠法和设置照用户的蓝图 test/fixtures/ref-box.bp.txt）：每格都设成那种物品（玩家一看就知道放什么、成品也只进这种）；
+  // dist 时顶上放物流配送器管这一种，原料那边向其他配送器需求、成品那边供应。返回最下面那个（分拣器、带子接它）
+  const stackStores = (type, layers, x, y, itemId, dist, kind) => {
+    let below = null;
+    let bottom = null;
+    for (let k = 0; k < layers; k++) {
+      const b = fresh(type);
+      b.localOffset = at(x, y, STORE_BODY[type].lift * k);
+      b.parameters = type === 2106 ? { output: true, input: true } : { bans: 0, storageType: 9, filters: Array(STORE_BODY[type].cap).fill(itemId) };
+      if (below) b.inputObjIdx = below.index;
+      add(b);
+      if (!below) bottom = b;
+      below = b;
+    }
+    if (dist) {
+      const d = fresh(2107);
+      d.localOffset = at(x, y, below.localOffset[0].z + DISTRIBUTOR_LIFT[type]);
+      Object.assign(d, { inputObjIdx: below.index, inputFromSlot: 13, inputToSlot: 0, outputToSlot: 0, outputFromSlot: 0, filterId: itemId });
+      d.parameters = { playerMode: 0, storageMode: kind === 'in' ? 2 : 1, workEnergyPerTick: 6, courierAutoReplenish: false };
+      add(d);
+    }
+    return bottom;
+  };
+
   // ---------- 工厂 ----------
   const factoryOf = new Map(); // "块ID#i" -> 建筑
   layout.rows.forEach((row, r) => {
@@ -139,6 +163,11 @@ export function emitBlueprint(graph, layout, opt = {}) {
     for (const bid of row) {
       const p = layout.pos.get(bid);
       p.centers.forEach((cx, i) => {
+        // 箱子供货排进行里的储物仓（plan/storage.js 的 storeUnits）：一叠 levels 层，分拣器接最下面那个
+        if (p.g.store) {
+          factoryOf.set(`${bid}#${i}`, stackStores(p.g.factoryId, p.g.levels ?? 1, cx, cy, realItem(p.g.store.key), p.g.store.dist, p.g.store.kind));
+          return;
+        }
         const f = fresh(p.g.factoryId);
         f.localOffset = at(cx, cy);
         f.yaw = [0, 0];
@@ -191,27 +220,7 @@ export function emitBlueprint(graph, layout, opt = {}) {
   // ---------- 箱子供货的储物仓、储液罐、物流配送器（plan/storage.js），叠法和设置照用户的蓝图 ----------
   // 储物仓每格都设成那种物品（玩家一看就知道放什么、成品也只进这种）；配送器管这一种，原料那边向其他配送器需求、成品那边供应
   const storeB = (layout.stores || []).map((st) => {
-    const stack = (x, y) => {
-      let below = null;
-      let top = null;
-      for (let k = 0; k < st.layers; k++) {
-        const b = fresh(st.type);
-        b.localOffset = at(x, y, STORE_BODY[st.type].lift * k);
-        b.parameters = st.type === 2106 ? { output: true, input: true } : { bans: 0, storageType: 9, filters: Array(STORE_BODY[st.type].cap).fill(st.itemId) };
-        if (below) b.inputObjIdx = below.index;
-        add(b);
-        if (!below) top = b;
-        below = b;
-      }
-      if (st.dist) {
-        const d = fresh(2107);
-        d.localOffset = at(x, y, below.localOffset[0].z + DISTRIBUTOR_LIFT[st.type]);
-        Object.assign(d, { inputObjIdx: below.index, inputFromSlot: 13, inputToSlot: 0, outputToSlot: 0, outputFromSlot: 0, filterId: st.itemId });
-        d.parameters = { playerMode: 0, storageMode: st.kind === 'in' ? 2 : 1, workEnergyPerTick: 6, courierAutoReplenish: false };
-        add(d);
-      }
-      return top; // 分拣器、带子接最下面那个
-    };
+    const stack = (x, y) => stackStores(st.type, st.layers, x, y, st.itemId, st.dist, st.kind);
     return { boxes: st.boxes.map(([x, y]) => stack(x, y)), tank: st.tank ? stack(st.tank.x, st.tank.y) : null };
   });
   // ---------- 传送带 ----------
@@ -412,6 +421,23 @@ export function emitBlueprint(graph, layout, opt = {}) {
     // 研究站、对撞机的槽位不在整格上（x ±0.8 这类、y ±1.83），整根分拣器对齐到槽位的 x，带子那头接最近那格
     const pt = slotPoint(p.g, s.side, s.col - s.cx);
     const slot = pt.slot;
+    if (s.stub) {
+      // 排进行里的储液罐：罐口出两节带子（口上那节、外 1.99 格那节，位置高度照用户的蓝图），拐进通道里这条带的头一格
+      const sgn = s.side === 'bottom' ? -1 : 1;
+      const port = fresh(beltId);
+      port.localOffset = at(s.cx, cy + sgn * TANK_STUB.port, TANK_STUB.zPort);
+      const mid = fresh(beltId);
+      mid.localOffset = at(s.cx, cy + sgn * TANK_STUB.mid, TANK_STUB.zMid);
+      for (const b of [port, mid]) {
+        b.parameters = null;
+        b.yaw = sgn < 0 ? [180, 180] : [0, 0];
+        add(b);
+      }
+      Object.assign(port, { inputObjIdx: factoryB.index, inputFromSlot: slot, outputObjIdx: mid.index, outputToSlot: 1 });
+      Object.assign(mid, { outputObjIdx: beltB.index, outputToSlot: 1 });
+      label(port, s.itemId, graph.items.get(s.itemId).rate); // 罐里装什么蓝图里不记：口上那节带子贴物品标签（和外面那种储液罐一样）
+      continue;
+    }
     const so = fresh(sorterId);
     const beltPt = { x: s.cx + pt.dx + ox, y: seg.y + oy, z: 0 };
     const edgePt = { x: s.cx + pt.dx + ox, y: cy + pt.dy + oy, z: 0 };
