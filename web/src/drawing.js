@@ -185,6 +185,15 @@ export function drawingSvg(model, floors, { level = 0, focus = '', selected = ''
       const above = !all && level >= 3;
       parts.push(`<g class="factory">${title(`火力发电厂 · 烧多余的${model.items[100000 + b.itemId]?.name ?? model.items[b.itemId]?.name ?? ''}`)}${factoryShape('thermal', x, y, w, h, { letter: '火', mini, text, hidden: above, hatch })}</g>`);
     }
+    // 箱子供货的储物仓、储液罐（plan/storage.js）：仓画成方框写「仓」（顶上放了物流配送器的写「配」），储液罐画成圆写「罐」
+    for (const s of model.stores || []) {
+      const [bw, bh] = { 2101: [2.4, 2.4], 2102: [4.4, 2.4], 2106: [3.5, 3.5] }[s.type] ?? [2.4, 2.4];
+      const what = s.type === 2106 ? '储液罐' : s.type === 2101 ? '小型储物仓' : '大型储物仓';
+      const hint = `${what}${s.dist ? ' + 物流配送器' : ''} · ${s.kind === 'in' ? '原料' : '成品'} ${model.items[s.itemId]?.name ?? model.items[100000 + s.itemId]?.name ?? ''} · 叠 ${s.layers} 层`;
+      for (const [px, py] of s.tank ? [[s.tank.x, s.tank.y]] : s.boxes) {
+        parts.push(`<g class="factory">${title(hint)}${factoryShape(s.tank ? 'smelter' : 'store', X(px), Y(py), bw - 0.3, bh - 0.3, { letter: s.tank ? '罐' : s.dist ? '配' : '仓', mini, text, hidden: !all && level >= 3, hatch })}</g>`);
+      }
+    }
     (model.stations || []).forEach((st, k) => {
       const x = X(st.x), y = Y(st.y);
       // 物流站：粗线八角轮廓 + 两道细线圆 + 圆上的四个中心标记，T1 字样保留

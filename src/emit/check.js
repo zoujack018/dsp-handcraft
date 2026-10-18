@@ -1,7 +1,7 @@
 // 出蓝图后的独立检查：只看解码后的蓝图记录本身，不看规划器的任何中间数据。
 // 这是在进游戏之前能做到的最接近实测的检查。
 import { fromStr } from '../codec/parser.js';
-import { RECIPES, ITEMS, factory, RAMP_MAX_DZ, STATION_GAP, STATION_CLEAR, STATION_HALF, powerCells, powerGap, slotPoint, substationPad, THERMAL_PLANT, THERMAL_BANK, FUEL_MJ } from '../gamedata.js';
+import { RECIPES, ITEMS, factory, RAMP_MAX_DZ, STATION_GAP, STATION_CLEAR, STATION_HALF, powerCells, powerGap, slotPoint, substationPad, THERMAL_PLANT, THERMAL_BANK, FUEL_MJ, BOX_SLOT, TANK_PORT, STORE_BODY, DISTRIBUTOR_LIFT } from '../gamedata.js';
 import { POWER, powerReach } from '../plan/power.js';
 
 const isBelt = (id) => id >= 2001 && id <= 2003;
@@ -32,6 +32,14 @@ for (const id of [2302, 2315, 2319, 2303, 2304, 2305, 2318, 2309, 2317, 2901, 29
   const local = ([wx, wy]) => [-wy, wx]; // 朝东（yaw 90）时的偏移 → 建筑自己坐标
   BODY[THERMAL_PLANT] = { w: T.box.h, h: T.box.w, shift: local([T.box.dx, T.box.dy]), slot: Object.fromEntries(Object.entries(T.slot).map(([k, v]) => [k, local(v)])), kind: 'thermal' };
 }
+// 储物仓、储液罐、物流配送器的口位、碰撞体、叠层高度在 gamedata.js（STORE_BODY 等，来由见那里）
+const SMALL_BOX = 2101;
+const BIG_BOX = 2102;
+const TANK = 2106;
+const DISTRIBUTOR = 2107;
+const isBox = (id) => id === SMALL_BOX || id === BIG_BOX;
+const isStore = (id) => isBox(id) || id === TANK;
+const BOX_SLOT_GUESS = new Set(); // 大型仓长边两头的口（0、2、6、8）体积测试第八张 H1 验证过，不再提醒
 // 物流站：7×7 的地归站；站口那节带子在中心 ±2 处（左 3/4/5 号口上中下，右 11/10/9 号口上中下，antian 已验证）
 const isStation = (id) => id === 2103 || id === 2104;
 const STATION_SLOT = { 3: [-2, 1], 4: [-2, 0], 5: [-2, -1], 9: [2, -1], 10: [2, 0], 11: [2, 1], 0: [1, 2], 1: [0, 2], 2: [-1, 2], 6: [-1, -2], 7: [0, -2], 8: [1, -2] };
@@ -78,6 +86,19 @@ export function checkBlueprint(str) {
   const sorters = B.filter((b) => isSorter(b.itemId));
   const pilers = B.filter((b) => b.itemId === PILER);
   const coaters = B.filter((b) => b.itemId === COATER);
+  const stores = B.filter((b) => isStore(b.itemId));
+  const distributors = B.filter((b) => b.itemId === DISTRIBUTOR);
+  // 和储液罐相连的带子（接在罐口的那节，和进罐前、出罐后的一节）：游戏把这几节放在口上，坐标带小数
+  const tankLinked = new Set();
+  for (const b of belts) {
+    if (B[b.outputObjIdx]?.itemId === TANK) {
+      tankLinked.add(b.index);
+      for (const u of belts) if (u.outputObjIdx === b.index) tankLinked.add(u.index);
+    } else if (B[b.inputObjIdx]?.itemId === TANK) {
+      tankLinked.add(b.index);
+      if (isBelt(B[b.outputObjIdx]?.itemId)) tankLinked.add(b.outputObjIdx);
+    }
+  }
   // 和集装机相连的带子（进出那两节）
   const pileLinked = (b) => (b.outputObjIdx >= 0 && B[b.outputObjIdx]?.itemId === PILER) || (b.inputObjIdx >= 0 && B[b.inputObjIdx]?.itemId === PILER);
   // 叠在别的研究站上面的研究站：原料从下面那台传上来、产物传下去，不接分拣器
@@ -127,8 +148,8 @@ export function checkBlueprint(str) {
       const n = B[b.outputObjIdx];
       // 相邻：水平走一格（高度变化不超过 RAMP_MAX_DZ 层，现在是 0：不用斜坡），或同一格里上下差 1 层（原地竖直升降）
       const flat = Math.abs(P(n).x - P(b).x) + Math.abs(P(n).y - P(b).y);
-      if (isStation(n.itemId)) {
-        // 进物流站：站口位置在 3b 里查
+      if (isStation(n.itemId) || n.itemId === TANK) {
+        // 进物流站、储液罐：口的位置在 3b、3c 里查
       } else if (!isBelt(n.itemId)) err(`传送带 ${b.index} 输出到非传送带`);
       else if (!(flat === 1 || (flat === 0 && Math.abs(P(n).z - P(b).z) === 1))) err(`传送带 ${b.index}→${n.index} 不相邻`);
       else if (flat === 1 && Math.abs(P(n).z - P(b).z) > RAMP_MAX_DZ) err(`传送带 ${b.index}→${n.index} 斜着升降 ${Math.abs(P(n).z - P(b).z)} 层（官方垂直传送带是同一格里竖直叠放）`);
@@ -140,7 +161,7 @@ export function checkBlueprint(str) {
     }
     if (P(b).z < 0) err(`传送带 ${b.index} 在地面以下`);
     const off = Math.abs(b.localOffset[0].x - P(b).x) + Math.abs(b.localOffset[0].y - P(b).y);
-    if (off > (pileLinked(b) ? 0.21 : 0.02)) err(`传送带 ${b.index} 偏离格子 ${off.toFixed(4)}`);
+    if (off > (pileLinked(b) || tankLinked.has(b.index) ? 0.21 : 0.02)) err(`传送带 ${b.index} 偏离格子 ${off.toFixed(4)}`);
     for (const f of solids) {
       if (inside(f, P(b).x, P(b).y, P)) err(`传送带 ${b.index} 压在工厂 ${f.index} 上`);
     }
@@ -220,6 +241,46 @@ export function checkBlueprint(str) {
     }
   }
 
+  // 3c. 储物仓、储液罐、物流配送器（常量和来由见文件开头）：一叠里上面那个正好在下面那个头顶，悬空的放不上去；
+  // 占地不压工厂、物流站、别的仓和带子（接在储液罐口上的那节带子除外）；配送器在一叠最上面那个仓的顶上、filterId 是它管的物品；
+  // 储液罐口上的带子位置和口对得上
+  {
+    const below = (b) => (b.inputObjIdx >= 0 ? B[b.inputObjIdx] : null);
+    const sbox = (b) => ({ x: P(b).x, y: P(b).y, ...(yawOf(b) % 180 ? { w: STORE_BODY[b.itemId].h, h: STORE_BODY[b.itemId].w } : { w: STORE_BODY[b.itemId].w, h: STORE_BODY[b.itemId].h }) });
+    const hit = (A, C) => Math.abs(A.x - C.x) < (A.w + C.w) / 2 - EPS && Math.abs(A.y - C.y) < (A.h + C.h) / 2 - EPS;
+    const z = (b) => b.localOffset[0].z;
+    for (const b of stores) {
+      const d = below(b);
+      if (d && d.itemId === b.itemId) {
+        if (P(d).x !== P(b).x || P(d).y !== P(b).y || Math.abs(z(b) - z(d) - STORE_BODY[b.itemId].lift) > 0.05) err(`${name(b.itemId)} ${b.index} 没有正好叠在 ${d.index} 头顶`);
+      } else if (d) err(`${name(b.itemId)} ${b.index} 叠在 ${name(d.itemId)} 上`);
+      else if (z(b) > 0.05) err(`${name(b.itemId)} ${b.index} 悬空（z=${z(b).toFixed(2)}），下面没有同样的仓`);
+      if (d) continue; // 叠在上面的占地和最下面那个一样，只查最下面那个
+      const A = sbox(b);
+      for (const f of solids) if (hit(A, box(f, P))) err(`${name(b.itemId)} ${b.index} 与工厂 ${f.index} 碰撞`);
+      for (const st of stations) if (Math.abs(A.x - P(st).x) < STATION_HALF + A.w / 2 - EPS && Math.abs(A.y - P(st).y) < STATION_HALF + A.h / 2 - EPS) err(`${name(b.itemId)} ${b.index} 与物流站 ${st.index} 碰撞`);
+      for (const o of stores) if (o.index > b.index && !below(o) && hit(A, sbox(o))) err(`${name(b.itemId)} ${b.index} 与 ${name(o.itemId)} ${o.index} 碰撞`);
+      for (const bt of belts) if (!tankLinked.has(bt.index) && P(bt).z < 3 && Math.abs(P(bt).x - A.x) < A.w / 2 - EPS && Math.abs(P(bt).y - A.y) < A.h / 2 - EPS) err(`传送带 ${bt.index} 压在${name(b.itemId)} ${b.index} 上`);
+    }
+    for (const d of distributors) {
+      const o = below(d);
+      if (!o || !isBox(o.itemId)) err(`物流配送器 ${d.index} 下面不是储物仓`);
+      else if (stores.some((u) => u.inputObjIdx === o.index && isBox(u.itemId))) err(`物流配送器 ${d.index} 不在那一叠最上面的储物仓顶上`);
+      else if (P(o).x !== P(d).x || P(o).y !== P(d).y || Math.abs(z(d) - z(o) - DISTRIBUTOR_LIFT[o.itemId]) > 0.05) err(`物流配送器 ${d.index} 没有正好放在储物仓 ${o.index} 顶上`);
+      if (!d.filterId) warnings.push(`物流配送器 ${d.index} 没设管哪种物品`);
+    }
+    for (const b of belts) {
+      for (const [idx, slot] of [[b.outputObjIdx, b.outputToSlot], [b.inputObjIdx, b.inputFromSlot]]) {
+        const t = idx >= 0 ? B[idx] : null;
+        if (!t || t.itemId !== TANK) continue;
+        if (below(t)) err(`传送带 ${b.index} 接在叠在上面的储液罐 ${t.index} 上（只接最下面那个）`);
+        const off = TANK_PORT[slot] && turn(t, TANK_PORT[slot]);
+        if (!off) err(`传送带 ${b.index} 接在储液罐 ${t.index} 的 ${slot} 号口（位置未知）`);
+        else if (Math.abs(t.localOffset[0].x + off[0] - b.localOffset[0].x) > 0.05 || Math.abs(t.localOffset[0].y + off[1] - b.localOffset[0].y) > 0.05) err(`传送带 ${b.index} 接在储液罐 ${t.index} 的 ${slot} 号口，但位置不在口上`);
+      }
+    }
+  }
+
   // 4. 分拣器几何：直线、长度 1~3、端点落在所连对象上、槽位与位置一致
   const spans = new Map(); // x -> [{lo, hi, idx}]
   for (const s of sorters) {
@@ -243,6 +304,12 @@ export function checkBlueprint(str) {
         // 研究站、对撞机的分拣器对齐槽位，带子那头离带子那格的中心最多差 0.4 格（参考蓝图里就是这样接的）
         if (Math.abs(P(o).x - p.x) > 0.45 || Math.abs(P(o).y - p.y) > 0.45) err(`分拣器 ${s.index} ${which}不在所连传送带上`);
         if (P(o).z !== 0) err(`分拣器 ${s.index} ${which}接在高架带上（分拣器只能接地面带）`);
+      } else if (isBox(o.itemId)) {
+        const off = BOX_SLOT[o.itemId][slot] && turn(o, BOX_SLOT[o.itemId][slot]);
+        if (!off) err(`分拣器 ${s.index} ${which}接在储物仓 ${o.index} 的 ${slot} 号口（位置未知）`);
+        else if (Math.abs(P(o).x + off[0] - p.x) > 0.02 || Math.abs(P(o).y + off[1] - p.y) > 0.02) err(`分拣器 ${s.index} ${which}槽位 ${slot} 与储物仓 ${o.index} 的位置不符`);
+        if (P(o).z !== 0) err(`分拣器 ${s.index} ${which}接在叠在上面的储物仓 ${o.index} 上（只接最下面那个）`);
+        if (o.itemId === BIG_BOX && BOX_SLOT_GUESS.has(slot) && !warnings.includes('用到了大型储物仓长边两头的口（0、2、6、8 号），口位是推断的，请在游戏里确认')) warnings.push('用到了大型储物仓长边两头的口（0、2、6、8 号），口位是推断的，请在游戏里确认');
       } else if (BODY[o.itemId]) {
         const off = BODY[o.itemId].slot[slot] && turn(o, BODY[o.itemId].slot[slot]);
         if (!off) err(`分拣器 ${s.index} ${which}槽位 ${slot} 未知`);
@@ -301,9 +368,30 @@ export function checkBlueprint(str) {
     const isHead = !belts.some((x) => x.outputObjIdx === b.index);
     if (isHead) seed(b, b.parameters.iconId);
   }
+  // 储液罐出来的带：罐里装什么蓝图里不记，按那节带子的图标
+  for (const b of belts) if (b.parameters?.iconId && B[b.inputObjIdx]?.itemId === TANK) seed(b, b.parameters.iconId);
+  // 储物仓经分拣器放上带的料：一叠里设了过滤的物品，或者顶上配送器管的物品（只有一种时才算）
+  const boxItem = (b) => {
+    const items = new Set();
+    for (let cur = b, n = 0; cur && n < 64; n++) {
+      for (const it of cur.parameters?.filters ?? []) if (it) items.add(it);
+      const up = B.find((u) => u.inputObjIdx === cur.index && (u.itemId === cur.itemId || u.itemId === DISTRIBUTOR));
+      if (up?.itemId === DISTRIBUTOR) {
+        if (up.filterId) items.add(up.filterId);
+        break;
+      }
+      cur = up ?? null;
+    }
+    return items.size === 1 ? [...items][0] : null;
+  };
   for (const s of sorters) {
     const src = B[s.inputObjIdx];
     const dst = B[s.outputObjIdx];
+    if (src && isBox(src.itemId) && dst && isBelt(dst.itemId)) {
+      const it = s.filterId || boxItem(src);
+      if (it) seed(dst, it);
+      else if (!warnings.includes('有储物仓往带上放料，但没设过滤或配送器，不知道放的是什么')) warnings.push('有储物仓往带上放料，但没设过滤或配送器，不知道放的是什么');
+    }
     if (src && BODY[src.itemId] && dst && isBelt(dst.itemId)) {
       const r = RECIPES.get(src.recipeId);
       // 带过滤的出料分拣器只拿那一种（有副产物的工厂两根出料各拿各的）
@@ -374,10 +462,14 @@ export function checkBlueprint(str) {
   }
 
   // 5b. 喷涂覆盖（蓝图里有喷涂机才查）：每根从带子往工厂取料的分拣器，沿带子往上游走到这条带的来源
-  // （带头、物流站出站口，或最后一个往带上放料的出料分拣器）之前，必须经过一台喷涂机——
+  // （带头、物流站出站口，或最后一个往带上放料的出料分拣器）之前经过了喷涂机，取的料才算喷过——
   // 工厂产出的东西不带增产（游戏规则），放料口在喷涂机下游、或来源到取料口之间没有喷涂机，料就没喷到。
+  // 一台工厂的原料要么全喷过、要么全没喷：只喷一部分时按最低一级算没有效果，喷过的增产剂白耗（游戏规则）。
+  // （用户 2026/10/18 起只喷最终产物的直接原料，上游工厂的原料本来就不喷；以前每级都喷时要求每根取料都喷过）
   let feedSorters = 0;
   let unsprayed = 0;
+  let mixed = 0;
+  let sprayedFactories = 0;
   {
     const coaterAt = new Set(coaters.map((c) => `${P(c).x},${P(c).y},${Math.round(P(c).z)}`)); // 喷涂机骑着的格（分层）
     const prevOf = new Map(); // 带 index -> 上游的带（可能几条汇进来；过集装机接着算）
@@ -391,6 +483,7 @@ export function checkBlueprint(str) {
     const dumpsOn = new Set(); // 有出料分拣器往上放料的带（工厂刚放上来的料没喷过）
     for (const s of sorters) if (BODY[B[s.inputObjIdx]?.itemId] && isBelt(B[s.outputObjIdx]?.itemId)) dumpsOn.add(s.outputObjIdx);
     const memo = new Map(); // 带 index -> 流出这一节的料是否全喷过
+    const fedBy = new Map(); // 工厂 index -> [取的料喷过的分拣器数, 没喷过的分拣器数]
     const sprayedFrom = (idx) => {
       if (memo.has(idx)) return memo.get(idx);
       memo.set(idx, true); // 环上先按喷过算（纯环没有来源，不会有料）
@@ -411,11 +504,20 @@ export function checkBlueprint(str) {
       const dst = B[s.outputObjIdx];
       if (!src || !isBelt(src.itemId) || !dst || !BODY[dst.itemId] || dst.itemId === THERMAL_PLANT) continue; // 烧掉的燃料不用喷
       feedSorters++;
-      if (coaters.length && !sprayedFrom(src.index)) {
-        unsprayed++;
-        err(`分拣器 ${s.index} 往工厂 ${dst.index} 取的料没过喷涂机（沿带子往上游到带头、站口或放料口之间没有喷涂机）`);
-      }
+      if (!coaters.length) continue;
+      const ok = sprayedFrom(src.index);
+      if (!ok) unsprayed++;
+      const t = fedBy.get(dst.index) ?? [0, 0];
+      t[ok ? 0 : 1]++;
+      fedBy.set(dst.index, t);
     }
+    for (const [fi, [yes, no]] of fedBy) {
+      if (yes && no) {
+        mixed++;
+        err(`工厂 ${fi} 的原料只喷了一部分（${yes} 根取料分拣器的料过了喷涂机、${no} 根没过）：按最低一级算没有效果，喷过的增产剂白耗`);
+      } else if (yes) sprayedFactories++;
+    }
+    if (coaters.length && !sprayedFactories) warnings.push('蓝图里有喷涂机，但没有一台工厂的原料全喷过（增产剂不起作用）');
   }
 
   // 5c. 火力发电厂的燃料：每台要么有分拣器从带燃料的带子上取，要么从一台有燃料的发电厂接过来（一列往下一台传一台）
@@ -458,6 +560,12 @@ export function checkBlueprint(str) {
         // 站身外 1 格碰撞圈（按 9×9）只挡卫星配电站，电力感应塔可以贴着站身（体积测试 D2 D3 变红、D4 能放）
         else if (n.itemId === 2212 && Math.abs(P(st).x - x) <= STATION_CLEAR && Math.abs(P(st).y - y) <= STATION_CLEAR) err(`${what}离物流站 ${st.index} 太近（站身外还有 1 格碰撞圈）`);
         for (const f of solids) if (inside(f, x, y, P)) err(`${what}与工厂 ${f.index} 碰撞`);
+        for (const b of stores) {
+          if (b.inputObjIdx >= 0) continue;
+          const w = yawOf(b) % 180 ? STORE_BODY[b.itemId].h : STORE_BODY[b.itemId].w;
+          const h = yawOf(b) % 180 ? STORE_BODY[b.itemId].w : STORE_BODY[b.itemId].h;
+          if (Math.abs(P(b).x - x) < w / 2 - EPS && Math.abs(P(b).y - y) < h / 2 - EPS) err(`${what}压在${name(b.itemId)} ${b.index} 上`);
+        }
       }
       // 卫星配电站 3×3 和化工厂、叠层研究站、对撞机的碰撞体之间要再隔开一点（gamedata.js 的 substationPad，第六张体积测试 + 2026/10/08 验证合集：
       // 化工厂左 0.5、下沿 0.5，叠层研究站四周 1，对撞机左 1.5、下 1.5、右 0.5、上 0.5）。间隔按工厂自己的朝向，转了方向的蓝图跟着转
@@ -491,6 +599,7 @@ export function checkBlueprint(str) {
     for (const f of thermals) if (!covered(P(f))) err(`火力发电厂 ${f.index} 不在供电范围内（不并网）`);
     for (const st of stations) if (!covered(P(st))) err(`物流站 ${st.index} 不在供电范围内`);
     for (const d of [...pilers, ...coaters]) if (!covered(P(d))) err(`${d.itemId === PILER ? '自动集装机' : '喷涂机'} ${d.index} 不在供电范围内`);
+    for (const d of distributors) if (!covered(P(d))) err(`物流配送器 ${d.index} 不在供电范围内`); // 推断：给配送运输机充电要电（参数里有最大充能功率）
     for (const s of sorters) {
       const [p0, p1] = s.localOffset;
       if (!covered({ x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 })) err(`分拣器 ${s.index} 不在供电范围内`);
@@ -514,6 +623,6 @@ export function checkBlueprint(str) {
     ok: errors.length === 0,
     errors,
     warnings,
-    stats: { width: bp.dragBoxSize.x, height: bp.dragBoxSize.y, buildings: B.length, factories: factories.length, belts: belts.length, sorters: sorters.length, power: nodes.length, stations: stations.length, pilers: pilers.length, coaters: coaters.length, feedSorters, unsprayed: coaters.length ? unsprayed : null },
+    stats: { width: bp.dragBoxSize.x, height: bp.dragBoxSize.y, buildings: B.length, factories: factories.length, belts: belts.length, sorters: sorters.length, power: nodes.length, stations: stations.length, pilers: pilers.length, coaters: coaters.length, feedSorters, unsprayed: coaters.length ? unsprayed : null, mixed: coaters.length ? mixed : null, sprayedFactories: coaters.length ? sprayedFactories : null },
   };
 }

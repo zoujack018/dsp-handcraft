@@ -173,7 +173,7 @@ for (const a of [-1, 0, 1]) {
  * @param L route() 的中间结果（需已有 pos、rowCy、channels、segments、sides）
  * @param sideIo Map<gid, {bottom: Map<itemId,'in'|'out'>, top: ...}>
  */
-export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15, fourthTrack = false } = {}) {
+export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15, fourthTrack = false, wideTracks = false } = {}) {
   const speed = SORTER_SPEED[sorter];
   if (!speed) throw new Error(`未知分拣器 ID ${sorter}`);
   const sorters = [];
@@ -211,10 +211,12 @@ export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15
   for (const chan of L.channels) {
     const c = chan.c;
     // 碰撞规则的编码宽度（见下面 solve）：通道里 4 条轨道（route.js 的 fourthTrack，喷涂时开）每列 4 位，3 条以内照旧 3 位
-    const bits = fourthTrack && chan.n > 3 ? 4 : 3;
+    // 宽通道（wideTracks，5~6 条轨）也是每列 4 位：1+t 下方（1~6）、7+t 上方（7~12）、15 已满
+    const wide = wideTracks && chan.n > 4;
+    const bits = (fourthTrack || wideTracks) && chan.n > 3 ? 4 : 3;
     const cmask = (1 << bits) - 1;
-    const AB = bits === 4 ? 6 : 4; // 上方来的分拣器接第 t 条：编码 AB + t
-    const NT = bits === 4 ? 4 : 3; // 编码里分得清几条轨道
+    const AB = wide ? 7 : bits === 4 ? 6 : 4; // 上方来的分拣器接第 t 条：编码 AB + t
+    const NT = wide ? 6 : bits === 4 ? 4 : 3; // 编码里分得清几条轨道
     // 收集与该通道相邻的工厂侧：下方行 c-1 的上侧，上方行 c 的下侧
     let units = [];
     let nBelow = 0; // 前 nBelow 台来自下方行

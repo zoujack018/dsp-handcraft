@@ -13,7 +13,7 @@
 //     antian 原来的写法落下时往去路方向错开，一叠里的节点会先往前再往回，游戏里画出来是折返的。
 import buildingsData from '../../data/Buildings.json' with { type: 'json' };
 import { toStr } from '../codec/parser.js';
-import { BELT_IDS, realItem, slotPoint, THERMAL_PLANT, THERMAL_BANK } from '../gamedata.js';
+import { BELT_IDS, realItem, slotPoint, THERMAL_PLANT, THERMAL_BANK, STORE_BODY, DISTRIBUTOR_LIFT } from '../gamedata.js';
 import { coaterYaw } from '../plan/addons.js';
 import { bankSorters } from '../plan/burn.js';
 import { rotateBlueprint } from './rotate.js';
@@ -26,6 +26,11 @@ if (!TEMPLATE.has(2040)) {
 // 火力发电厂也不在 antian 的模板里，照用户 2026/10/07 贴来的那张（test/fixtures/ref-thermal-bank.bp.txt）补上
 if (!TEMPLATE.has(THERMAL_PLANT)) {
   TEMPLATE.set(THERMAL_PLANT, { index: -1, itemId: THERMAL_PLANT, modelIndex: THERMAL_BANK.modelIndex, areaIndex: 0, localOffset: [{ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }], yaw: [THERMAL_BANK.yaw, THERMAL_BANK.yaw], tilt: 0, pitch: 0, tilt2: 0, pitch2: 0, outputObjIdx: -1, inputObjIdx: -1, outputToSlot: 0, inputFromSlot: 0, outputFromSlot: 0, inputToSlot: 0, outputOffset: 0, inputOffset: 0, recipeId: 0, filterId: 0, parameters: null });
+}
+// 储物仓、储液罐、物流配送器（箱子供货，plan/storage.js）：照用户 2026/10/18 的蓝图（test/fixtures/ref-box.bp.txt）写，
+// 一律用这份（antian 的模板里小型储物仓是从一叠里抄的，inputObjIdx 指着别的建筑）
+for (const [itemId, modelIndex] of [[2101, 51], [2102, 52], [2106, 121], [2107, 371]]) {
+  TEMPLATE.set(itemId, { index: -1, itemId, modelIndex, areaIndex: 0, localOffset: [{ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }], yaw: [0, 0], tilt: 0, pitch: 0, tilt2: 0, pitch2: 0, outputObjIdx: -1, inputObjIdx: -1, outputToSlot: 14, inputFromSlot: 15, outputFromSlot: 15, inputToSlot: 14, outputOffset: 0, inputOffset: 0, recipeId: 0, filterId: 0, parameters: null });
 }
 const fresh = (itemId) => {
   const t = TEMPLATE.get(itemId);
@@ -183,6 +188,32 @@ export function emitBlueprint(graph, layout, opt = {}) {
     b.parameters = params;
     stationB.push(add(b));
   }
+  // ---------- 箱子供货的储物仓、储液罐、物流配送器（plan/storage.js），叠法和设置照用户的蓝图 ----------
+  // 储物仓每格都设成那种物品（玩家一看就知道放什么、成品也只进这种）；配送器管这一种，原料那边向其他配送器需求、成品那边供应
+  const storeB = (layout.stores || []).map((st) => {
+    const stack = (x, y) => {
+      let below = null;
+      let top = null;
+      for (let k = 0; k < st.layers; k++) {
+        const b = fresh(st.type);
+        b.localOffset = at(x, y, STORE_BODY[st.type].lift * k);
+        b.parameters = st.type === 2106 ? { output: true, input: true } : { bans: 0, storageType: 9, filters: Array(STORE_BODY[st.type].cap).fill(st.itemId) };
+        if (below) b.inputObjIdx = below.index;
+        add(b);
+        if (!below) top = b;
+        below = b;
+      }
+      if (st.dist) {
+        const d = fresh(2107);
+        d.localOffset = at(x, y, below.localOffset[0].z + DISTRIBUTOR_LIFT[st.type]);
+        Object.assign(d, { inputObjIdx: below.index, inputFromSlot: 13, inputToSlot: 0, outputToSlot: 0, outputFromSlot: 0, filterId: st.itemId });
+        d.parameters = { playerMode: 0, storageMode: st.kind === 'in' ? 2 : 1, workEnergyPerTick: 6, courierAutoReplenish: false };
+        add(d);
+      }
+      return top; // 分拣器、带子接最下面那个
+    };
+    return { boxes: st.boxes.map(([x, y]) => stack(x, y)), tank: st.tank ? stack(st.tank.x, st.tank.y) : null };
+  });
   // ---------- 传送带 ----------
   const beltAt = new Map(); // "x,y,z" -> 建筑
   const key = (x, y, z) => `${x},${y},${z}`;
@@ -287,6 +318,21 @@ export function emitBlueprint(graph, layout, opt = {}) {
       last.outputObjIdx = stationB[outStation.k].index;
       last.outputToSlot = outStation.slot;
     }
+    // 储液罐（箱子供货）：原料带的头一节从罐口出来、成品带的最后一节进罐口，这一节放在口上（坐标带小数，照用户的蓝图）
+    for (const part of chain.parts) {
+      const st = part.leg != null ? layout.stores?.[layout.legs[part.leg].store] : null;
+      if (!st?.tank || !bs.length) continue;
+      const tb = storeB[layout.legs[part.leg].store].tank;
+      const end = st.kind === 'in' ? bs[0] : bs[bs.length - 1];
+      end.localOffset = at(st.tank.port[0], st.tank.port[1]);
+      if (st.kind === 'in') {
+        end.inputObjIdx = tb.index;
+        end.inputFromSlot = st.tank.slot;
+      } else {
+        end.outputObjIdx = tb.index;
+        end.outputToSlot = st.tank.slot;
+      }
+    }
     for (const t of extra) build(t);
     const f = graph.items.get(chain.itemId);
     if (inPort) label(bs[0], chain.itemId, f.rate); // 原料入口贴物品标签
@@ -389,6 +435,26 @@ export function emitBlueprint(graph, layout, opt = {}) {
     so.parameters = { length: s.length };
     add(so);
   }
+
+  // ---------- 箱子供货：储物仓和进料带之间的分拣器（原料从仓口放上带、成品从带上取进仓口），长 1，照用户的蓝图 ----------
+  (layout.stores || []).forEach((st, k) => {
+    for (const s of st.sorters) {
+      const beltB = beltAt.get(key(s.belt[0], s.belt[1], 0));
+      const boxB = storeB[k].boxes[s.box];
+      if (!beltB) {
+        issues.push(`储物仓的分拣器在 (${s.belt[0]},${s.belt[1]}) 找不到传送带，已略过`);
+        continue;
+      }
+      const so = fresh(sorterId);
+      so.localOffset = [{ x: s.p0[0] + ox, y: s.p0[1] + oy, z: 0 }, { x: s.p1[0] + ox, y: s.p1[1] + oy, z: 0 }];
+      so.yaw = s.p1[1] > s.p0[1] ? [0, 0] : [180, 180];
+      so.parameters = { length: 1 };
+      so.filterId = 0;
+      if (st.kind === 'in') Object.assign(so, { inputObjIdx: boxB.index, inputFromSlot: s.slot, inputToSlot: 1, outputObjIdx: beltB.index, outputToSlot: -1, outputFromSlot: 0 });
+      else Object.assign(so, { inputObjIdx: beltB.index, inputFromSlot: -1, outputObjIdx: boxB.index, outputToSlot: s.slot });
+      add(so);
+    }
+  });
 
   // ---------- 就地烧副产物的火力发电厂（plan/burn.js），摆法和分拣器照用户的蓝图 ----------
   for (const bank of layout.burners || []) {

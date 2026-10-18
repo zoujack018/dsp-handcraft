@@ -20,15 +20,20 @@ const EPS = 1e-9;
  * @param {Record<string,string|number>} [o.recipes] 指定配方 { 物品名或 ID: 配方名或 ID }；可以是有副产物的配方（如石墨烯高效），
  *   副产物单独算一股流（byproduct），从这组工厂送到出口，不抵产线里同种物品的需求
  * @param {string[]} [o.raw] 额外视为外部供应的物品
- * @param {0|1|2|3} [o.spray=0] 喷增产剂（Mk.I~Mk.III）：所有原料和中间产物进工厂前都过喷涂机（摆法见 plan/addons.js），
- *   所以每个配方都吃到——能增产的按增产（产物 +12.5%/20%/25%），只能加速的按加速（+25%/50%/100%）算（游戏规则：
- *   一台工厂的每一种原料都喷到才有效果，按最低喷涂等级算；工厂产出的东西不带增产，进下一台工厂前要再喷）。
- *   增产剂用量 = 所有进工厂的原料和中间产物的流量之和 ÷ 每个增产剂的喷涂次数（calc.spray.rate）
+ * @param {0|1|2|3} [o.spray=0] 喷增产剂（Mk.I~Mk.III）：只喷最终产物的直接原料，只有最终产物那道吃到（用户 2026/10/18）——
+ *   能增产的按增产（产物 +12.5%/20%/25%），只能加速的按加速（+25%/50%/100%）算（游戏规则：一台工厂的每一种原料都喷到才有效果，
+ *   按最低喷涂等级算；工厂产出的东西不带增产）。这几种原料要是也供给上游的工厂（比如粒子容器的铜块还要做磁线圈），
+ *   喷涂机放在上游都取完之后、最终工厂之前（plan/layout/belts.js），上游吃到的是没喷的，增产剂不白耗。
+ *   calc.spray.items 是要喷的物品，calc.spray.to 是吃到增产的配方组；增产剂用量 = 进这几组的原料流量之和 ÷ 每个增产剂的喷涂次数（calc.spray.rate）
+ * @param {'final'|'all'} [o.sprayScope='final'] 'all'：所有原料和中间产物都喷、每个配方都吃到（2026/10/18 以前的做法，比较用；
+ *   calc.spray 里没有 items、to）
+ * @param {number[]} [o.sprayFor] 吃到增产的是哪些物品的配方（默认就是目标）：大产线切块时（plan/modules.js）各块的目标是中间产物，
+ *   这里传整条线的最终产物，最终产物不在这一块里时这一块不喷
  * @param {'equator'|'high'} [o.latitude='high'] 化工厂、量子化工厂的间距：默认 'high' 加宽（任何纬度都能放，gamedata.js 的 GEOMETRY_HIGH_LATITUDE），
  *   'equator' 赤道压缩（化工厂隔 7、量子化工厂隔 8，只在赤道附近放得下；网页左栏「化工厂赤道间距压缩」）。
  *   只影响排布，不影响台数；原样放进返回值，buildGraph 按它取工厂几何
  */
-export function calculate({ target, rate, targets, smelter = 2302, assembler = 2303, chemical = 2309, lab = 2901, labStack = 15, recipes = {}, raw = [], spray = 0, latitude = 'high' }) {
+export function calculate({ target, rate, targets, smelter = 2302, assembler = 2303, chemical = 2309, lab = 2901, labStack = 15, recipes = {}, raw = [], spray = 0, sprayScope = 'final', sprayFor = null, latitude = 'high' }) {
   const goals = (targets?.length ? targets : [{ target, rate }]).map((t) => ({ item: item(t.target), rate: Number(t.rate) }));
   const targetItem = goals[0].item;
   const rawIds = new Set([...RAW_ITEM_IDS, ...raw.map((n) => item(n).id)]);
@@ -67,7 +72,11 @@ export function calculate({ target, rate, targets, smelter = 2302, assembler = 2
   const demand = new Map();
   for (const g of goals) demand.set(g.item.id, (demand.get(g.item.id) || 0) + g.rate);
   const eff = SPRAY_LEVELS[spray] ?? null;
-  let sprayFlow = 0; // 所有进工厂的原料和中间产物的流量之和（每一股都要过喷涂机）
+  // 只喷最终产物的直接原料（sprayScope 'all' 时为 null：全都喷）；最终产物的配方不吃增产剂（proliferator 为 0）就不喷
+  const goalIds = new Set(sprayFor ? sprayFor.map(Number) : goals.map((g) => g.item.id));
+  const canSpray = (r) => !!r && r.inputs.length > 0 && (r.proliferator & 3) > 0;
+  const sprayed = eff && sprayScope !== 'all' ? new Set([...goalIds].flatMap((id) => (canSpray(recipeFor.get(id)) ? recipeFor.get(id).inputs.map((x) => x.id) : []))) : null;
+  let sprayFlow = 0; // 进吃到增产的工厂的原料流量之和（每一股都过了喷涂机）
   const units = [];
   const rawSupply = [];
   const byproducts = [];
@@ -81,9 +90,10 @@ export function calculate({ target, rate, targets, smelter = 2302, assembler = 2
       continue;
     }
     const f = chooseFactory(r);
-    // 喷增产剂：所有原料和中间产物都喷（用户 2026/10/08），每个配方都吃到——能增产的按增产，只能加速的按加速
+    // 喷增产剂：最终产物那道吃到（sprayScope 'all'：每个配方都吃到）——能增产的按增产，只能加速的按加速
     // （数据里 proliferator & 2 能增产、& 1 能加速：反物质质能储存、X 射线裂解这类只能加速）
-    const mode = eff && r.inputs.length > 0 ? (r.proliferator & 2 ? 'extra' : r.proliferator & 1 ? 'speed' : null) : null;
+    const fed = !sprayed || (goalIds.has(itemId) && canSpray(r));
+    const mode = eff && fed && r.inputs.length > 0 ? (r.proliferator & 2 ? 'extra' : r.proliferator & 1 ? 'speed' : null) : null;
     const outMul = mode === 'extra' ? 1 + eff.extra : 1;
     const speedMul = mode === 'speed' ? 1 + eff.speed : 1;
     const out = (r.outputs.find((o) => o.id === itemId) ?? r.outputs[0]).count * outMul;
@@ -120,15 +130,19 @@ export function calculate({ target, rate, targets, smelter = 2302, assembler = 2
     for (const inp of r.inputs) {
       const inRate = (need / out) * inp.count;
       demand.set(inp.id, (demand.get(inp.id) || 0) + inRate);
-      sprayFlow += inRate;
+      if (fed) sprayFlow += inRate;
       flows.push({ itemId: inp.id, from: null, to: unit.id, rate: inRate });
     }
   }
   // 回填每条流的来源：生产该物品的配方组，或 'RAW'
   const producerOf = new Map(units.map((u) => [u.itemId, u.id]));
   for (const fl of flows) if (!fl.byproduct) fl.from = producerOf.get(fl.itemId) || 'RAW';
-  // 增产剂用量：所有进工厂的带（原料和中间产物）都喷，一个增产剂喷 sprays 个
+  // 增产剂用量：进吃到增产的工厂的料都喷过，一个增产剂喷 sprays 个
   const sprayInfo = eff ? { ...eff, rate: sprayFlow / eff.sprays } : null;
+  if (sprayInfo && sprayed) {
+    sprayInfo.items = [...sprayed];
+    sprayInfo.to = units.filter((u) => u.spray).map((u) => u.id);
+  }
   // target/targetId/rate 保留给单目标的老代码；多目标时 target 是「A+B」，rate 是第一个目标的产量
   return {
     spray: sprayInfo,

@@ -104,6 +104,70 @@ function tracksMsg(t) {
   return m;
 }
 
+// 退火提前拒绝，第三处（分支 explore/typeset）：在 route() 里 placePorts 之后、liftLegs/estimateLegs 之前问一次。
+// 背景：退火里 92%~97% 的 route() 最后被 rejectFloor 拒掉，但原来的两处提前拒绝（本文件 scoreLayout 里，分拣器之前、
+// 供电之前）都在 elevation（liftLegs）跑完之后——而 elevation 一步就占 route 总时间的一半。在它之前先按下限问一次，
+// 能省掉最费时的这一步。量到的数（macmini，引力矩阵 180 塔，每轮 3000 步）：gm180 的两轮里分别多拦掉被拒评估的
+// 16% 和 37%，一次误拒都没有（gm360 当前不可行、代价里有分层记的层/路惩罚，暂时拦不到，可行后也会有收益）。
+//
+// 为什么 floor_pre 不超过最终代价（最终代价见本文件末尾 result.cost）：
+//   最终代价 = (area+extraArea)*areaWeight + groundBelts + airBelts + penalty + sorterLenCost + levelCost
+//            + shape.cost + holes项 + taste.cost。这里把它拆成「算得出的下限」加「一律按 0 的非负项」：
+//   - 面积：width_lb = max(xR−1, 各 segments[i].b, 各 ports[i].x) + 1，和 scoreLayout 算 maxX 的前三项一样，只少了
+//     高架格子那一项（maxX 还会并上各 leg 的格子 x，只会更大，所以 width_lb ≤ 最终 width）；height 在 tracks/ports
+//     之后已定、elevation 不再改（ports.js 可能抬高 height，那也在这一步之前）；extraArea ≥ 0、areaWeight ≥ 0。
+//   - groundBelts = segCells + portCells + stubCells，照 scoreLayout 里 segments[i].b−a+1 求和、!ports[i].direct 计数、
+//     legs[i].stub?.length 求和。这三样（segments 的 a/b、ports 的 direct、legs 的 stub）elevation 都不改，和最终相等。
+//   - penalty：只累加已记下的（positions/belts/tracks/ports 记的 shortfall/route/spray/tracks 等）。惩罚只增不删、按
+//     记下的先后往数组里 push，这里累加的正好是最终那串的一段前缀，剩下的（elevation、分拣器、供电记的）都在后面追加、
+//     每条 amount ≥ 0，所以这段前缀和 ≤ 最终 penalty（IEEE754：对非负数 fl(x+y) ≥ x，把同一个部分和继续加非负项只增不减）。
+//   - 其余项（airBelts、sorterLenCost、levelCost、shape.cost、holes、taste）在守卫成立时都 ≥ 0，一律按 0。
+//   浮点加法对非负操作数单调（a≤a′、b≤b′ ⇒ fl(a+b)≤fl(a′+b′)），逐项套下来 floor_pre ≤ scoreLayout 第一处的 floor
+//   ≤ 最终代价。于是单调的 rejects(floor)（floor 越大越容易拒）对这次更小的 floor_pre 下的结论，不会把本会算完的候选误拒：
+//   一个候选最终是「被拒」还是「算完」的判定不变，被拒时退火照样只抽掉一个随机数、序列和存档一字不变；stateMemo 记的下限
+//   多了这一项，回放时逐项问、单调性保证结论一样。
+// 守卫（参照 scoreLayout 里 early 第 309 行并加严）：所有进最终代价的权重和惩罚项都要 ≥ 0，任一不成立（或没传 rejectFloor）
+// 就返回 null，调用方照旧往下算。默认值都满足。
+export function preLegFloor(c) {
+  const { opt, P, penalties, segments, ports, legs, height, xR } = c;
+  if (!opt.rejectFloor) return null;
+  if (
+    !(
+      opt.areaWeight >= 0 &&
+      opt.sorterLenWeight >= 0 &&
+      opt.levelWeight >= 0 &&
+      opt.singleWeight >= 0 &&
+      opt.splitWeight >= 0 &&
+      opt.farWeight >= 0 &&
+      opt.entryWeight >= 0 &&
+      opt.longWeight >= 0 &&
+      opt.highWeight >= 0 &&
+      opt.pyramidWeight >= 0 &&
+      opt.turnWeight >= 0 &&
+      opt.liftWeight >= 0
+    )
+  )
+    return null;
+  for (const k in P) if (!(P[k] >= 0)) return null; // opt.penalty 里每一项都要 ≥ 0
+  for (let i = 0; i < penalties.length; i++) if (!(penalties[i].amount >= 0)) return null;
+  // 面积下限：少了高架格子那一项（最终 maxX 只会更大）
+  let maxX = xR - 1;
+  for (let i = 0; i < segments.length; i++) maxX = Math.max(maxX, segments[i].b);
+  for (let i = 0; i < ports.length; i++) maxX = Math.max(maxX, ports[i].x);
+  const areaLb = (maxX + 1) * height;
+  // 地面带（和 scoreLayout 第 210~214 行同一个算法）
+  let segCells = 0;
+  for (let i = 0; i < segments.length; i++) segCells += segments[i].b - segments[i].a + 1;
+  let portCells = 0;
+  for (let i = 0; i < ports.length; i++) if (!ports[i].direct) portCells++;
+  let stubCells = 0;
+  for (let i = 0; i < legs.length; i++) stubCells += legs[i].stub?.length ?? 0;
+  // 已经记下的惩罚（最终 penalty 的前缀子集）
+  let pen = 0;
+  for (let i = 0; i < penalties.length; i++) pen += penalties[i].amount;
+  return areaLb * opt.areaWeight + (segCells + portCells + stubCells) + pen;
+}
+
 // 退火里每一步都要打一次分：下面的循环都按下标走（不用 for…of、不解构、不拼临时数组），
 // 函数还没被优化编译时也不会每一步都造迭代结果和小数组；算出的数和以前逐项按同样的先后相加，一字不差
 export function scoreLayout(c) {
@@ -314,7 +378,7 @@ export function scoreLayout(c) {
     const floor = area * opt.areaWeight + groundBelts + airBelts + pen + levelCost + shape.cost + taste.cost;
     if (early(floor)) return { rejected: true, cost: floor };
   }
-  const sorterPlan = assignSorters(graph, { rows, pos, rowCy, rowBelow, rowAbove, channels, segments }, sides, { sorter: opt.sorter, headroom: opt.headroom, fourthTrack: !!opt.fourthTrack });
+  const sorterPlan = assignSorters(graph, { rows, pos, rowCy, rowBelow, rowAbove, channels, segments }, sides, { sorter: opt.sorter, headroom: opt.headroom, fourthTrack: !!opt.fourthTrack, wideTracks: !!opt.wideTracks });
   if (sorterPlan.clashes) addPenalty('clash', P.clash * sorterPlan.clashes, `${sorterPlan.clashes} 处上下两侧分拣器在同一列`);
   const { starved, tooLong, slow, sorters } = sorterPlan;
   for (let i = 0; i < starved.length; i++) {

@@ -6,9 +6,10 @@
 //   喷涂机：骑在一节直带上（压着的 3 格不转弯、不升降，再往外各一格也顺着进出，见 coaterFits），朝向沿着带子；它「背后」那一格（朝向的反方向）正上方第 1 层要有一条增产剂带横穿过去，
 //     喷涂机从那里取增产剂。增产剂带是一条死路：从物流站的一个空口（或边缘的一个入口）出来，按顺序横穿若干台喷涂机背后那格，
 //     最后一台之后再多走一节。原图里 5 号口出增产剂，沿 y=41、x=26 这样的高架经过 6 台喷涂机。
-//   喷什么（用户 2026/10/08）：所有原料和中间产物——每条有取料分拣器把料送进工厂的带，都要在最后一个放料口之后、
-//     第一个取料口之前过一台喷涂机（工厂产出的东西不带增产，进下一台工厂前要再喷；一个访问里生产者消费者交错就喷不到，
-//     走线已经保证不交错并留出直带空当，见 layout/belts.js 的 sprayAll / SPRAY_GAP）。喷涂机几十台时一条增产剂带串不完，
+//   喷什么（用户 2026/10/18）：最终产物的直接原料（sprayItems），喷涂机放在最终那几组（sprayTo）的第一个取料口之前、
+//     最后一个放料口和别的消费者最后一个取料口之后——上游的工厂吃到的是没喷的（只喷一部分原料不起作用，增产剂白耗）。
+//     走线已经保证不交错并留出直带空当，见 layout/belts.js 的 sprayHere / SPRAY_GAP。没给 sprayItems 时（2026/10/08 起到 10/18 的做法）
+//     每条有取料分拣器把料送进工厂的带，都在最后一个放料口之后、第一个取料口之前过一台喷涂机。喷涂机几十台时一条增产剂带串不完，
 //     开几条（L.proLines），尽量都从同一座站出来（整张存增产剂只占一个物流站格，keepFreeSlot 留的那格）。
 import { chainTiles } from '../emit/blueprint.js';
 import { translateLayout } from './coordinates.js';
@@ -94,7 +95,7 @@ function alignCoaters(wants, blocked) {
  *   L.proLines [{cells, station: {k, slot} | null, edge, itemId, rate}]  增产剂带（逐格，从源头起），可能有几条
  *   L.addonNotes 放不下的说明；L.sprayMissed 没喷上的带数（应为 0，finishOne 据此判不可行）
  */
-export function addAddons(L, { spray = 0, pile = false, sprayRate = 0 } = {}) {
+export function addAddons(L, { spray = 0, sprayItems = null, sprayTo = null, pile = false, sprayRate = 0 } = {}) {
   L.pilers = [];
   L.coaters = [];
   L.proLines = [];
@@ -188,32 +189,55 @@ export function addAddons(L, { spray = 0, pile = false, sprayRate = 0 } = {}) {
     // 每条链上的取放口在主链第几格
     const segChain = new Map();
     L.chains.forEach((ch, ci) => { for (const q of ch.parts) if (q.seg != null) segChain.set(q.seg, ci); });
-    const tapsByChain = new Map(); // ci -> [{x, y, io}]
+    // 只喷最终产物的直接原料：只喷这几种物品的带；fin 是最终那几组的取料口（没给 sprayItems 时每个取料口都算）
+    const onlyItems = sprayItems ? new Set(sprayItems) : null;
+    const finalGroups = sprayItems ? new Set(sprayTo ?? []) : null;
+    const isFinal = (bid) => !finalGroups || finalGroups.has(L.pos.get(bid)?.gid);
+    const tapsByChain = new Map(); // ci -> [{x, y, io, fin}]
     for (const s of L.sorterList) {
       const ci = segChain.get(s.segId);
       if (ci == null) continue;
       if (!tapsByChain.has(ci)) tapsByChain.set(ci, []);
-      tapsByChain.get(ci).push({ x: s.col, y: L.segments[s.segId].y, io: s.io });
+      tapsByChain.get(ci).push({ x: s.col, y: L.segments[s.segId].y, io: s.io, fin: s.io === 'in' && isFinal(s.bid) });
     }
+    // 箱子供货（plan/storage.js）：储物仓往进料带上放料的分拣器也是放料口，喷涂机要在它们下游；仓从成品带上取料不进工厂，不算最终那几组
+    L.chains.forEach((ch, ci) => {
+      for (const q of ch.parts) {
+        const st = q.leg != null ? L.stores?.[L.legs[q.leg].store] : null;
+        if (!st) continue;
+        if (!tapsByChain.has(ci)) tapsByChain.set(ci, []);
+        for (const so of st.sorters) tapsByChain.get(ci).push({ x: so.belt[0], y: so.belt[1], io: st.kind === 'in' ? 'out' : 'in', fin: false });
+      }
+    });
     const chainRate = (ch) => Math.max(0, ...ch.parts.filter((q) => q.seg != null).map((q) => L.segments[q.seg].rate));
+    // 只喷最终那几组时过喷涂机的料：最终那几组取的，加上接着送去成品出口的（别的消费者在喷涂机上游取走了）
+    const sprayedRate = (ch) => {
+      let r = 0;
+      for (const q of ch.parts) {
+        if (q.seg != null) for (const t of L.segments[q.seg].taps) if (t.io === 'in' && isFinal(t.bid)) r += t.rate * (L.pos.get(t.bid)?.n ?? 1);
+        if (q.leg != null && L.legs[q.leg].kind === 'out') r += L.legs[q.leg].rate;
+      }
+      return r;
+    };
     const wants = []; // 每条要喷的带：{chain, itemId, rate, options: [...]}
     const missed = [];
     tiles.forEach((t, ci) => {
       const taps = tapsByChain.get(ci) || [];
-      if (!taps.some((q) => q.io === 'in')) return; // 没有取料口：不进工厂（成品、副产物），不用喷
+      if (onlyItems && !onlyItems.has(L.chains[ci].itemId)) return; // 不是最终产物的直接原料，不喷
+      if (!taps.some((q) => q.fin)) return; // 没有（最终那几组的）取料口：不进工厂（成品、副产物）或只进上游的工厂，不用喷
       const m = t.main;
       const idxOf = new Map();
       m.forEach(([x, y, z], i) => { if (!z && !idxOf.has(key(x, y))) idxOf.set(key(x, y), i); });
-      let firstIn = Infinity;
-      let lastOut = -1;
+      let firstIn = Infinity; // 第一个（最终那几组的）取料口
+      let lastOut = -1; // 最后一个放料口，或别的消费者最后一个取料口：喷涂机要在它们下游
       let offMain = false; // 劈开的死胡同那一半（extra）上的取料口：主链上喷不到它
       for (const q of taps) {
         const i = idxOf.get(key(q.x, q.y));
         if (i == null) {
-          if (q.io === 'in') offMain = true;
+          if (q.fin) offMain = true;
           continue; // 死胡同那一半上的放料口：那些料到不了主链，不影响主链的喷涂位置
         }
-        if (q.io === 'in') firstIn = Math.min(firstIn, i);
+        if (q.fin) firstIn = Math.min(firstIn, i);
         else lastOut = Math.max(lastOut, i);
       }
       if (offMain || lastOut >= firstIn) {
@@ -239,7 +263,7 @@ export function addAddons(L, { spray = 0, pile = false, sprayRate = 0 } = {}) {
         if (halfPerps.length) options.push({ x: m[k][0], y: m[k][1], z, ix, iy, perps, halfPerps });
       }
       // 边缘入口一进来就有分拣器取料：把入口往外接出两节（入口原地升起时三节），喷涂机骑在外面，取料格在最外面
-      if (!options.length && t.inPort && !t.inStation) {
+      if (!options.length && t.inPort && !t.inStation && !L.chains[ci].parts.some((q) => q.leg != null && L.legs[q.leg].store != null)) {
         const part = L.chains[ci].parts.find((q) => q.leg != null && L.legs[q.leg].kind === 'in');
         const leg = part && L.legs[part.leg];
         const port = L.ports.find((q) => q.leg === part?.leg && q.kind === 'in');
@@ -260,11 +284,11 @@ export function addAddons(L, { spray = 0, pile = false, sprayRate = 0 } = {}) {
           }
         }
       }
-      if (options.length) wants.push({ chain: ci, itemId: L.chains[ci].itemId, rate: chainRate(L.chains[ci]) / eff.sprays, options });
+      if (options.length) wants.push({ chain: ci, itemId: L.chains[ci].itemId, rate: (finalGroups ? sprayedRate(L.chains[ci]) : chainRate(L.chains[ci])) / eff.sprays, options });
       else missed.push(name(L.chains[ci].itemId));
     });
     alignCoaters(wants, (x, y) => !air(x, y));
-    // 2. 增产剂带：喷涂机多（所有原料和中间产物都喷）时一条死路串不完，开几条，每条从一个源头
+    // 2. 增产剂带：喷涂机多时一条死路串不完，开几条，每条从一个源头
     //    （物流站空口，或边缘的一个入口）出来，依次横穿就近的喷涂机背后那格。障碍是工厂、物流站、已有的带子
     //    （各层）、分拣器（地面）、已开的增产剂带；集装机和选定的喷涂机头顶两层让开，往外接的入口那几节地面也让开。
     //    整张蓝图存增产剂仍然只占一个物流站格：先用已经存了增产剂的站的空口，没有了才在有空格的别的站再开一格。
@@ -458,6 +482,7 @@ export function addAddons(L, { spray = 0, pile = false, sprayRate = 0 } = {}) {
     for (const p of L.ports) include(p.x, p.y);
     for (const pl of L.proLines) for (const [x, y] of pl.cells) include(x, y);
     for (const b of L.burners || []) { include(b.rect[0], b.rect[1]); include(b.rect[2], b.rect[3]); } // 火力发电厂（plan/burn.js）
+    for (const b of L.stores || []) { include(b.rect[0], b.rect[1]); include(b.rect[2], b.rect[3]); } // 箱子供货的储物仓、储液罐（plan/storage.js）
     translateLayout(L, -x0, -y0);
     L.width = x1 - x0 + 1;
     L.height = y1 - y0 + 1;

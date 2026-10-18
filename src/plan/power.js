@@ -174,6 +174,12 @@ function mark(L, rowGaps, power, occ, T) {
     for (const s of bankSorters(b)) put(T, (s.p0[0] + s.p1[0]) / 2, (s.p0[1] + s.p1[1]) / 2, '分拣器', NOBID);
   }
   for (const d of [...(L.coaters || []), ...(L.pilers || [])]) put(T, d.x, d.y, L.coaters?.includes(d) ? '喷涂机' : '自动集装机', NOBID);
+  // 箱子供货的储物仓、储液罐（plan/storage.js）：那一块地不放设施；仓口的分拣器、仓顶的物流配送器要通电（配送器要电是推断）
+  for (const b of L.stores || []) {
+    for (let x = b.rect[0]; x <= b.rect[2]; x++) for (let y = b.rect[1]; y <= b.rect[3]; y++) add(x, y);
+    for (const so of b.sorters) put(T, (so.p0[0] + so.p1[0]) / 2, (so.p0[1] + so.p1[1]) / 2, '分拣器', NOBID);
+    if (b.dist) for (const [x, y] of b.boxes) put(T, x, y, '物流配送器', NOBID);
+  }
   // 物流站占 7×7，外面还有 1 格碰撞圈（只挡卫星配电站，按 9×9 算），自己也耗电
   for (const st of L.stations || []) {
     const c = power === 2212 ? STATION_CLEAR : 3;

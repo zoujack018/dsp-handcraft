@@ -19,7 +19,7 @@ import { routeItems } from './layout/belts.js';
 import { placeTracks } from './layout/tracks.js';
 import { placePorts } from './layout/ports.js';
 import { liftLegs, estimateLegs } from './layout/elevation.js';
-import { scoreLayout } from './layout/score.js';
+import { scoreLayout, preLegFloor } from './layout/score.js';
 import { powerHoles } from './layout/powerholes.js';
 
 export { STATION_SIZE, TRUNK, STATION_COLS, STATION_SLOTS } from './layout/shared.js';
@@ -31,6 +31,17 @@ export const DEFAULTS = {
   // 第 4 条轨：一个通道 4 条地面轨道，条件是每根分拣器都够得着（下方那行只接第 0~2 条、上方那行只接第 1~3 条，layout/tracks.js 挑排法）。
   // 默认关；喷增产剂时 plan/index.js 打开（2026/10/08，待办 3 第二步，先只在喷涂线上量）
   fourthTrack: false,
+  // 宽通道（分支 explore/typeset，排版内核默认开）：一个通道要的轨道超过 3 条时，按每段由哪一侧的分拣器来接重新分轨
+  // （只被下方那行接的段放低处、只被上方那行接的放高处、两边都接的放中间），每根分拣器都不超过 3 格就算数，最多 6 条
+  // （下方一行够第 0~2 条、上方一行够第 n−3~n−1 条，6 条时上下两半互不相干）。通道变宽、不用升高架，代价按面积算。默认关，master 一字不变
+  wideTracks: false,
+  // 按侧拆段（分支 explore/typeset，和宽通道一起开）：一种物品在一个通道里上下两行都接、但两行接的横向范围差很多时
+  // （比上下挨着的那截长出 SIDE_SPLIT 格以上，比如一组断到上一行行尾只剩一小截），原来铺一整段、上下都得够得着，
+  // 把整条通道都占成两边共用的轨；拆成只下方接、只上方接两段，中间走一截高架，宽通道里各占下半、上半。默认关
+  sideSplit: false,
+  // 精确分带（分支 explore/typeset，排版内核默认开）：要几条带的产物按块分带凑不齐（某条带消费比生产多）时，换生产者的切法、
+  // 消费者的分法再找一遍缺口最小的（layout/belts.js 的 exactBins）。默认关
+  exactSplit: false,
   leftMargin: 1, // 第 0 列是左边缘：入口、出口和竖直高架带走这里
   sorter: 2013, // 分拣器类型：2011 分拣器 2012 高速 2013 极速 2014 集装
   maxAspect: null, // 长宽比上限，null 表示不限制
@@ -73,6 +84,10 @@ export const DEFAULTS = {
   // 喷增产剂（所有原料和中间产物）：一个访问里生产者、消费者不交错（交错就喷不到），每条要进工厂的带
   // 在入口（原料）或最后一个生产访问的段尾多留 SPRAY_GAP 格直带给喷涂机骑（layout/belts.js），几何和代价都算进搜索
   sprayAll: false,
+  // 只喷这几种物品（最终产物的直接原料，calculator.js 的 calc.spray.items），这几种带上的喷涂机放在 sprayTo 那几组（最终产物）取料之前、
+  // 别的消费者取完之后；都为 null 时每条进工厂的带都喷（sprayScope 'all'）
+  sprayItems: null,
+  sprayTo: null,
   areaWeight: 1, // 面积在代价里的权重；空间利用率不达标时 planLine 会加倍再搜一次
   quick: false, // 快速评估：不分配高架高度（只估长度）、不估供电外沿和物流站空地，给搜索的全局阶段用（约快一倍）
   penalty: { tracks: 3000, slots: 3000, shortfall: 2000, belt: 2000, clash: 3000, slow: 400, long: 25, level: 3000, route: 5000, fill: 2, power: 300, width: 400, height: 400, spray: 1500 },
@@ -130,6 +145,10 @@ function layout(graph, rows, options, opt, pads, blocks, streets, holePlan) {
   routeItems(c);
   placeTracks(c);
   placePorts(c);
+  // 退火提前拒绝，第三处：elevation（liftLegs，占 route 总时间约一半）之前先按最终代价的下限问一次退火要不要拒。
+  // 下限怎么算、为什么不超过最终代价、为什么不改结果，见 score.js 的 preLegFloor。守卫不满足时返回 null，照常往下算。
+  const floorPre = preLegFloor(c);
+  if (floorPre !== null && opt.rejectFloor(floorPre)) return { rejected: true, cost: floorPre };
   if (opt.quick) estimateLegs(c);
   else liftLegs(c);
   return scoreLayout(c);

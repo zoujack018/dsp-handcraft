@@ -103,9 +103,17 @@ const scratch = (slot, Type, n) => {
 /** route() 的一步：读写共享的布局上下文 c */
 export function routeItems(c) {
   const { P, R, addLoad, addPenalty, atPort, bestColumn, blocksOf, entryCol, exitCol, graph, itemBids, opt, pos, rows, side, xL, xR } = c;
-  // 喷增产剂（所有原料和中间产物）：走线给每条要进工厂的带留出喷涂机的空当，见 SPRAY_GAP 和下面标 sprayAll 的几处
+  // 喷增产剂：走线给要喷的带留出喷涂机的空当，见 SPRAY_GAP 和下面标 sprayHere 的几处。opt.sprayItems 给了时只喷这几种物品
+  // （最终产物的直接原料），而且喷涂机要放在 opt.sprayTo 那几组（最终产物）取料之前、别的消费者都取完之后（用户 2026/10/18：
+  // 上游吃到喷过的料不起作用，增产剂白耗）：这种带的访问排成「生产 → 别的消费者 → 最终那几组」，空当留在最终那几组前面；
+  // 原料带给最终那几组单开入口，只喷那条。没给时每条进工厂的带都喷（sprayScope 'all'）
   const sprayAll = !!opt.sprayAll;
-  const legSpray = sprayAll && opt.sprayOnLegs !== false; // 中间产物的喷涂机骑在段尾那截高架上（见 LEG_WINDOW）
+  const sprayItems = sprayAll && opt.sprayItems ? new Set(opt.sprayItems) : null;
+  const sprayTo = sprayItems ? new Set(opt.sprayTo ?? []) : null;
+  const toFinal = (cc) => sprayTo.has(cc.p.gid); // 这个消费者是最终那几组（吃喷过的料）
+  let sprayHere = false; // 当前这条带喷不喷（routeFlow 开头定）
+  let legSpray = false; // 当前这条带的中间产物喷涂机骑在段尾那截高架上（见 LEG_WINDOW）
+  let rawSpray = false; // 当前这条原料带的入口留喷涂机空当（planChain 里定：只喷最终那几组时，只有全是最终那几组取料的原料带喷）
   // 实验开关（考卷量上界用，网页不暴露）：opt.sprayGapOff 写 'in' / 'mid'（可用 + 连），那种地面空当不留、喷涂机也不放（配合 routeOptions.allowMissed）
   const gapOff = new Set(String(opt.sprayGapOff ?? '').split(/[+,]/).filter(Boolean));
   const offIn = gapOff.has('in');
@@ -259,6 +267,15 @@ export function routeItems(c) {
       b.C.push(c);
       b.need += dem;
     }
+    // 精确分带（opt.exactSplit）：按块分带凑不齐（某条带消费比生产多）时，换生产者的切法、消费者的分法再找一遍
+    if (opt.exactSplit && bins.some((b) => b.need > b.prod + TOL)) {
+      const gap0 = bins.reduce((a, b) => a + Math.max(0, b.need - b.prod), 0);
+      const better = exactBins(prods, cons, per, k);
+      if (better && better.gap < gap0 - TOL) {
+        bins.length = 0;
+        bins.push(...better);
+      }
+    }
     let left = out;
     for (const b of bins.slice().sort((x, y) => y.prod - y.need - (x.prod - x.need))) {
       b.out = Math.min(left, Math.max(0, b.prod - b.need));
@@ -266,6 +283,157 @@ export function routeItems(c) {
     }
     if (left > TOL) bins[0].out += left;
     return bins.map((b) => ({ P: b.P, C: b.C, out: b.out, rate: b.prod }));
+  };
+  /**
+   * 精确分带：生产者按位置排好，切成连续的 k 段（每段不超过一条带），切点在等分点附近各试前后两块；每种切法把消费者按需求从大到小
+   * 放进「放得下里剩得最少」的带（放不下就放剩得最多的），再一步一步挪一个、换两个，压各条带的缺口合计。取缺口最小的切法
+   * （一样时离得近的），比原来的缺口小才用。整台工厂取整，生产 60/分一台、消费 45/分一台时，等分常常凑不齐（引力矩阵 180 铁块 23 + 22
+   * 台差 15~60/分），换成 21 + 24 台就正好
+   */
+  const exactBins = (prods, cons, per, k) => {
+    const P = prods.slice().sort((a, b) => a.row - b.row || a.x0 - b.x0);
+    const o = P.map((p) => p.n * per);
+    const m = P.length;
+    if (m < k) return null;
+    const pre = [0];
+    for (const x of o) pre.push(pre[pre.length - 1] + x);
+    const total = pre[m];
+    // 每个切点（第 j 段从第几个生产块起）的候选：前缀和跨过 j·total/k 的位置前后两块
+    const opts = [];
+    for (let j = 1; j < k; j++) {
+      let at = 1;
+      while (at < m && pre[at] < (j * total) / k) at++;
+      const list = [];
+      for (let d = -2; d <= 2; d++) if (at + d >= 1 && at + d <= m - 1) list.push(at + d);
+      opts.push(list);
+    }
+    const C = cons.slice().sort((a, b) => b.d * b.p.n - a.d * a.p.n);
+    const dem = C.map((c) => c.d * c.p.n);
+    let best = null;
+    const cutsNow = [];
+    const tryCuts = () => {
+      const bounds = [0, ...cutsNow, m];
+      const prod = [];
+      for (let j = 0; j < k; j++) {
+        const v = pre[bounds[j + 1]] - pre[bounds[j]];
+        if (!(v > 0) || v > beltCap + TOL) return;
+        prod.push(v);
+      }
+      const rowAt = [];
+      for (let j = 0; j < k; j++) {
+        let r = 0;
+        for (let i = bounds[j]; i < bounds[j + 1]; i++) r += P[i].row;
+        rowAt.push(r / (bounds[j + 1] - bounds[j]));
+      }
+      const need = new Array(k).fill(0);
+      const at = new Int32Array(C.length);
+      for (let i = 0; i < C.length; i++) {
+        let pick = -1;
+        for (let j = 0; j < k; j++) if (need[j] + dem[i] <= prod[j] + TOL && (pick < 0 || prod[j] - need[j] < prod[pick] - need[pick])) pick = j;
+        if (pick < 0) for (let j = 0; j < k; j++) if (pick < 0 || prod[j] - need[j] > prod[pick] - need[pick]) pick = j;
+        at[i] = pick;
+        need[pick] += dem[i];
+      }
+      const gapOf = () => need.reduce((a, v, j) => a + Math.max(0, v - prod[j]), 0);
+      // 两条带、消费块不多时把各种分法都试一遍（2^n 种，n ≤ 12）
+      if (k === 2 && C.length <= 12) {
+        let bm = -1;
+        let bg = Infinity;
+        const tot = dem.reduce((a, v) => a + v, 0);
+        for (let mask = 0; mask < 1 << C.length; mask++) {
+          let a = 0;
+          for (let i = 0; i < C.length; i++) if (mask & (1 << i)) a += dem[i];
+          const g = Math.max(0, a - prod[0]) + Math.max(0, tot - a - prod[1]);
+          if (g < bg - TOL) {
+            bg = g;
+            bm = mask;
+          }
+        }
+        need[0] = 0;
+        need[1] = 0;
+        for (let i = 0; i < C.length; i++) {
+          at[i] = bm & (1 << i) ? 0 : 1;
+          need[at[i]] += dem[i];
+        }
+      }
+      let gap = gapOf();
+      // 挪一个、换两个，压缺口（最多 40 步）
+      for (let it = 0; it < 40 && gap > TOL; it++) {
+        let bestGain = TOL;
+        let move = null;
+        for (let i = 0; i < C.length; i++)
+          for (let j = 0; j < k; j++) {
+            if (j === at[i]) continue;
+            const a = at[i];
+            const before = Math.max(0, need[a] - prod[a]) + Math.max(0, need[j] - prod[j]);
+            const after = Math.max(0, need[a] - dem[i] - prod[a]) + Math.max(0, need[j] + dem[i] - prod[j]);
+            if (before - after > bestGain) {
+              bestGain = before - after;
+              move = [i, j, -1];
+            }
+            for (let i2 = 0; i2 < C.length; i2++) {
+              if (at[i2] !== j) continue;
+              const after2 = Math.max(0, need[a] - dem[i] + dem[i2] - prod[a]) + Math.max(0, need[j] + dem[i] - dem[i2] - prod[j]);
+              if (before - after2 > bestGain) {
+                bestGain = before - after2;
+                move = [i, j, i2];
+              }
+            }
+          }
+        // 两条带整个对调（各自的消费换过来）：带的生产不一样大时常常就差这一下
+        let swapAll = null;
+        for (let a = 0; a < k; a++)
+          for (let b = a + 1; b < k; b++) {
+            const before = Math.max(0, need[a] - prod[a]) + Math.max(0, need[b] - prod[b]);
+            const after = Math.max(0, need[b] - prod[a]) + Math.max(0, need[a] - prod[b]);
+            if (before - after > bestGain) {
+              bestGain = before - after;
+              swapAll = [a, b];
+            }
+          }
+        if (swapAll) {
+          const [a, b] = swapAll;
+          for (let i = 0; i < C.length; i++) at[i] = at[i] === a ? b : at[i] === b ? a : at[i];
+          [need[a], need[b]] = [need[b], need[a]];
+          gap = gapOf();
+          continue;
+        }
+        if (!move) break;
+        const [i, j, i2] = move;
+        const a = at[i];
+        need[a] -= dem[i];
+        need[j] += dem[i];
+        at[i] = j;
+        if (i2 >= 0) {
+          need[j] -= dem[i2];
+          need[a] += dem[i2];
+          at[i2] = a;
+        }
+        gap = gapOf();
+      }
+      let dist = 0;
+      for (let i = 0; i < C.length; i++) dist += Math.abs(rowAt[at[i]] - C[i].p.row);
+      if (!best || gap < best.gap - TOL || (Math.abs(gap - best.gap) <= TOL && dist < best.dist)) best = { gap, dist, bounds, prod, at: Array.from(at) };
+    };
+    const rec = (j, lo) => {
+      if (j === k - 1) return tryCuts();
+      for (const c of opts[j]) {
+        if (c <= lo) continue;
+        cutsNow.push(c);
+        rec(j + 1, c);
+        cutsNow.pop();
+      }
+    };
+    rec(0, 0);
+    if (!best) return null;
+    const bins = [];
+    for (let j = 0; j < k; j++) bins.push({ P: P.slice(best.bounds[j], best.bounds[j + 1]), C: [], prod: best.prod[j], need: 0, out: 0 });
+    for (let i = 0; i < C.length; i++) {
+      bins[best.at[i]].C.push(C[i]);
+      bins[best.at[i]].need += dem[i];
+    }
+    bins.gap = best.gap;
+    return bins;
   };
 
   // 当前这条带：物品 f、是不是原料、送到成品出口的量、带上的流量（产物）。
@@ -312,10 +480,42 @@ export function routeItems(c) {
   let dem = null;
   let sel = null;
 
+  /**
+   * 按侧拆段的判断：访问里上下两行都有块，且整段比两行里横向范围短的那一行长出 SIDE_SPLIT 格以上
+   * （铺一整段时整段都得两边够得着；拆开后长的那段只占一侧够得着的轨）
+   */
+  const SIDE_SPLIT = 24;
+  const sideApart = (v) => {
+    let bLo = Infinity;
+    let bHi = -Infinity;
+    let aLo = Infinity;
+    let aHi = -Infinity;
+    const add = (p) => {
+      if (p.row !== v.ch) {
+        bLo = Math.min(bLo, p.tmin);
+        bHi = Math.max(bHi, p.tmax);
+      } else {
+        aLo = Math.min(aLo, p.tmin);
+        aHi = Math.max(aHi, p.tmax);
+      }
+    };
+    for (const p of v.P) add(p);
+    for (const c of v.C) add(c.p);
+    if (bLo === Infinity || aLo === Infinity) return false;
+    return Math.max(aHi, bHi) - Math.min(aLo, bLo) - Math.min(aHi - aLo, bHi - bLo) >= SIDE_SPLIT;
+  };
+
   /** 一条带（一种物品的一组生产者和消费者）：挂通道、定访问顺序和流向、落实成段和高架段 */
   const routeFlow = (prodBlocks, cons, nCons, out, r) => {
     outRate = out;
     rate = r;
+    // 这条带喷不喷：全喷时都喷；只喷最终那几组时，要喷的物品、而且这条带上有最终那几组取料
+    sprayHere = sprayAll;
+    if (sprayItems) {
+      sprayHere = false;
+      if (sprayItems.has(f.itemId)) for (let i = 0; i < nCons; i++) if (toFinal(cons[i])) sprayHere = true;
+    }
+    legSpray = sprayHere && opt.sprayOnLegs !== false;
     nEv = 0; // 上一条带的访问用完了，事件池从头用
     nSv = 0;
     // 1. 每个块挂到上方或下方通道：贪心集合覆盖，让一种物品经过的通道尽量少
@@ -440,10 +640,33 @@ export function routeItems(c) {
       const v = { ch, key: ch, P: TP.slice(0, np), C: TC.slice(0, nc), e0, e1: nEv, s: -1, tmin, tmax, total: 0, cuts: null };
       // 开喷增产剂时一个访问里不能生产者、消费者交错（喷涂机要在全部放料之后、全部取料之前，
       // 而段内取放的先后由工厂位置定，保证不了）：拆成先 P 后 C 两个访问，中间走一截高架，
-      // 喷涂机骑在 P 访问段尾的空当上（见 planChain 里的 SPRAY_GAP）
-      if (sprayAll && !isRaw && v.P.length && v.C.length) {
-        TV[nv++] = makeVisit(ch, v.P, []);
-        TV[nv++] = makeVisit(ch, [], v.C);
+      // 喷涂机骑在 P 访问段尾的空当上（见 planChain 里的 SPRAY_GAP）。
+      // 只喷最终那几组时消费者也不能和最终那几组交错：再拆成别的消费者、最终那几组两个访问（原料带就是两个入口）
+      if (sprayHere && v.C.length) {
+        let nF = 0;
+        if (sprayTo) for (const cc of v.C) if (toFinal(cc)) nF++;
+        const mixC = sprayTo !== null && nF > 0 && nF < v.C.length;
+        if ((!isRaw && v.P.length) || mixC) {
+          if (v.P.length) TV[nv++] = makeVisit(ch, v.P, []);
+          if (mixC) {
+            TV[nv++] = makeVisit(ch, [], v.C.filter((cc) => !toFinal(cc)));
+            TV[nv++] = makeVisit(ch, [], v.C.filter(toFinal));
+          } else TV[nv++] = makeVisit(ch, [], v.C);
+        } else TV[nv++] = v;
+      } else if (opt.sideSplit && !(isRaw && (opt.stationHoles || opt.station)) && sideApart(v)) {
+        // 接物流站时原料不拆：每多一段原料就多一个站口（引力矩阵 360、黄棒 30 站+塔：站口不够用、2 条带没接上站）
+        // 按侧拆段（opt.sideSplit）：下方那行（row = ch − 1）接的一段、上方那行接的一段，中间走高架
+        const low = (p) => p.row !== ch;
+        TV[nv++] = makeVisit(
+          ch,
+          v.P.filter((p) => low(p)),
+          v.C.filter((c) => low(c.p)),
+        );
+        TV[nv++] = makeVisit(
+          ch,
+          v.P.filter((p) => !low(p)),
+          v.C.filter((c) => !low(c.p)),
+        );
       } else TV[nv++] = v;
     }
     const visits = TV.slice(0, nv);
@@ -495,7 +718,7 @@ export function routeItems(c) {
       let g = null;
       let tot = 0;
       for (const u of units.slice().sort((a, b) => a.ch - b.ch || a.tmin - b.tmin)) {
-        if (!g || g.length >= opt.rawChain || tot + u.total > rawCap + TOL) {
+        if (!g || g.length >= opt.rawChain || tot + u.total > rawCap + TOL || (sprayHere && sprayTo && rankOf(u) !== rankOf(g[0]))) {
           merged.push((g = []));
           tot = 0;
         }
@@ -564,7 +787,7 @@ export function routeItems(c) {
     let b = v.tmax;
     // 喷涂机的空当：原料在入口那头、中间产物在最后一个生产访问的段尾，各多留 SPRAY_GAP 格直带；
     // 中间产物骑高架（legSpray）时段尾不留，窗口在接下去那截高架上
-    let gIn = sprayAll && isRaw && i === 0 && !offIn ? SPRAY_GAP : 0;
+    let gIn = rawSpray && i === 0 && !offIn ? SPRAY_GAP : 0;
     const gOut = i === gapAt && !legSpray ? SPRAY_GAP : 0;
     // 原料的喷涂机骑在入口那截高架上（legIn）：不留地面空当时的段头离入口列至少 LEG_WINDOW + 1 格（高架在段头前水平走够 5 格），
     // 窗口就是紧挨段头的那 5 格；不够长时（段头贴着边缘 / 走廊）照旧留地面空当。
@@ -803,9 +1026,14 @@ export function routeItems(c) {
     for (let i = 1; i < xs.length; i++) if (xs[i] !== xs[i - 1] && xs[i] !== xs[0]) cuts.push(xs[i]);
     return (v.cuts = cuts);
   };
-  /** 访问多于 4 个时不全排列，只试两种：有生产者的在前，按通道号从小到大或从大到小 */
+  /**
+   * 访问排在第几档：0 有生产者，1 别的消费者（只喷最终那几组、这条带要喷时），2 其余的消费者（最终那几组）。
+   * 喷涂时各访问按档排（喷涂机在第 1 档之后、第 2 档之前），不喷时只分有没有生产者
+   */
+  const rankOf = (v) => (v.P.length ? 0 : sprayHere && sprayTo && !v.C.every(toFinal) ? 1 : 2);
+  /** 访问多于 4 个时不全排列，只试两种：按档（有生产者的在前），同一档按通道号从小到大或从大到小 */
   const bigOrders = (visits) => {
-    const byCh = (dir) => (a, b) => (b.P.length > 0) - (a.P.length > 0) || dir * (a.ch - b.ch);
+    const byCh = (dir) => (a, b) => rankOf(a) - rankOf(b) || dir * (a.ch - b.ch);
     return [byCh(1), byCh(-1)].map((cmp) => visits.map((_, i) => i).sort((i, j) => cmp(visits[i], visits[j])));
   };
   const planChain = (visits) => {
@@ -822,16 +1050,24 @@ export function routeItems(c) {
     // 顺序用访问的下标表示（和直接排列访问一一对应、先后相同）
     const orders = k <= 4 ? permIdx(k) : bigOrders(visits);
     // 喷增产剂：生产的访问都要排在消费的访问之前（喷涂机放在两者之间才能喷到全部的料），
-    // 空当留在最后一个生产访问（第 nP−1 个）的段尾；原料带的空当留在入口那头
+    // 空当留在最后一个生产访问（第 nP−1 个）的段尾；原料带的空当留在入口那头。
+    // 只喷最终那几组时，别的消费者的访问（nN 个）排在生产的之后、最终那几组之前，空当留在第 nP + nN − 1 个的段尾；
+    // 原料带只有全是最终那几组取料的才喷
     let nP = 0;
     let anyC = false;
     for (const v of visits) {
       if (v.P.length) nP++;
       if (v.C.length) anyC = true;
     }
+    let nN = 0;
+    if (sprayHere && sprayTo) {
+      anyC = false;
+      for (const v of visits) if (!v.P.length && v.C.length) rankOf(v) === 1 ? nN++ : (anyC = true);
+    }
     vis = visits;
     vk = k;
-    gapAt = sprayAll && !isRaw && anyC ? nP - 1 : -1;
+    gapAt = sprayHere && !isRaw && anyC ? nP + nN - 1 : -1;
+    rawSpray = sprayHere && isRaw && (!sprayTo || !nN);
     has = false;
     bGs = null;
     if (k > capK) {
@@ -865,13 +1101,13 @@ export function routeItems(c) {
       if (!isRaw && !visits[ix[0]].P.length) continue;
       if (gapAt >= 0) {
         let ok = true;
-        for (let i = 0; i < k; i++) if ((visits[ix[i]].P.length > 0) !== i < nP) ok = false;
+        for (let i = 0; i < k; i++) if (rankOf(visits[ix[i]]) !== (i < nP ? 0 : i < nP + nN ? 1 : 2)) ok = false;
         if (!ok) continue;
       }
       consider(ix, null);
     }
     // 喷增产剂时不劈段：先 P 后 C 的顺序下供给缺口恒为 0，用不上；劈开的死胡同那一半也没法喷
-    if (!sprayAll && !isRaw && has && bShortfall > TOL) {
+    if (!sprayHere && !isRaw && has && bShortfall > TOL) {
       // 两个方向都不够时，试试把第一段从生产者中间劈开、两半背向而流
       for (const ix of orders) {
         const v0 = visits[ix[0]];
@@ -895,7 +1131,7 @@ export function routeItems(c) {
       const a = GA[at];
       const b = GB[at];
       // gap：喷涂机的空当在哪头；'mid' 是这一段和下一个访问在地面接成一条（bCols 里是 JOIN），空当在中间
-      TG[i] = { v: visits[bJ[i]], a, b, d, split: null, cont: null, entryX: d > 0 ? a : b, exitX: d > 0 ? b : a, dout: d, gap: sprayAll && isRaw && i === 0 ? (offIn ? null : GH[at] & 2 ? 'legIn' : GH[at] & 4 ? 'edgeIn' : 'in') : i === gapAt ? (bCols[i] === JOIN ? (offMid ? 'join' : 'mid') : 'out') : null };
+      TG[i] = { v: visits[bJ[i]], a, b, d, split: null, cont: null, entryX: d > 0 ? a : b, exitX: d > 0 ? b : a, dout: d, gap: rawSpray && i === 0 ? (offIn ? null : GH[at] & 2 ? 'legIn' : GH[at] & 4 ? 'edgeIn' : 'in') : i === gapAt ? (bCols[i] === JOIN ? (offMid ? 'join' : 'mid') : 'out') : null };
     }
     return { cost: bCost, shortfall: bShortfall, bad: bBad, sprayShort: bSpray, geo: TG.slice(0, k), cols: bCols.slice(0, k - 1), flow };
   };
@@ -961,7 +1197,7 @@ export function routeItems(c) {
         if (pending.kind === 'in' && seg.sprayGap === 'legIn') pending.spray = { seg: seg.id, side: 'in' }; // 入口那截高架紧挨段头的 5 格骑喷涂机
         // 同一个通道里前后两段（喷涂时拆开的放料段、取料段，没在地面接成一条）：两段不能同轨——同轨时高架从取料段进口的上空
         // 走过去、再折回来落进进口，会压到自己那格（layout/tracks.js 据此分轨；不喷时一个通道只有一个访问，用不到）
-        if (sprayAll && pending.kind === 'link' && segments[pending.from].ch === seg.ch) {
+        if (sprayHere && pending.kind === 'link' && segments[pending.from].ch === seg.ch) {
           const from = segments[pending.from];
           (from.noTrackWith ||= []).push(seg.id);
           (seg.noTrackWith ||= []).push(from.id);

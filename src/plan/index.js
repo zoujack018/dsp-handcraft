@@ -8,12 +8,13 @@
 //   planLineAsync  多线程驱动：搜索的各轮退火、各个候选的后处理分给线程池并行（网页、命令行 --threads）。
 // 没有时间上限时，两种驱动的结果完全一致。
 import { buildGraph } from './graph.js';
-import { optimize, mergeRounds } from './place.js';
+import { optimize, mergeRounds, precompute } from './place.js';
 import { addPower, placePower } from './power.js';
 import { spaceStats } from '../metrics/space.js';
 import { attachStations, linkWarpers } from './stations.js';
 import { groundRoutes } from './ground.js';
 import { addAddons } from './addons.js';
+import { addStores, addProStores } from './storage.js';
 import { addBurners, burnable } from './burn.js';
 import { powerCells, realItem } from '../gamedata.js';
 
@@ -35,10 +36,11 @@ export function stationOption(options = {}) {
 
 /**
  * 一个搜索候选走完全部后处理；接不上物流站时返回 null。只用到布局本身，可以放到后台线程里做。
- * ctx：{ station, power, powerOptions, maxWidth, maxHeight, noGrounding, aw, spray, pile, sprayRate }
+ * ctx：{ station, power, powerOptions, maxWidth, maxHeight, noGrounding, aw, spray, sprayItems, sprayTo, pile, sprayRate, burn,
+ *        supply 箱子供货（plan/storage.js 的 SUPPLY，不接物流站时）, sorter 分拣器（箱子组按它的速度算几根）, storeLayers 储物仓最多叠几层 }
  */
 export function finishOne(cand, ctx) {
-  const { station, power, powerOptions, maxWidth, maxHeight, noGrounding, aw = 1, spray = 0, pile = false, sprayRate = 0, burn = false } = ctx;
+  const { station, power, powerOptions, maxWidth, maxHeight, noGrounding, aw = 1, spray = 0, sprayItems = null, sprayTo = null, pile = false, sprayRate = 0, burn = false, supply = null, sorter = 2013, storeLayers = 15 } = ctx;
   // 后处理改的是自己的一份。接物流站（edge）时 attachStations 自己先复制一份再改，供电预选只读布局，这里不用先复制；
   // 就地烧副产物要先改布局（标 burn、加发电厂），照旧先复制
   let L = burn || station?.place !== 'edge' ? structuredClone(cand.layout) : cand.layout;
@@ -56,6 +58,8 @@ export function finishOne(cand, ctx) {
       L = addBurners(L, { power, maxWidth, maxHeight });
     }
   }
+  // 箱子供货（不接物流站时，plan/storage.js）：原料入口、成品出口接储物仓 / 储液罐，原来通到边缘的那截作废
+  if (supply && !station) L = addStores(L, { supply, sorter, maxLayers: storeLayers, maxWidth, maxHeight, sprayItems: spray ? sprayItems ?? true : null });
   if (station?.place === 'edge') {
     // 要供电时先在紧凑布局上选好塔位，接站时绕开它们，免得站的接线把塔唯一能放的空地占掉
     let reserve = [];
@@ -75,12 +79,14 @@ export function finishOne(cand, ctx) {
   if (station?.slots?.warper && L.stations?.length) linkWarpers(L);
   // 增产剂（所有原料和中间产物进工厂前喷）和自动集装机（产物出线前叠层）：在供电之前加，供电要给喷涂机、集装机通电
   if (spray || pile) {
-    addAddons(L, { spray, pile, sprayRate });
+    addAddons(L, { spray, sprayItems, sprayTo, pile, sprayRate });
     // 有带子没喷上（没地方骑喷涂机或接不上增产剂带）：没喷到的料进工厂就没有增产效果，按不可行处理
     if (spray && L.sprayMissed && !ctx.allowMissed) { // allowMissed：实验开关（考卷量上界用），漏喷不算不可行
       L.feasible = false;
       L.penalties = [...L.penalties, { kind: 'spray', amount: 0, msg: `${L.sprayMissed} 条进工厂的带没喷上增产剂（${L.addonNotes.join('；')}）` }];
     }
+    // 箱子供货：增产剂带从边缘出来的源头也接储物仓（plan/storage.js 的 addProStores）
+    if (spray && supply && !station) addProStores(L, { supply, sorter, maxLayers: storeLayers });
   }
   if (power) {
     addPower(L, power, { ...powerOptions, maxWidth, maxHeight });
@@ -152,10 +158,24 @@ function* planFrame(calc, options) {
   const power = options.power && options.power !== 'none' ? options.power : null;
   if (power) Object.assign(routeOptions, { power, powerOptions: options.powerOptions });
   if (options.powerHoles) routeOptions.powerHoles = true; // 卫星配电站在行里挖空位（route.js，标准档、细档开）
-  // 喷增产剂：走线要给每条进工厂的带留喷涂机的空当（layout/belts.js 的 sprayAll），不喷时几何一字不动
-  if (calc.spray) routeOptions.sprayAll = true;
+  // 喷增产剂：走线要给要喷的带留喷涂机的空当（layout/belts.js 的 sprayAll），不喷时几何一字不动。
+  // 只喷最终产物的直接原料（calc.spray.items），喷涂机在这几种带上放在最终那几组（calc.spray.to）取料之前、别的工厂取完之后
+  if (calc.spray) {
+    routeOptions.sprayAll = true;
+    if (calc.spray.items) Object.assign(routeOptions, { sprayItems: calc.spray.items, sprayTo: calc.spray.to });
+  }
   // 喷涂时放开第 4 条轨（route.js 的 fourthTrack：每根分拣器都够得着才算数）；不喷的照旧最多 3 条
   if (calc.spray && routeOptions.fourthTrack == null) routeOptions.fourthTrack = true;
+  // 排版内核（分支 explore/typeset）也放开：行都铺满，大线的通道常要 4 条轨（引力矩阵 180 塔：放开后分拣器太慢、超轨都没了），
+  // 考卷 6 条 + 放大 3 倍里 4 条塔模式合计 +0.2%（种子 1）
+  if (routeOptions.core === 'typeset' && routeOptions.fourthTrack == null) routeOptions.fourthTrack = true;
+  // 宽通道（route.js 的 wideTracks：5~6 条轨，每根分拣器都够得着才算数）也只在排版内核开
+  if (routeOptions.core === 'typeset' && routeOptions.wideTracks == null) routeOptions.wideTracks = true;
+  if (routeOptions.core === 'typeset' && routeOptions.sideSplit == null) routeOptions.sideSplit = true;
+  if (routeOptions.core === 'typeset' && routeOptions.exactSplit == null) routeOptions.exactSplit = true;
+  // 排版内核：够不着电每个目标按 2000 罚（master 300）。行都铺满，大线最后常剩十来个够不着电的目标，300 一个时搜索宁可留着它们换面积
+  // （引力矩阵 360 塔：只剩 1~18 个目标够不着电）；后处理放不下塔照样不可行，和供给顺序、超轨（2000~3000）一样当硬约束
+  if (routeOptions.core === 'typeset') routeOptions.penalty = { power: 2000, ...routeOptions.penalty };
   const deadline = options.timeLimit ? t + options.timeLimit : null;
   const searchOpts = (ro, timeLimit) => {
     const o = { ...options, routeOptions: ro, timeLimit };
@@ -166,7 +186,7 @@ function* planFrame(calc, options) {
     // 帮手线程按 snapshotMs 开关自己装钩子（web/src/worker.js 的 task 分支）
     return o;
   };
-  const ctx = (aw = routeOptions.areaWeight ?? 1) => ({ station: station && { ...station }, power, powerOptions: options.powerOptions, maxWidth: routeOptions.maxWidth, maxHeight: routeOptions.maxHeight, noGrounding: !!options.noGrounding, aw, spray: calc.spray ? calc.spray.level : 0, pile: !!options.pile, sprayRate: calc.spray?.rate ?? 0, burn: options.burn || false, allowMissed: !!routeOptions.allowMissed });
+  const ctx = (aw = routeOptions.areaWeight ?? 1) => ({ station: station && { ...station }, power, powerOptions: options.powerOptions, maxWidth: routeOptions.maxWidth, maxHeight: routeOptions.maxHeight, noGrounding: !!options.noGrounding, aw, spray: calc.spray ? calc.spray.level : 0, sprayItems: calc.spray?.items ?? null, sprayTo: calc.spray?.to ?? null, pile: !!options.pile, sprayRate: calc.spray?.rate ?? 0, burn: options.burn || false, allowMissed: !!routeOptions.allowMissed, supply: options.supply ?? null, sorter: routeOptions.sorter ?? options.sorter ?? 2013, storeLayers: options.storeLayers ?? 15 });
 
   let result = yield { kind: 'search', graph, options: searchOpts(routeOptions, options.timeLimit ?? null) };
 
@@ -179,7 +199,8 @@ function* planFrame(calc, options) {
       seen.add(k);
       return true;
     });
-    return list.slice(0, options.finishCount ?? 6).map(({ layout, rows, pads, blocks, streets }) => ({ layout, rows, pads, blocks, streets }));
+    // 排版内核的候选带着队、行宽、站位、供电缝（seq…），下一段接力用（见下面 warmOf）
+    return list.slice(0, options.finishCount ?? 6).map(({ layout, rows, pads, blocks, streets, seq, W, bays, gaps }) => ({ layout, rows, pads, blocks, streets, ...(seq ? { seq, W, bays, gaps } : {}) }));
   };
   /**
    * 挑候选：先找代价最小的那个；传送带不超过它 (1 + BELT_SLACK) 倍的候选里，利用率达标的挑代价最小的，
@@ -213,6 +234,9 @@ function* planFrame(calc, options) {
     finished = (yield { kind: 'finish', cands: pool(result), ctx: ctx() }).filter(Boolean);
   }
   let pick = choose(finished);
+  // 接力退火（排版内核，分支 explore/typeset）：后面每一段从目前最好那张接着退一半的轮（place.js 的 warm），不是都从头再来。
+  // 大线一段段从头搜，常常每段都卡在同一个地方（黄棒 30 塔第 3~13 段都是 78.2%、不可行）
+  const warmOf = (c) => (routeOptions.core === 'typeset' && c?.seq ? { seq: c.seq, W: c.W, bays: c.bays ?? null, gaps: c.gaps ?? null } : null);
   // 空间利用率没到目标：把面积的权重加倍再搜（用剩下的时间），最多 retries 轮，达标就停；各轮的候选放在一起挑。
   // 网页的搜索力度就是按这个分档：快 ≥50%、中 ≥70%、细 ≥85%（见 web/src/worker.js 的 EFFORT）
   const retries = options.adaptive === false ? 0 : options.retries ?? 1;
@@ -231,6 +255,7 @@ function* planFrame(calc, options) {
     const ro = { ...routeOptions, areaWeight: aw };
     const so = searchOpts(ro, deadline ? deadline - Date.now() : options.timeLimit ?? null);
     if (stuck) so.seed = (options.seed ?? 7) + 7919 * (k + 1);
+    if (warmOf(pick)) so.warm = warmOf(pick);
     const again = yield { kind: 'search', graph, options: so };
     const more = (yield { kind: 'finish', cands: pool(again), ctx: ctx(aw) }).filter(Boolean);
     finished = [...finished, ...more];
@@ -259,6 +284,7 @@ function* planFrame(calc, options) {
       aw = ff && !pick.layout.feasible ? routeOptions.areaWeight ?? 1 : Math.min(aw * 2, 16); // 还不可行：面积权重回到原值，只换种子
       const o = searchOpts({ ...routeOptions, areaWeight: aw }, Math.min(options.timeLimit ?? Infinity, stopAt - Date.now()));
       o.seed = (options.seed ?? 7) + 1009 * k;
+      if (warmOf(pick)) o.warm = warmOf(pick);
       const again = yield { kind: 'search', graph, options: o };
       const more = (yield { kind: 'finish', cands: pool(again), ctx: ctx(aw) }).filter(Boolean);
       finished = [...finished, ...more];
@@ -284,7 +310,7 @@ function* planFrame(calc, options) {
 export function finishContext(calc, options) {
   const ro = options.routeOptions || {};
   const station = ro.station ? { place: 'side', stack: ro.station.stack, slots: ro.station.slots } : ro.externalStack != null ? { place: 'edge', stack: ro.externalStack, slots: ro.stationSlots } : null;
-  return { station, power: ro.power ?? null, powerOptions: ro.powerOptions, maxWidth: ro.maxWidth, maxHeight: ro.maxHeight, noGrounding: !!options.noGrounding, aw: ro.areaWeight ?? 1, spray: calc.spray ? calc.spray.level : 0, pile: !!options.pile, sprayRate: calc.spray?.rate ?? 0, burn: options.burn || false, allowMissed: !!ro.allowMissed };
+  return { station, power: ro.power ?? null, powerOptions: ro.powerOptions, maxWidth: ro.maxWidth, maxHeight: ro.maxHeight, noGrounding: !!options.noGrounding, aw: ro.areaWeight ?? 1, spray: calc.spray ? calc.spray.level : 0, sprayItems: calc.spray?.items ?? null, sprayTo: calc.spray?.to ?? null, pile: !!options.pile, sprayRate: calc.spray?.rate ?? 0, burn: options.burn || false, allowMissed: !!ro.allowMissed, supply: options.supply ?? null, sorter: ro.sorter ?? options.sorter ?? 2013, storeLayers: options.storeLayers ?? 15 };
 }
 
 /** 就地执行一个请求 */
@@ -320,7 +346,12 @@ export async function planLineAsync(calc, options = {}, pool = null) {
       const opts = { ...req.options };
       delete opts.onSnapshot; // 函数不能结构化克隆；帮手线程按 opts.snapshotMs 自己装快照钩子
       if (opts.timeLimit && n > pool.size) opts.timeLimit = Math.max(500, (opts.timeLimit * pool.size) / n);
-      const parts = (await Promise.all(Array.from({ length: n }, (_, s) => pool.run({ kind: 'search', calc, options: opts, rounds: [s] })))).flat();
+      // pool.run 是同步往线程 postMessage 的，所以先把各轮的 Promise 建出来（工作线程随即开跑），
+      // 不 await；主线程趁各轮在跑把初始解算好填 candsMemo，mergeRounds 里的 prepare 命中、不再串行算 1~2 秒。
+      const pending = Promise.all(Array.from({ length: n }, (_, s) => pool.run({ kind: 'search', calc, options: opts, rounds: [s] })));
+      pending.catch(() => {}); // precompute 若抛错，pending 还在飞——先挂个 catch 免得变成 unhandledRejection（下面的 await 仍会把真正的错抛出来）
+      precompute(req.graph, req.options); // 和 mergeRounds 用同一个 req.options：键一样，命中 memo
+      const parts = (await pending).flat();
       res = mergeRounds(req.graph, req.options, parts);
     } else {
       res = await Promise.all(req.cands.map((cand) => pool.run({ kind: 'finish', cand, ctx: req.ctx })));

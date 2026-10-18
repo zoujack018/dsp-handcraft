@@ -6,16 +6,20 @@ export const normName = (s) => String(s).replace(/ /g, ' ').trim();
 
 export const ITEMS = new Map();
 const ITEM_BY_NAME = new Map();
-for (const it of vanilla.items) {
+function addItem(it) {
   // power：建筑工作时的功率（瓦），游戏数据里是每 tick 的焦耳数（一秒 60 tick）
   const item = { id: it.ID, name: normName(it.Name), type: it.Type, speed: it.Speed, power: (it.WorkEnergyPerTick ?? 0) * 60 };
   ITEMS.set(item.id, item);
+  return item;
+}
+for (const it of vanilla.items) {
+  const item = addItem(it);
   ITEM_BY_NAME.set(item.name, item);
 }
 
 export const RECIPES = new Map();
 const PRODUCERS = new Map(); // itemId -> recipe[]
-for (const r of vanilla.recipes) {
+function addRecipe(r) {
   const recipe = {
     id: r.ID,
     name: normName(r.Name),
@@ -32,9 +36,32 @@ for (const r of vanilla.recipes) {
     PRODUCERS.get(o.id).push(recipe);
   }
 }
+for (const r of vanilla.recipes) addRecipe(r);
 
 /** 游戏里的原矿（物品 Type 1），默认由物流站供应 */
 export const RAW_ITEM_IDS = new Set(vanilla.items.filter((i) => i.Type === 1).map((i) => i.ID));
+
+/**
+ * 补进别的网页带来的物品和配方（写法同 data/Vanilla.json，见 web/src/handoff.js 的 defs）：嵌在「量产量化计算器」里时，
+ * 那边新加的物品（比如黑雾引力透镜）随方案带过来，这边不用跟着改数据。这边已有的 ID 一律不动，照旧用自带的；
+ * 配方的原料、产物得是认识的物品，工厂得是这边有几何的（熔炉、制造台、化工厂、精炼厂、对撞机、研究站），不然不加。
+ * 返回加进来的物品 ID、配方 ID。
+ */
+export function addGameData({ items = [], recipes = [] } = {}) {
+  const added = { items: [], recipes: [] };
+  for (const it of items) {
+    if (ITEMS.has(it.ID)) continue;
+    const item = addItem(it);
+    if (!ITEM_BY_NAME.has(item.name)) ITEM_BY_NAME.set(item.name, item);
+    added.items.push(item.id);
+  }
+  for (const r of recipes) {
+    if (RECIPES.has(r.ID) || ![...r.Items, ...r.Results].every((id) => ITEMS.has(id)) || !r.Factories.every((f) => f in FACTORY_KIND)) continue;
+    addRecipe({ ...r, Name: r.Name || ITEMS.get(r.Results[0]).name });
+    added.recipes.push(r.ID);
+  }
+  return added;
+}
 
 export function item(idOrName) {
   if (typeof idOrName === 'number') {
@@ -327,6 +354,48 @@ export function slotPoint(g, side, off) {
  */
 export const BYPRODUCT = 100000;
 export const realItem = (id) => (id >= BYPRODUCT ? id - BYPRODUCT : id);
+
+/**
+ * 每种物品一格能放几个（储物仓按这个算装得下多少），来自原版游戏的物品表导出（github.com/dsp2b/dsp2b 的
+ * data/itemProtoSet.json，GPL-3.0；和 ProjectGenesis 的 items_vanilla.json 比，172 种里 169 种一样，不一样的 3 种是那个 MOD 改过的）。
+ * 黑雾引力透镜（1211，0.10.35 新出的）那份里没有，按引力透镜的 100 算（推断）。
+ */
+export const STACK_SIZE = {
+  1000: 20, 1001: 100, 1002: 100, 1003: 100, 1004: 100, 1005: 100, 1006: 100, 1007: 20, 1011: 50, 1012: 50, 1013: 50, 1014: 50,
+  1015: 50, 1016: 50, 1030: 100, 1031: 500, 1101: 100, 1102: 200, 1103: 100, 1104: 100, 1105: 100, 1106: 100, 1107: 100, 1108: 100,
+  1109: 100, 1110: 100, 1111: 100, 1112: 100, 1113: 100, 1114: 20, 1115: 100, 1116: 20, 1117: 100, 1118: 100, 1119: 100, 1120: 20,
+  1121: 20, 1122: 20, 1123: 100, 1124: 100, 1125: 100, 1126: 100, 1127: 100, 1128: 100, 1129: 100, 1130: 100, 1131: 1000, 1141: 200,
+  1142: 200, 1143: 200, 1201: 200, 1202: 200, 1203: 100, 1204: 100, 1205: 100, 1206: 100, 1208: 100, 1209: 100, 1210: 100, 1301: 200,
+  1302: 200, 1303: 200, 1304: 200, 1305: 200, 1401: 200, 1402: 200, 1403: 20, 1404: 200, 1405: 200, 1406: 100, 1407: 200, 1501: 200,
+  1502: 100, 1503: 20, 1601: 100, 1602: 100, 1603: 100, 1604: 100, 1605: 100, 1606: 100, 1607: 100, 1608: 100, 1609: 100, 1610: 100,
+  1611: 100, 1612: 100, 1613: 100, 1801: 30, 1802: 30, 1803: 30, 1804: 50, 2001: 300, 2002: 300, 2003: 300, 2011: 200, 2012: 200,
+  2013: 200, 2014: 200, 2020: 50, 2030: 100, 2040: 50, 2101: 50, 2102: 50, 2103: 10, 2104: 10, 2105: 10, 2106: 50, 2107: 50,
+  2201: 100, 2202: 100, 2203: 50, 2204: 50, 2205: 50, 2206: 50, 2207: 50, 2208: 20, 2209: 20, 2210: 20, 2211: 50, 2212: 30,
+  2213: 50, 2301: 50, 2302: 50, 2303: 50, 2304: 50, 2305: 50, 2306: 30, 2307: 20, 2308: 30, 2309: 30, 2310: 20, 2311: 30,
+  2312: 10, 2313: 50, 2314: 30, 2315: 50, 2316: 30, 2317: 30, 2318: 50, 2319: 50, 2901: 50, 2902: 50, 3001: 50, 3002: 50,
+  3003: 50, 3004: 50, 3005: 50, 3006: 50, 3007: 20, 3008: 20, 3009: 20, 3010: 20, 5001: 200, 5002: 50, 5003: 200, 5101: 100,
+  5102: 100, 5103: 100, 5111: 50, 5112: 50, 5201: 200, 5202: 100, 5203: 100, 5204: 50, 5205: 50, 5206: 100, 6001: 200, 6002: 200,
+  6003: 200, 6004: 200, 6005: 200, 6006: 200,
+  1211: 100,
+};
+export const stackSize = (id) => STACK_SIZE[realItem(id)] ?? 100;
+// 储物仓、储液罐、物流配送器（用户 2026/10/18 的蓝图 test/fixtures/ref-box.bp.txt，docs/game-rules.md 30）。
+// 分拣器口（建筑自己坐标，朝北）：每边中间那个是那张蓝图量的；大型仓长边另外两个（0、2、6、8）在中心左右各 1 格（编号照制造台，体积测试第八张 H1 验证过）。
+// 储液罐不用分拣器，带子直接接四边的口（北 0、东 1、南 2、西 3）。
+// 碰撞体（STORE_BODY，体积测试第八张 2026/10/18 实测 + 用户 10/04 那张图）：小型仓 2.4×2.4——两个隔 2 撞、隔 3 能放，
+// 带子紧贴上沿（隔 1）、塔紧挨都撞，所以大于 2；10/04 那张图里它和制造台 Mk.II 中心隔 3 能放，所以不超过 2.8（制造台 3.2），取 2.4（和熔炉差不多）。
+// 大型仓按同样的比例 4.4×2.4（左右隔 4、上下隔 2 都撞，带子紧贴撞；隔 5、隔 3 没测）；储液罐两个隔 3 还撞，按 3.5×3.5（隔 4 没测）。
+// 分拣器可以伸进仓的碰撞体（口就在里面）。叠一层的高度：小型仓 2、大型仓 3、储液罐 3（实测）；
+// 配送器在一叠最上面那个仓的顶上，比那个仓高 1.875（小型）/ 2.981（大型）
+export const BOX_SLOT = {
+  2101: { 1: [0, 0.795], 4: [0.824, 0], 7: [0, -0.795], 10: [-0.823, 0] },
+  2102: { 0: [-1, 0.874], 1: [0, 0.874], 2: [1, 0.874], 4: [1.894, 0], 6: [1, -0.874], 7: [0, -0.874], 8: [-1, -0.874], 10: [-1.894, 0] },
+};
+export const TANK_PORT = { 0: [0, 1.11], 1: [1.15, 0], 2: [0, -1.11], 3: [-1.15, 0] };
+export const STORE_BODY = { 2101: { w: 2.4, h: 2.4, lift: 2, cap: 30 }, 2102: { w: 4.4, h: 2.4, lift: 3, cap: 60 }, 2106: { w: 3.5, h: 3.5, lift: 3 } };
+export const DISTRIBUTOR_LIFT = { 2101: 1.875, 2102: 2.981 };
+/** 液体（同一份物品表的 IsFluid）：箱子供货时用储液罐直接接带（用户 2026/10/18），不用储物仓 */
+export const FLUIDS = new Set([1000, 1007, 1114, 1116, 1120, 1121]); // 水、原油、精炼油、硫酸、氢、重氢
 /**
  * 火力发电厂（用户 2026/10/07：多余副产物就地烧掉）。BWIKI「火力发电厂」「燃料」两页（2026/10/07 查）：满负荷发电 2.16 MW，
  * 基础热效率 80%，所以每秒烧掉 2.7 MJ 的燃料；燃料喷增产剂能把效率提到 100%（烧得更慢，就地烧掉不喷）。

@@ -36,5 +36,17 @@ export function translateLayout(L, dx, dy) {
     b.rect = [b.rect[0] + dx, b.rect[1] + dy, b.rect[2] + dx, b.rect[3] + dy];
     b.feedY += dy;
   }
+  // 箱子供货的储物仓、储液罐（plan/storage.js）
+  for (const b of L.stores || []) {
+    points(b.boxes);
+    points([b.gate]);
+    for (const so of b.sorters) points([so.p0, so.p1, so.belt]);
+    if (b.tank) {
+      b.tank.x += dx;
+      b.tank.y += dy;
+      points([b.tank.port]);
+    }
+    b.rect = [b.rect[0] + dx, b.rect[1] + dy, b.rect[2] + dx, b.rect[3] + dy];
+  }
   return L;
 }

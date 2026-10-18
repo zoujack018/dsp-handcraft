@@ -3,12 +3,12 @@
 import { SPRITE, glyphSvg } from './glyphs.js';
 import { sliceRoutes, drawingSvg, routeColor } from './drawing.js';
 import { createViewer } from './viewer.js';
-import { readHandoff } from './handoff.js';
+import { readHandoff, readDefs } from './handoff.js';
 
 const $ = (id) => document.getElementById(id);
 const STORE = 'dsp-handcraft:settings';
-const DEFAULTS = { targetId: 1204, rate: 90, ext: [], recipes: {}, assembler: '2303', smelter: '2302', chemical: '2309', lab: '2901', labstack: 15, belt: '3', sorter: '2013', power: 'tesla', station: '', pile: '1', spray: '0', split: '0', stitch: '1', proslot: '1', warper: '0', maxwidth: '', maxheight: '', aspect: '3', orient: 'h', effort: 'quick', page: 1, chemtight: '0', burn: [] };
-const OPTION_NAMES = ['assembler', 'smelter', 'chemical', 'chemtight', 'lab', 'belt', 'sorter', 'station', 'pile', 'power', 'spray', 'split', 'stitch', 'proslot', 'warper', 'maxwidth', 'maxheight', 'aspect', 'effort']; // 排布方向去掉了，统一横排（用户 2026/10/07）
+const DEFAULTS = { targetId: 1204, rate: 90, ext: [], recipes: {}, assembler: '2303', smelter: '2302', chemical: '2309', lab: '2901', labstack: 15, belt: '3', sorter: '2013', power: 'tesla', station: '', pile: '1', spray: '0', split: '0', stitch: '1', proslot: '1', warper: '0', maxwidth: '', maxheight: '', aspect: '3', orient: 'h', effort: 'quick', page: 1, chemtight: '0', burn: [], defs: null, supply: '', dist: '0' };
+const OPTION_NAMES = ['assembler', 'smelter', 'chemical', 'chemtight', 'lab', 'belt', 'sorter', 'station', 'supply', 'dist', 'pile', 'power', 'spray', 'split', 'stitch', 'proslot', 'warper', 'maxwidth', 'maxheight', 'aspect', 'effort']; // 排布方向去掉了，统一横排（用户 2026/10/07）
 // 物品类别色条（游戏物品类型）：原矿、材料、组件、成品、物流、生产设施、防御、黑雾、矩阵
 const CAT_COLOR = { 1: '#9aa5b1', 2: '#6f8fb3', 3: '#5f9b8b', 4: '#b48b52', 5: '#7c80c0', 6: '#4f7cc9', 8: '#b56262', 9: '#b56262', 10: '#707070', 11: '#9a72cf' };
 const STATUS_TEXT = {
@@ -25,7 +25,7 @@ let catalog = [];
 let byId = new Map();
 const state = { ...DEFAULTS, ext: new Set() };
 let floors = [];
-const view = { level: 0, focus: '', selected: '', buildings: true, sorters: true, power: false };
+const view = { level: 'all', focus: '', selected: '', buildings: true, sorters: true, power: false }; // level：'all' 是总览，数字是第几层（0 = L1 地面）
 let last = null;
 let split = null; // 切成几块时整个结果（每块的结果在 split.modules 里），不切时为空
 let busy = false;
@@ -123,6 +123,7 @@ function loadSettings() {
   // 新配方：{ 物品 ID: 配方 ID }，只记开了新配方的物品
   state.recipes = s.recipes && typeof s.recipes === 'object' ? Object.fromEntries(Object.entries(s.recipes).filter(([, v]) => Number(v) > 0)) : {};
   state.burn = Array.isArray(s.burn) ? s.burn.map(Number).filter(Boolean) : []; // 1.8 存的是 '0' / '1'（左栏开关），改到弹窗后按物品记
+  state.defs = readDefs(s.defs); // 上次从计算器带过来的新物品、新配方（地址里的方案只用一次，刷新后靠这份）
   state.ext = new Set(Array.isArray(s.ext) ? s.ext : typeof s.raw === 'string' ? s.raw.split(/[,，、\s]+/).filter(Boolean) : []);
   state.legacyTarget = typeof s.target === 'string' ? s.target : null;
   // 多个目标：旧版本只有 targetId/rate
@@ -645,6 +646,8 @@ $('labstack').addEventListener('change', () => {
 function togglePile() {
   const connected = !!document.querySelector('input[name="station"]:checked')?.value;
   $('pile-field').hidden = !connected;
+  $('supply-field').hidden = connected; // 供货（储物仓 / 储液罐）只在不接物流站时有（用户 2026/10/18）
+  $('dist-field').hidden = connected || !document.querySelector('input[name="supply"]:checked')?.value; // 物流配送器：选了储物仓才有
   $('stack').hidden = !connected; // 「集装」一组只剩物流站出货叠层（产物送走前叠层用户 2026/10/07 说没用、去掉了）
   $('station-slots').hidden = !connected; // 物流站格子也只在接物流站时有意义
   const select = $('pile-field').querySelector('select');
@@ -653,7 +656,7 @@ function togglePile() {
     select.title = connected ? '物流站输出堆叠层数，取决于已解锁科技' : '接入物流站后可设置';
   }
 }
-document.querySelectorAll('input[name="station"]').forEach((el) => el.addEventListener('change', togglePile));
+document.querySelectorAll('input[name="station"], input[name="supply"]').forEach((el) => el.addEventListener('change', togglePile));
 $('ext-list').addEventListener('click', (e) => {
   const burnOff = e.target.closest('button[data-burn-off]');
   if (burnOff) {
@@ -972,7 +975,7 @@ function showStitched() {
 function show(d) {
   last = d;
   floors = sliceRoutes(d.model.routes);
-  view.level = 0;
+  view.level = 'all'; // 出图先看总览（地面实线、高架虚线叠在一起），要看单层再点右边的 L1、L2…（用户 2026/10/18）
   view.focus = '';
   view.selected = '';
   viewer.reset();
@@ -1191,14 +1194,20 @@ function fillPorts(d) {
       .join('');
     return;
   }
+  // 箱子供货（plan/storage.js）：每组写在哪边哪一行、几个仓、叠几层、装满够多少分钟；没接上的照旧按出入口写
+  const stores = (d.stores || [])
+    .slice()
+    .sort((a, b) => (a.kind === b.kind ? b.y - a.y : a.kind === 'in' ? -1 : 1))
+    .map((s) => `<li>${s.kind === 'in' ? '' : '成品 '}${esc(s.item)} <span class="num">${fmt(s.rate)}</span>/分：${s.side}边第 <span class="num">${s.y}</span> ${s.unit}的${s.what} <span class="num">${s.count}</span> 个${s.layers > 1 ? `，每个叠 <span class="num">${s.layers}</span> 层` : ''}${s.dist ? `，顶上放物流配送器（${s.kind === 'in' ? '向其他配送器需求' : '向其他配送器供应'}）` : ''}，装满够 <span class="num">${Math.floor(s.minutes)}</span> 分钟</li>`);
   const lines = d.ports
+    .filter((p) => p.store == null)
     .sort((a, b) => (a.kind === b.kind ? b.y - a.y : a.kind === 'in' ? -1 : 1))
     .map((p) =>
       p.kind === 'in'
         ? `<li>${esc(p.item)} <span class="num">${fmt(p.rate)}</span>/分，从${p.side}边第 <span class="num">${p.y}</span> ${p.unit ?? '行'}送入</li>`
         : `<li>成品 ${esc(p.item)} <span class="num">${fmt(p.rate)}</span>/分，从${p.side}边第 <span class="num">${p.y}</span> ${p.unit ?? '行'}出来</li>`,
     );
-  $('ports').innerHTML = lines.join('') || '<li>没有外部接口。</li>';
+  $('ports').innerHTML = [...stores, ...lines].join('') || '<li>没有外部接口。</li>';
 }
 
 function fillNotes(d) {
@@ -1261,14 +1270,15 @@ function fillNotes(d) {
   if (ad?.spray) {
     // 增产剂从哪进：只说哪几座物流站（站口编号进控制台），没有站时从边缘入口
     const st = [...new Set((ad.lines ?? []).map((x) => x.match(/^物流站 (\d+)/)?.[1]).filter(Boolean))];
-    const where = st.length ? `物流站 ${st.join('、')} 里放增产剂` : '增产剂从边缘的入口送进来';
+    const boxed = (ad.lines ?? []).length && (ad.lines ?? []).every((x) => x.startsWith('储物仓')); // 箱子供货：增产剂带也从储物仓出（plan/storage.js）
+    const where = st.length ? `物流站 ${st.join('、')} 里放增产剂` : boxed ? '增产剂放进储物仓' : '增产剂从边缘的入口送进来';
     li.push(`<li>${where}，约 ${fmt(ad.spray.rate)}/分。</li>`);
     dev.push(`增产剂带 ${ad.lines?.length ?? 0} 条：${(ad.lines ?? []).join('、')}；吃到增产的配方：${ad.spray.units.join('、')}`);
   }
   if (ad?.warper) li.push(`<li>空间翘曲器放进物流站 ${ad.warper.home}${ad.warper.to.length ? `，传送带会送到物流站 ${ad.warper.to.join('、')}` : ''}。</li>`);
   dev.push(...(ad?.notes ?? []));
   if (d.byproducts?.length)
-    li.push(`<li>副产物 ${d.byproducts.map((b) => `${esc(b.name)} ${fmt(b.rate)}/分`).join('、')} 单独一条带送出${d.stations?.length ? '进物流站' : '，要接走，不然会堵'}。</li>`);
+    li.push(`<li>副产物 ${d.byproducts.map((b) => `${esc(b.name)} ${fmt(b.rate)}/分`).join('、')} 单独一条带送出${d.stations?.length ? '进物流站' : d.byproducts.every((b) => (d.stores ?? []).some((s) => s.kind === 'out' && s.item === b.name)) ? '进储物仓 / 储液罐，满了要取走' : '，要接走，不然会堵'}。</li>`);
   if (dev.length) console.info('[dsp-handcraft] 规划细节：\n' + dev.map((x) => `- ${x}`).join('\n'));
   $('notes').innerHTML = li.join('');
 }
@@ -1315,6 +1325,7 @@ let handoff = readHandoff(location.hash);
 function applyHandoff() {
   state.targets = handoff.targets.map((t) => ({ ...t }));
   state.recipes = { ...handoff.recipes };
+  state.defs = handoff.defs;
   state.ext = new Set();
   for (const [k, v] of Object.entries(handoff.options)) if (document.querySelector(`input[name="${k}"][value="${v}"]`)) state[k] = v;
   if (handoff.labstack) state.labstack = labStackOf(handoff.labstack);
@@ -1373,4 +1384,5 @@ if (!window.DSPHC) {
 document.querySelectorAll('[data-page]').forEach((x) => x.setAttribute('aria-pressed', String(Number(x.dataset.page) === state.page)));
 // 多线程：把打包好的脚本源码交给后台线程，由它再开帮手线程（线程数 = 逻辑核数）
 send({ type: 'init', src: WORKER_SRC, threads: navigator.hardwareConcurrency || 4 });
+if (state.defs) send({ type: 'defs', defs: state.defs });
 send({ type: 'catalog', id: ++catId, raw: [] });

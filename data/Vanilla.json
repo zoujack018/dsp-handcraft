@@ -4658,6 +4658,34 @@
       "IconName": "inserter-4"
     },
     {
+      "ID": 162,
+      "Type": 4,
+      "Factories": [
+        2303,
+        2304,
+        2305,
+        2318
+      ],
+      "Name": "黑雾引力透镜",
+      "Items": [
+        1209,
+        5201
+      ],
+      "ItemCounts": [
+        1,
+        12
+      ],
+      "Results": [
+        1211
+      ],
+      "ResultCounts": [
+        1
+      ],
+      "TimeSpend": 360.0,
+      "Proliferator": 3,
+      "IconName": "darkfog-lens"
+    },
+    {
       "ID": 11001,
       "Type": -1,
       "Factories": [
@@ -6643,6 +6671,13 @@
       "IconName": "space-warper"
     },
     {
+      "ID": 1211,
+      "Type": 3,
+      "Name": "黑雾引力透镜",
+      "GridIndex": 1706,
+      "IconName": "darkfog-lens"
+    },
+    {
       "ID": 1403,
       "Type": 3,
       "Name": "湮灭约束球",
@@ -6716,7 +6751,7 @@
       "ID": 1131,
       "Type": 3,
       "Name": "地基",
-      "GridIndex": 1706,
+      "GridIndex": 1707,
       "IconName": "terrain-tool"
     },
     {

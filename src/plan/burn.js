@@ -15,8 +15,8 @@ import { chainTiles } from '../emit/blueprint.js';
 const key = (x, y) => `${x},${y}`;
 const cell = (x, y, z) => `${x},${y},${z}`;
 
-/** 布局实际占的外框 [x0, y0, x1, y1]：工厂、物流站、带子、出入口、已有的发电厂 */
-function contentBox(L) {
+/** 布局实际占的外框 [x0, y0, x1, y1]：工厂、物流站、带子、出入口、已有的发电厂和储物仓 */
+export function contentBox(L) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   const inc = (x, y) => { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); };
   for (const p of L.pos.values()) {
@@ -27,6 +27,7 @@ function contentBox(L) {
   for (const ch of L.chains) for (const [x, y] of [...chainTiles(L, ch).main, ...chainTiles(L, ch).extra.flat()]) inc(x, y);
   for (const p of L.ports) inc(p.x, p.y);
   for (const b of L.burners || []) { inc(b.rect[0], b.rect[1]); inc(b.rect[2], b.rect[3]); }
+  for (const b of L.stores || []) { inc(b.rect[0], b.rect[1]); inc(b.rect[2], b.rect[3]); } // 箱子供货的储物仓、储液罐（plan/storage.js）
   inc(0, 0);
   inc(L.width - 1, L.height - 1);
   return [x0, y0, x1, y1];

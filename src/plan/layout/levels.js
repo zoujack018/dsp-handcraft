@@ -80,6 +80,10 @@ export function solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel, top })
     // 冲突是两两对称的（above / below 互为反向，neq 两边都加），段 m 的冲突只和邻居的层有关；结果和每步全数一遍逐字一致
     const isFree = new Uint8Array(n);
     for (const i of free) isFree[i] = 1;
+    // 段 -> 它在 free 里的 1 起位置（0 = 不在 free 里）。set 只会碰 free 里的段（见 set 处的核实），这张表够用。
+    const nf = free.length;
+    const posInFree = new Int32Array(n);
+    for (let j = 0; j < nf; j++) posInFree[free[j]] = j + 1;
     const cl = new Int32Array(n);
     let tot = 0;
     let nBad = 0; // 有冲突（cl > 0）的段数
@@ -87,8 +91,17 @@ export function solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel, top })
       tot += cl[i] = clash(i, level[i]);
       if (cl[i] > 0) nBad++;
     }
+    // 树状数组（Fenwick）按 free 顺序记每一位 cl>0 ? 1 : 0，用来 O(log n) 取「第 k 个有冲突的段」。
+    // 原来每次迭代按 free 顺序线性扫到第 k 个 cl>0 的段是 O(n)（fit 自身占整轮 CPU 12.6%，大线不可行时几乎每次扫满），
+    // 树上二分挑出来的段和那次线性扫完全是同一个（等价说明见下面取段处）。初始位按上面同样的 cl>0 判定建。
+    const fen = new Int32Array(nf + 1); // 1 起下标
+    for (let p = 1; p <= nf; p++) fen[p] = cl[free[p - 1]] > 0 ? 1 : 0;
+    for (let p = 1; p <= nf; p++) { const up = p + (p & -p); if (up <= nf) fen[up] += fen[p]; } // O(n) 线性建树
+    const fenAdd = (p, d) => { for (; p <= nf; p += p & -p) fen[p] += d; };
+    let fenHi = 1; // ≤ nf 的最大 2 的幂，二分下降的起点
+    while (fenHi << 1 <= nf) fenHi <<= 1;
     const set = (m, v) => {
-      if (cl[m] > 0 !== v > 0) nBad += v > 0 ? 1 : -1;
+      if (cl[m] > 0 !== v > 0) { nBad += v > 0 ? 1 : -1; fenAdd(posInFree[m], v > 0 ? 1 : -1); } // m 必来自 free（move 对邻居有 isFree 守卫，i 自己来自 free），posInFree[m] ≥ 1
       tot += v - cl[m];
       cl[m] = v;
     };
@@ -116,9 +129,12 @@ export function solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel, top })
     for (let it = 0; bestC > 0 && it < 100 + 30 * ids.length; it++) {
       if (!nBad) break;
       // 有冲突的段里按 free 的顺序挑第 k 个（和原来先过滤成数组再挑一样）
-      let k = Math.floor(rand() * nBad);
-      let i = -1;
-      for (const x of free) if (cl[x] > 0 && k-- === 0) { i = x; break; }
+      const k = Math.floor(rand() * nBad); // rand() 的次数、顺序不变（仍然每次迭代先抽 k）
+      // 树上二分：找最小的 pos 使 free[0..pos] 里 cl>0 的个数 = k+1，就是原来按 free 顺序线性扫到的第 k 个（0 起）有冲突的段，一字不差
+      let pos = 0;
+      let rem = k + 1;
+      for (let pw = fenHi; pw > 0; pw >>= 1) { const nx = pos + pw; if (nx <= nf && fen[nx] < rem) { pos = nx; rem -= fen[nx]; } }
+      const i = free[pos]; // 二分返回的 1 起位置是 pos+1，对应 free 的 0 起下标 pos
       const cur = level[i];
       clashAll(i);
       let np = 0;

@@ -53,5 +53,10 @@ export function renderModel(graph, L) {
     for (const s of bankSorters(b)) sorters.push({ x: s.p0[0], y0: s.p1[1], y1: s.p0[1], io: 'in', itemId, factoryItem: '火力发电厂' });
     return { itemId: b.itemId, plants: b.plants, box: THERMAL_BANK.box };
   });
-  return { width: L.width, height: L.height, rotated: !!L.rotated, origin: L.origin ?? { x: 0, y: 0 }, rows, items, segments, legs, sorters, power, stations, stationSites, stubs, routes, devices, burners, streets: L.streets || [], trunk: L.trunk ?? null };
+  // 箱子供货的储物仓、储液罐（plan/storage.js）：各个仓（叠起来的画一个）、储液罐，仓口的分拣器和工厂的一起画
+  const stores = (L.stores || []).map((s) => {
+    for (const so of s.sorters) sorters.push({ x: so.belt[0], y0: s.kind === 'in' ? so.p0[1] : so.p1[1], y1: so.belt[1], io: s.kind === 'in' ? 'out' : 'in', itemId: s.itemId, factoryItem: '储物仓' });
+    return { kind: s.kind, itemId: s.itemId, type: s.type, dist: s.dist, layers: s.layers, boxes: s.boxes, tank: s.tank ? { x: s.tank.x, y: s.tank.y } : null };
+  });
+  return { width: L.width, height: L.height, rotated: !!L.rotated, origin: L.origin ?? { x: 0, y: 0 }, rows, items, segments, legs, sorters, power, stations, stationSites, stubs, routes, devices, burners, stores, streets: L.streets || [], trunk: L.trunk ?? null };
 }

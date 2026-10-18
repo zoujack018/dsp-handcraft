@@ -147,7 +147,8 @@ export function splitLine(input, { splitItems = SPLIT_ITEMS, maxItems = MODULE_I
       ext: c.ext,
       targets,
       inputs: [...inputs],
-      input: { ...rest, targets: targets.map((t) => ({ target: t.itemId, rate: t.rate })), raw: [...new Set([...(input.raw ?? []).map((n) => item(n).id), ...inputs])] },
+      // 喷增产剂只喷整条线最终产物的直接原料：各块按整条线的最终产物算（最终产物不在这一块里时这一块不喷）
+      input: { ...rest, targets: targets.map((t) => ({ target: t.itemId, rate: t.rate })), raw: [...new Set([...(input.raw ?? []).map((n) => item(n).id), ...inputs])], ...(input.spray ? { sprayFor: [...goal] } : null) },
     };
   });
   // 冶炼块放最前面，其余按台数从多到少

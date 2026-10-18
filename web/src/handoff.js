@@ -7,6 +7,8 @@
 //   assembler / smelter / chemical / lab: 建筑 ID；belt: 1~3；sorter: 分拣器 ID；pile: 物流站出货叠几层 1~4；labstack: 1~15
 //   auto: 到了就自动生成一次（默认是）
 //   from: 来源网页的名字（页面上显示「从 xx 带过来的方案」）
+//   defs: { items: [{ ID, Name }], recipes: [{ ID, Type, Factories, Name, Items, ItemCounts, Results, ResultCounts, TimeSpend, Proliferator }] }
+//         来源网页自己的物品和配方（写法同 data/Vanilla.json）。这边没有的 ID 才加进来（那边新出的物品），已有的照旧用这边的（src/gamedata.js 的 addGameData）
 
 const OPTION_KEYS = ['assembler', 'smelter', 'chemical', 'lab', 'belt', 'sorter', 'pile'];
 
@@ -29,7 +31,33 @@ export function readHandoff(hash) {
   const options = {};
   for (const k of OPTION_KEYS) if (p[k] != null && p[k] !== '') options[k] = String(p[k]);
   const labstack = Number(p.labstack) > 0 ? Number(p.labstack) : null;
-  return { targets, ext, recipes, options, labstack, auto: p.auto !== false, from: typeof p.from === 'string' ? p.from.slice(0, 40) : null };
+  return { targets, ext, recipes, options, labstack, defs: readDefs(p.defs), auto: p.auto !== false, from: typeof p.from === 'string' ? p.from.slice(0, 40) : null };
+}
+
+/** 带过来的物品和配方（defs）：只留字段齐全、类型对的，按 Vanilla.json 的写法整理；一条都没有返回 null。页面存下的那份读回来时也过一遍 */
+export function readDefs(d) {
+  if (!d || typeof d !== 'object') return null;
+  const id = (x) => Number.isInteger(x) && x > 0;
+  const name = (x) => (typeof x === 'string' ? x.trim().slice(0, 40) : '');
+  const list = (ids, counts) => Array.isArray(ids) && Array.isArray(counts) && ids.length > 0 && ids.length === counts.length && ids.every(id) && counts.every((n) => Number.isFinite(n) && n > 0);
+  const items = (Array.isArray(d.items) ? d.items : [])
+    .filter((x) => id(x?.ID) && name(x.Name))
+    .map((x) => ({ ID: x.ID, Name: name(x.Name) }));
+  const recipes = (Array.isArray(d.recipes) ? d.recipes : [])
+    .filter((r) => id(r?.ID) && list(r.Items, r.ItemCounts) && list(r.Results, r.ResultCounts) && Array.isArray(r.Factories) && r.Factories.length > 0 && r.Factories.every(id) && Number.isFinite(r.TimeSpend) && r.TimeSpend > 0)
+    .map((r) => ({
+      ID: r.ID,
+      Type: Number.isInteger(r.Type) ? r.Type : 4,
+      Factories: [...r.Factories],
+      Name: name(r.Name),
+      Items: [...r.Items],
+      ItemCounts: [...r.ItemCounts],
+      Results: [...r.Results],
+      ResultCounts: [...r.ResultCounts],
+      TimeSpend: r.TimeSpend,
+      Proliferator: [0, 1, 3].includes(r.Proliferator) ? r.Proliferator : 0,
+    }));
+  return items.length || recipes.length ? { items, recipes } : null;
 }
 
 /** 生成 #plan= 地址片段（给别的网页用，也方便测试） */

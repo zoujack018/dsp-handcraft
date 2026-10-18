@@ -452,6 +452,8 @@ body.viewer-expanded { overflow: hidden; }
 .spec > .status { order: 4; }
 .spec > .suggest { order: 5; }
 .spec > [data-name="station"] { order: 6; }
+.spec > [data-name="supply"], .spec > [data-name="dist"] { order: 6; }
+.spec > [data-name="supply"][hidden], .spec > [data-name="dist"][hidden] { display: none !important; }
 .spec > [data-name="power"] { order: 7; }
 .spec > [data-name="spray"] { order: 8; }
 .spec > [data-name="split"] { order: 9; }
@@ -614,6 +616,21 @@ body.viewer-expanded { overflow: hidden; }
           <label><input type="radio" name="station" value=""><span data-short="不接">不接（边缘进出）</span></label>
           <label><input type="radio" name="station" value="ils"><span data-short="放进空地">星际物流站（放进空地）</span></label>
           <label><input type="radio" name="station" value="ils-side"><span data-short="靠左侧站列">星际物流站（靠左侧站列）</span></label>
+        </div>
+      </fieldset>
+      <fieldset class="seg" data-name="supply" id="supply-field">
+        <legend>供货</legend>
+        <div class="opts">
+          <label><input type="radio" name="supply" value=""><span data-short="边缘">只从边缘送入</span></label>
+          <label><input type="radio" name="supply" value="box-s"><span data-short="小型仓">小型储物仓</span></label>
+          <label><input type="radio" name="supply" value="box-l"><span data-short="大型仓">大型储物仓</span></label>
+        </div>
+      </fieldset>
+      <fieldset class="seg" data-name="dist" id="dist-field">
+        <legend>物流配送器</legend>
+        <div class="opts">
+          <label><input type="radio" name="dist" value="0"><span>不放</span></label>
+          <label><input type="radio" name="dist" value="1"><span data-short="放仓顶">放在仓顶</span></label>
         </div>
       </fieldset>
       <fieldset class="seg" data-name="power">

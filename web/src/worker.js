@@ -10,7 +10,7 @@ import { runTask } from '../../src/plan/tasks.js';
 import { validate } from '../../src/plan/validate.js';
 import { emitBlueprint } from '../../src/emit/blueprint.js';
 import { checkBlueprint } from '../../src/emit/check.js';
-import { ITEMS, RAW_ITEM_IDS, factory, hasHighLatitude, recipeChoices, defaultRecipe, burnPerMinute } from '../../src/gamedata.js';
+import { ITEMS, RAW_ITEM_IDS, factory, hasHighLatitude, recipeChoices, defaultRecipe, burnPerMinute, addGameData } from '../../src/gamedata.js';
 import { renderModel } from './model.js';
 import { autoWatcher, previewShapeOk } from './autowatch.js';
 import vanilla from '../../data/Vanilla.json' with { type: 'json' };
@@ -42,6 +42,16 @@ const EFFORT = {
   fine: { iterations: 8000, restarts: 6, timeLimit: null, targetSpace: 0.8, retries: 4, untilTarget: { maxMs: 200 * 60000 }, powerHoles: true },
 };
 
+// 别的网页带来的物品和配方（嵌在量产量化计算器里时，那边新出的物品随方案带过来，见 web/src/handoff.js 的 defs）。
+// 帮手线程各有一份游戏数据，开的时候也发一份过去（makePool）
+let defs = null;
+const extraItems = []; // 加进来的物品，物品陈列里接在「物品」页最后一行后面
+function takeDefs(d) {
+  defs = d;
+  extraItems.push(...addGameData(d).items);
+}
+const LAST_ROW = Math.max(...vanilla.items.filter((x) => Math.floor(x.GridIndex / 1000) === 1).map((x) => Math.floor((x.GridIndex % 1000) / 100)));
+
 /**
  * 物品陈列：按游戏里的格位（GridIndex = 页×1000 + 行×100 + 列）列出全部物品，并标出状态：
  *   raw        原矿，始终从边缘供应
@@ -53,7 +63,8 @@ const EFFORT = {
 function catalog(raw = []) {
   const out = [];
   for (const it of ITEMS.values()) {
-    const gi = vanilla.items.find((x) => x.ID === it.id)?.GridIndex ?? -1;
+    const k = extraItems.indexOf(it.id);
+    const gi = k >= 0 ? 1000 : vanilla.items.find((x) => x.ID === it.id)?.GridIndex ?? -1;
     if (gi < 1000) continue;
     let status;
     if (RAW_ITEM_IDS.has(it.id)) status = 'raw';
@@ -73,8 +84,8 @@ function catalog(raw = []) {
       id: it.id,
       name: it.name,
       page: Math.floor(gi / 1000),
-      row: Math.floor((gi % 1000) / 100),
-      col: gi % 100,
+      row: k >= 0 ? LAST_ROW + 1 + Math.floor(k / 14) : Math.floor((gi % 1000) / 100),
+      col: k >= 0 ? 1 + (k % 14) : gi % 100,
       type: it.type,
       icon: vanilla.items.find((x) => x.ID === it.id)?.IconName ?? '',
       status,
@@ -198,6 +209,26 @@ function chain({ targets, raw: raw0 = [], recipes: recipes0 = {}, lab = 2901, la
   };
 }
 
+/** 箱子供货的各组（plan/storage.js）：在哪边哪一行、什么仓、几个、叠几层、装满够几分钟 */
+function stores(graph, L) {
+  return (L.stores || []).map((s) => {
+    const left = s.side < 0;
+    return {
+      kind: s.kind,
+      item: ITEMS.get(s.itemId)?.name ?? String(s.itemId),
+      rate: s.rate,
+      what: s.type === 2106 ? '储液罐' : s.type === 2101 ? '小型储物仓' : '大型储物仓',
+      count: s.count,
+      layers: s.layers,
+      dist: s.dist,
+      minutes: s.minutes,
+      side: L.rotated ? (left ? '上' : '下') : left ? '左' : '右',
+      unit: L.rotated ? '列' : '行',
+      y: s.gate[1] + (L.origin?.y ?? 0),
+    };
+  });
+}
+
 /** 原料入口与成品出口，告诉玩家从哪接 */
 function ports(graph, L) {
   return L.ports.map((p) => {
@@ -212,6 +243,7 @@ function ports(graph, L) {
       unit: L.rotated ? '列' : '行',
       x: p.x,
       y: at,
+      store: p.store ?? null, // 接了储物仓 / 储液罐的（箱子供货），页面按 stores 写
     };
   });
 }
@@ -243,6 +275,7 @@ function makePool() {
     };
     const workers = Array.from({ length: threads }, () => {
       const w = new Worker(helperUrl);
+      if (defs) w.postMessage({ type: 'defs', defs });
       w.onmessage = (ev) => {
         const { id, result, error, progress } = ev.data;
         const job = waiting.get(id);
@@ -534,10 +567,14 @@ async function planOne(calc, p, helpers, effort, restarts, module = false, onRou
         maxAspect: p.aspect ? Number(p.aspect) : null,
         maxWidth: p.maxwidth ? Number(p.maxwidth) : null,
         maxHeight: p.maxheight ? Number(p.maxheight) : null,
+        ...(p.core ? { core: p.core } : {}), // 排版内核（分支 explore/typeset，src/plan/typeset.js），页面上还没有开关
       },
       station: p.station ? { place: p.station === 'ils-side' ? 'side' : 'edge', stack: Number(p.pile || 1), slots: { warper: p.warper === '1', keepFree: p.proslot !== '0' && Number(p.spray || 0) > 0 } } : null,
       power: p.power || null,
       burn: Array.isArray(p.burn) && p.burn.length ? p.burn.map(Number) : false, // 要就地烧掉的副产物（「外部供应」弹窗里选，plan/burn.js）
+      // 供货：不接物流站时原料、成品接储物仓 / 储液罐（plan/storage.js 的 SUPPLY）；左栏「物流配送器」选了放在仓顶就是 dist-s / dist-l
+      supply: !p.station && p.supply ? (p.dist === '1' ? p.supply.replace('box', 'dist') : p.supply) : null,
+      storeLayers: Number(p.labstack || 15), // 储物仓最多叠几层：按「研究站最多叠几层」（推断同一个「垂直建造」科技管）
       orient: p.orient || 'h',
       onRound,
     };
@@ -639,15 +676,16 @@ function describePlan(plan, calc, p, effort, threadCount) {
       spray: calc.spray ? { name: calc.spray.name, rate: calc.spray.rate, units: calc.units.filter((u) => u.spray).map((u) => `${u.item}（${u.spray.mode === 'extra' ? `增产 +${Math.round((u.spray.outMul - 1) * 1000) / 10}%` : `加速 +${Math.round((u.spray.speedMul - 1) * 100)}%`}）`) } : null,
       coaters: L.coaters?.length ?? 0,
       pilers: L.pilers?.length ?? 0,
-      notes: [...(L.addonNotes ?? []), ...(L.warperNotes ?? [])],
+      notes: [...(L.addonNotes ?? []), ...(L.warperNotes ?? []), ...(L.storeNotes ?? [])],
       // 翘曲器整张一格（plan/stations.js 的 linkWarpers）：哪座站存、送到哪几座
       warper: (L.stations || []).some((st) => st.items.some((it) => it.role === 'warper'))
         ? { home: (L.stations || []).findIndex((st) => st.items.some((it) => it.role === 'warper')) + 1, to: (L.warperLinks || []).map((w) => w.to.k + 1) }
         : null,
-      lines: (L.proLines || []).map((pl) => (pl.station ? `物流站 ${pl.station.k + 1} 的 ${pl.station.slot} 号口` : `边缘第 ${pl.edge[1] + (L.origin?.y ?? 0)} ${L.rotated ? '列' : '行'}的入口`)),
+      lines: (L.proLines || []).map((pl) => (pl.station ? `物流站 ${pl.station.k + 1} 的 ${pl.station.slot} 号口` : pl.store != null ? `储物仓（${L.stores[pl.store].side < 0 ? '左' : '右'}边）` : `边缘第 ${pl.edge[1] + (L.origin?.y ?? 0)} ${L.rotated ? '列' : '行'}的入口`)),
     },
     model: renderModel(plan.graph, L),
     ports: ports(plan.graph, L),
+    stores: stores(plan.graph, L),
     stations: (L.stations || []).map((st) => ({
       ...toBlueprint(L, st.x + (L.origin?.x ?? 0), st.y + (L.origin?.y ?? 0)),
       items: st.items.map((it) => ({ name: ITEMS.get(it.itemId)?.name ?? plan.graph.items.get(it.itemId)?.name ?? String(it.itemId), role: it.role })),
@@ -763,6 +801,10 @@ function snapshotPayload(snap, state) {
 
 self.onmessage = async (ev) => {
   const msg = ev.data;
+  if (msg.type === 'defs') {
+    takeDefs(msg.defs);
+    return;
+  }
   // 帮手线程：只管跑分来的活
   if (msg.type === 'task') {
     // 实时预览：搜索任务带了 snapshotMs 开关时在这里装快照钩子（回调传不过线程，只能本地装）。

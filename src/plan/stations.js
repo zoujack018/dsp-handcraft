@@ -48,6 +48,8 @@ export function obstacles(L) {
   }
   // 就地烧副产物的火力发电厂（plan/burn.js）：整块地都不让别的东西进
   for (const b of L.burners || []) for (let x = b.rect[0]; x <= b.rect[2]; x++) for (let y = b.rect[1]; y <= b.rect[3]; y++) solid.add(key(x, y));
+  // 箱子供货的储物仓、储液罐那一块（plan/storage.js）：仓、分拣器、进料带，别的东西都不进
+  for (const b of L.stores || []) for (let x = b.rect[0]; x <= b.rect[2]; x++) for (let y = b.rect[1]; y <= b.rect[3]; y++) solid.add(key(x, y));
   for (const s of L.sorterList) {
     const p = L.pos.get(s.bid);
     const y0 = L.rowCy[p.row] + (s.side === 'top' ? p.g.edgeAbove : -p.g.edgeBelow);
@@ -1022,6 +1024,7 @@ export function cropToContent(L) {
   }
   for (const w of L.warperLinks || []) for (const [x, y] of w.cells) include(x, y);
   for (const b of L.burners || []) { include(b.rect[0], b.rect[1]); include(b.rect[2], b.rect[3]); } // 火力发电厂那一块（plan/burn.js）
+  for (const b of L.stores || []) { include(b.rect[0], b.rect[1]); include(b.rect[2], b.rect[3]); } // 箱子供货的储物仓、储液罐（plan/storage.js）
   translateLayout(L, -x0, -y0);
   L.width = x1 - x0 + 1;
   L.height = y1 - y0 + 1;

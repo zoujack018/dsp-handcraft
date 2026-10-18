@@ -5,6 +5,7 @@
 //   让搜索从各种行数/宽度出发，自己权衡「多一行、少很多列」。
 import { route, STATION_COLS } from './route.js';
 import { layers } from './graph.js';
+import { typeset, typesetStates, typesetNeighbor, blockCaps, stationEstimate, polishCandidates } from './typeset.js';
 
 const mulberry = (a) => {
   let t = a;
@@ -317,7 +318,7 @@ let candsMemo = null;
  * snapshotMs / onSnapshot：实时预览的快照钩子（网页「观摩退火」用）。每隔约 snapshotMs 毫秒把当前状态
  * 报给 onSnapshot，钩子只读：不碰随机数、不多算 evalState、不改任何搜索状态，开不开结果逐字一致。
  */
-function prepare(graph, { iterations = 5000, restarts = 4, seed = 7, routeOptions = {}, initial, candidateLimit = 12, snapshotMs = 0, onSnapshot = null } = {}) {
+function prepare(graph, { iterations = 5000, restarts = 4, seed = 7, routeOptions = {}, initial, candidateLimit = 12, snapshotMs = 0, onSnapshot = null, warm = null } = {}) {
   const evalState = (st) => route(graph, st.rows, routeOptions, st.pads, st.blocks, st.streets || []);
   // 辅路（预留整列空地）默认不开：三个种子的对比里，小的物流站布局能省 1% 面积、少四成叠层，
   // 但大产线在同样的迭代数下面积多 4%~8%（多出来的邻域动作把搜索搅散了）。需要时 routeOptions.streets = true。
@@ -326,18 +327,47 @@ function prepare(graph, { iterations = 5000, restarts = 4, seed = 7, routeOption
   const usable = routeOptions.maxWidth ? routeOptions.maxWidth - (routeOptions.station ? STATION_COLS + 1 : 2) : null;
   // 候选初始解先各算一遍，按成本排序，退火从最好的几个出发
   const key = exactKey([routeOptions, initial ?? null]);
+  // 排版内核：每组一块最多几台（运力断块，typeset.js 的 blockCaps）；边缘放站时估要几座站，排版留站位
+  const caps = routeOptions.core === 'typeset' ? blockCaps(graph, routeOptions) : null;
+  const stations = routeOptions.core === 'typeset' && routeOptions.stationHoles ? stationEstimate(graph, routeOptions) : 0;
+  const gapsOn = routeOptions.core === 'typeset' && routeOptions.power === 'tesla'; // 供电缝（typeset.js 的 gapChunk）
+  // 目标长宽比（排版内核：行宽收到 √(长宽比 × 6.5 × 总宽) 附近，见 typeset.js 的 widthRange）
+  const aspect = routeOptions.core === 'typeset' ? routeOptions.aspectTarget ?? null : null;
   let cands;
   if (key !== null && candsMemo?.graph === graph && candsMemo.key === key) cands = candsMemo.cands;
   else {
-    cands = (initial ? [{ rows: initial, blocks: wholeBlocks(graph), pads: {} }] : initialStates(graph, usable))
-      .map((st) => ({ st, L: evalState(st) }))
-      .sort((p, q) => p.L.cost - q.L.cost);
+    // routeOptions.core = 'typeset'：排版内核（typeset.js，分支 explore/typeset），状态是一条组的队和行宽，布局由队排版出来
+    const states = routeOptions.core === 'typeset' ? typesetStates(graph, usable, caps, stations, gapsOn, aspect) : initialStates(graph, usable);
+    cands = (initial ? [{ rows: initial, blocks: wholeBlocks(graph), pads: {} }] : states)
+      .map((st) => {
+        const L = evalState(st);
+        return { st, cost: L.cost, feasible: L.feasible, L };
+      })
+      .sort((p, q) => p.cost - q.cost);
+    // 评估完只留排序后第 0 个和可行解的完整布局，其余丢掉（candsMemo 在每个工作线程里常驻，不可行的布局没人读）
+    for (let i = 1; i < cands.length; i++) if (!cands[i].feasible) cands[i].L = null;
     candsMemo = key === null ? null : { graph, key, cands };
   }
-  return { graph, routeOptions, evalState, useStreets, usable, cands, iterations, restarts, seed, candidateLimit, snapshotMs, onSnapshot };
+  // 接力退火（排版内核）：上一段最好那张的队、行宽、站位、供电缝，重新排版、评估一遍，偶数轮从它出发（runRound）
+  let warmCand = null;
+  if (warm && routeOptions.core === 'typeset') {
+    const st = { seq: warm.seq, W: warm.W, ...(warm.bays ? { bays: warm.bays } : {}), ...(warm.gaps ? { gaps: warm.gaps } : {}), ...typeset(graph, warm.seq, warm.W, caps, warm.bays, warm.gaps) };
+    warmCand = { st, L: evalState(st) };
+  }
+  // 邻域：排版内核改队的顺序和行宽（typesetNeighbor），否则照旧搬块
+  const step = routeOptions.core === 'typeset' ? (st, rand, hot, progress) => typesetNeighbor(graph, st, rand, hot, usable, caps, stations, gapsOn, aspect, progress) : (st, rand, hot) => neighbor(graph, st, rand, usable, useStreets, hot);
+  return { graph, routeOptions, evalState, useStreets, usable, cands, step, iterations, restarts, seed, candidateLimit, snapshotMs, onSnapshot, warmCand, caps, gapsOn, aspect };
 }
 
-const keep = (st, layout) => ({ layout, rows: clone(st.rows), pads: { ...st.pads }, blocks: { ...st.blocks }, streets: [...(st.streets || [])] });
+// 提前把初始解算好（只为填 candsMemo，丢掉返回值）：planLineAsync 派完各轮退火后、等线程回来之前在主线程调它，
+// 这样初始解和搜索并行算（原来是各轮都回来、主线程才在 mergeRounds 里串行 route() 一遍，1~2 秒工作线程全空着）。
+// 必须和 mergeRounds 传同一个 options（planLineAsync 里的 req.options）：candsMemo 的键 exactKey([routeOptions, initial])
+// 只看这两项，timeLimit / onSnapshot 不在键里，所以键一样、命中。route() 确定，提前算和 mergeRounds 重算逐字一致。
+export function precompute(graph, options = {}) {
+  prepare(graph, options);
+}
+
+const keep = (st, layout) => ({ layout, rows: clone(st.rows), pads: { ...st.pads }, blocks: { ...st.blocks }, streets: [...(st.streets || [])], ...(st.seq ? { seq: st.seq.slice(), W: st.W } : {}), ...(st.bays ? { bays: st.bays.map((b) => ({ ...b })) } : {}), ...(st.gaps ? { gaps: st.gaps.slice() } : {}) });
 
 /** 两个列表逐项相同 */
 const sameList = (a, b) => {
@@ -471,12 +501,19 @@ function makeArchive(limit) {
 
 /** 第 s 轮退火：从第 s 个初始解出发（用完了就从扰动后的解出发），更新 archive，返回这一轮结束时的 best */
 function runRound(P, s, roundEnd, archive, best) {
-  const { graph, routeOptions, evalState, useStreets, usable, cands, iterations, seed, snapshotMs, onSnapshot } = P;
+  const { graph, routeOptions, evalState, cands, step, iterations, seed, snapshotMs, onSnapshot, warmCand } = P;
   const rand = rng(seed + s * 1013);
-  let st = cands[s % cands.length].st;
-  if (s >= cands.length) for (let k = 0; k < 10; k++) st = neighbor(graph, st, rand, usable, useStreets);
-  let cur = evalState(st);
-  const t0 = Math.max(20, cur.cost * 0.05);
+  // 接力：偶数轮都从上一段最好那张出发，起始温度低十倍，是在它附近细修；各轮靠各自的随机数分开。
+  // （以前第 2、4…轮先随机挪 1~5 步再退：大线挪一步整张重新断行，一条惩罚的图挪完常常变成几十条，低温退不回来）
+  const relay = warmCand && s % 2 === 0;
+  let st = relay ? warmCand.st : cands[s % cands.length].st;
+  if (!relay && s >= cands.length) for (let k = 0; k < 10; k++) st = step(st, rand, null);
+  let cur = relay ? warmCand.L : evalState(st);
+  if (relay) {
+    archive.remember(st, cur);
+    if (better(cur, best.layout)) best = keep(st, cur);
+  }
+  const t0 = Math.max(20, cur.cost * (relay ? 0.005 : 0.05));
   const t1 = 0.5;
   let T = t0;
   // 提前拒绝：评估邻域时 route() 的打分一步算到「代价下限 floor」就问一句（layout/score.js 的 rejectFloor）。
@@ -529,7 +566,7 @@ function runRound(P, s, roundEnd, archive, best) {
       }
     }
     T = t0 * Math.pow(t1 / t0, i / iterations);
-    const cand = neighbor(graph, st, rand, usable, useStreets, cur.hot);
+    const cand = step(st, rand, cur.hot, i / iterations); // 第四个参数只有排版内核用（局部重排的比例随进度变）
     // 没改状态时直接沿用当前的结果：代价相等，下面的接受判断在 rand() 之前就成立，随机数、存档、best 都和重算一样
     const L = sameState(cand, st) ? cur : evalSearch(cand);
     if (L.rejected) {
@@ -548,16 +585,50 @@ function runRound(P, s, roundEnd, archive, best) {
       if (better(cur, best.layout)) best = keep(st, cur);
     }
   }
+  // 定点精修（排版内核接力的轮）：从这一轮最好的出发，单步邻域挨个试、取最好的一步，直到没有更好的
+  if (relay && best.seq) best = polish(P, best, archive, roundEnd);
   return best;
+}
+
+/** 定点精修每一遍最多试几个候选（typeset.js 的 polishCandidates），最多几遍 */
+const POLISH_BUDGET = 300;
+const POLISH_PASSES = 3;
+/**
+ * 定点精修：best 的单步邻域（围绕惩罚记下的单元）挨个评估，取最好的一步（可行优先、再比代价），有更好的就从它再来一遍。
+ * 不抽随机数，只看排法本身；到时间上限就停。目前最好的那张可行时，route() 算到代价下限已经不比它低就提前收手
+ * （layout/score.js 的 rejectFloor：下限不超过最终代价，被拒的一定比不上它；不可行时可行的哪怕代价高也算更好，就都算完）
+ */
+function polish(P, best, archive, roundEnd) {
+  const { graph, routeOptions } = P;
+  let cur = best;
+  for (let pass = 0; pass < POLISH_PASSES; pass++) {
+    let pick = null;
+    let n = 0;
+    const ref = () => (pick ?? cur).layout;
+    const fast = { ...routeOptions, rejectFloor: (floor) => ref().feasible && floor >= ref().cost };
+    for (const st of polishCandidates(graph, cur, cur.layout.hot, P.caps, P.usable, P.gapsOn, P.aspect)) {
+      if (++n > POLISH_BUDGET || ((n & 15) === 0 && Date.now() > roundEnd)) break;
+      const L = route(graph, st.rows, fast, st.pads, st.blocks, st.streets || []);
+      if (L.rejected) continue;
+      archive.remember(st, L);
+      if (better(L, ref())) pick = keep(st, L);
+    }
+    if (!pick) break;
+    cur = pick;
+  }
+  return cur;
 }
 
 /** 收尾：同一行里紧挨着的同组两块（中间没空列）合成一块，几何完全不变，只是让结果更干净；再挑出存档里的候选 */
 function conclude(P, best, history, archive) {
   const { evalState, cands } = P;
-  for (const c of cands) if (better(c.L, best.layout)) best = keep(c.st, c.L);
+  for (const c of cands) if (better({ feasible: c.feasible, cost: c.cost }, best.layout)) best = keep(c.st, c.L ?? evalState(c.st));
   const st = { rows: clone(best.rows), pads: { ...best.pads }, blocks: { ...best.blocks }, streets: [...(best.streets || [])] };
   let changed = false;
-  for (const row of st.rows) {
+  // 排版内核排出来的同组相邻块是按运力、供电缝切的，合回去会超运力（引力矩阵 180：铁块 23 + 22 合成 45 台、2700/分一条带，
+  // 不可行时只要代价没升就收下），不合
+  const merge = P.routeOptions.core !== 'typeset';
+  for (const row of merge ? st.rows : []) {
     for (let i = row.length - 1; i > 0; i--) {
       const a = row[i - 1];
       const b = row[i];
@@ -585,7 +656,7 @@ export function optimize(graph, options = {}) {
   // 时间上限（毫秒）：大产线到点就收手，返回当时最好的解；每轮平分剩余时间
   const deadline = options.timeLimit ? Date.now() + options.timeLimit : Infinity;
   const archive = makeArchive(P.candidateLimit);
-  for (const c of P.cands) archive.remember(c.st, c.L);
+  for (const c of P.cands) if (c.L) archive.remember(c.st, c.L);
   let best = keep(P.cands[0].st, P.cands[0].L);
   const history = [];
   for (let s = 0; s < P.restarts; s++) {
@@ -605,7 +676,7 @@ export function searchRounds(graph, options = {}, rounds = []) {
   const deadline = options.timeLimit ? Date.now() + options.timeLimit : Infinity;
   return rounds.map((s, i) => {
     const archive = makeArchive(P.candidateLimit);
-    for (const c of P.cands) archive.remember(c.st, c.L);
+    for (const c of P.cands) if (c.L) archive.remember(c.st, c.L);
     // 这个线程分到的几轮平分剩余时间
     const roundEnd = Math.min(deadline, Date.now() + (deadline - Date.now()) / Math.max(1, rounds.length - i));
     const best = runRound(P, s, roundEnd, archive, keep(P.cands[0].st, P.cands[0].L));
@@ -621,7 +692,7 @@ export function mergeRounds(graph, options = {}, parts = []) {
   const P = prepare(graph, options);
   const sorted = parts.slice().sort((a, b) => a.s - b.s);
   const archive = makeArchive(P.candidateLimit);
-  for (const c of P.cands) archive.remember(c.st, c.L);
+  for (const c of P.cands) if (c.L) archive.remember(c.st, c.L);
   let best = keep(P.cands[0].st, P.cands[0].L);
   const history = [];
   for (const part of sorted) {
