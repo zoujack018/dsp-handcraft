@@ -30,10 +30,18 @@ function addRecipe(r) {
     time: r.TimeSpend / 60, // 秒
     proliferator: r.Proliferator ?? 0, // 能不能喷增产剂：1 只能加速，3 加速或增产，0 都不行
   };
+  // 同一个 ID 再登记一次（计算器带来的配方换掉自带的，见 addGameData）：「谁能产这个物品」里原地换成新的，新配方不再产的物品拿掉
+  const old = RECIPES.get(recipe.id);
   RECIPES.set(recipe.id, recipe);
+  if (old) for (const o of old.outputs) {
+    const list = PRODUCERS.get(o.id);
+    const k = list.indexOf(old);
+    if (recipe.outputs.some((y) => y.id === o.id)) list[k] = recipe;
+    else list.splice(k, 1);
+  }
   for (const o of recipe.outputs) {
     if (!PRODUCERS.has(o.id)) PRODUCERS.set(o.id, []);
-    PRODUCERS.get(o.id).push(recipe);
+    if (!PRODUCERS.get(o.id).includes(recipe)) PRODUCERS.get(o.id).push(recipe);
   }
 }
 for (const r of vanilla.recipes) addRecipe(r);
@@ -43,22 +51,32 @@ export const RAW_ITEM_IDS = new Set(vanilla.items.filter((i) => i.Type === 1).ma
 
 /**
  * 补进别的网页带来的物品和配方（写法同 data/Vanilla.json，见 web/src/handoff.js 的 defs）：嵌在「量产量化计算器」里时，
- * 那边新加的物品（比如黑雾引力透镜）随方案带过来，这边不用跟着改数据。这边已有的 ID 一律不动，照旧用自带的；
- * 配方的原料、产物得是认识的物品，工厂得是这边有几何的（熔炉、制造台、化工厂、精炼厂、对撞机、研究站），不然不加。
- * 返回加进来的物品 ID、配方 ID。
+ * 配方以那边为准（用户 2026/10/19）：这边没有的加进来（比如黑雾引力透镜），这边有、但原料、产物、数量、时间、工厂、能不能增产
+ * 有一样不同的，换成那边的；全都一样的不动（原料顺序不同也算一样，出图不变）。物品只加这边没有的，名字照旧用这边的。
+ * 配方的原料、产物得是认识的物品，工厂得是这边有几何的（熔炉、制造台、化工厂、精炼厂、对撞机、研究站），不然不用。
+ * 返回加进来的物品 ID、配方 ID，和换掉的配方 ID（replaced）。
  */
 export function addGameData({ items = [], recipes = [] } = {}) {
-  const added = { items: [], recipes: [] };
+  const added = { items: [], recipes: [], replaced: [] };
   for (const it of items) {
     if (ITEMS.has(it.ID)) continue;
     const item = addItem(it);
     if (!ITEM_BY_NAME.has(item.name)) ITEM_BY_NAME.set(item.name, item);
     added.items.push(item.id);
   }
+  // 一边的原料或产物：物品 → 数量，排好序比（顺序不算）
+  const side = (ids, counts) => JSON.stringify(ids.map((id, i) => [id, counts[i]]).sort((a, b) => a[0] - b[0]));
+  const same = (old, r) =>
+    side(old.inputs.map((x) => x.id), old.inputs.map((x) => x.count)) === side(r.Items, r.ItemCounts) &&
+    side(old.outputs.map((x) => x.id), old.outputs.map((x) => x.count)) === side(r.Results, r.ResultCounts) &&
+    old.time * 60 === r.TimeSpend && old.type === r.Type && old.proliferator === (r.Proliferator ?? 0) &&
+    [...old.factories].sort().join() === [...r.Factories].sort().join();
   for (const r of recipes) {
-    if (RECIPES.has(r.ID) || ![...r.Items, ...r.Results].every((id) => ITEMS.has(id)) || !r.Factories.every((f) => f in FACTORY_KIND)) continue;
-    addRecipe({ ...r, Name: r.Name || ITEMS.get(r.Results[0]).name });
-    added.recipes.push(r.ID);
+    if (![...r.Items, ...r.Results].every((id) => ITEMS.has(id)) || !r.Factories.every((f) => f in FACTORY_KIND)) continue;
+    const old = RECIPES.get(r.ID);
+    if (old && same(old, r)) continue;
+    addRecipe({ ...r, Name: r.Name || old?.name || ITEMS.get(r.Results[0]).name });
+    (old ? added.replaced : added.recipes).push(r.ID);
   }
   return added;
 }

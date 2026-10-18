@@ -8,7 +8,7 @@
 //   auto: 到了就自动生成一次（默认是）
 //   from: 来源网页的名字（页面上显示「从 xx 带过来的方案」）
 //   defs: { items: [{ ID, Name }], recipes: [{ ID, Type, Factories, Name, Items, ItemCounts, Results, ResultCounts, TimeSpend, Proliferator }] }
-//         来源网页自己的物品和配方（写法同 data/Vanilla.json）。这边没有的 ID 才加进来（那边新出的物品），已有的照旧用这边的（src/gamedata.js 的 addGameData）
+//         来源网页自己的物品和配方（写法同 data/Vanilla.json）。配方以那边为准：没有的加进来，数不一样的换成那边的；物品只加没有的（src/gamedata.js 的 addGameData）
 
 const OPTION_KEYS = ['assembler', 'smelter', 'chemical', 'lab', 'belt', 'sorter', 'pile'];
 
