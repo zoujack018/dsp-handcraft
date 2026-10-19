@@ -12,7 +12,7 @@ export function renderModel(graph, L) {
     groups: row.map((bid) => {
       const p = L.pos.get(bid);
       const g = p.g;
-      return { id: bid, letter: g.letter, item: g.item, factory: g.factory, kind: g.kind, count: p.n, levels: g.levels ?? 1, centers: p.centers, w: g.collider?.[0], h: g.collider?.[1], below: g.bodyBelow, above: g.bodyAbove, ...(g.store ? { store: { kind: g.store.kind, dist: g.store.dist, tank: !!g.store.tank }, levelZ: g.levelZ } : null) };
+      return { id: bid, letter: g.letter, item: g.item, factory: g.factory, kind: g.kind, count: p.n, levels: g.levels ?? 1, centers: p.centers, w: g.collider?.[0], h: g.collider?.[1], below: g.bodyBelow, above: g.bodyAbove, ...(g.kind === 'refinery' ? { shift: g.colliderShift } : null), ...(g.store ? { store: { kind: g.store.kind, dist: g.store.dist, tank: !!g.store.tank }, levelZ: g.levelZ } : null) };
     }),
   }));
   // 箱子供货时同一种原料分给几组工厂的几组仓（编号见 gamedata.js 的 STORE_COPY）：页面上当同一种物品画、同一个颜色

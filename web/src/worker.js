@@ -10,7 +10,7 @@ import { runTask } from '../../src/plan/tasks.js';
 import { validate } from '../../src/plan/validate.js';
 import { emitBlueprint } from '../../src/emit/blueprint.js';
 import { checkBlueprint } from '../../src/emit/check.js';
-import { ITEMS, RAW_ITEM_IDS, factory, hasHighLatitude, recipeChoices, defaultRecipe, burnPerMinute, addGameData } from '../../src/gamedata.js';
+import { ITEMS, RAW_ITEM_IDS, factory, hasHighLatitude, recipeChoices, defaultRecipe, burnPerMinute, addGameData, plannable } from '../../src/gamedata.js';
 import { renderModel } from './model.js';
 import { autoWatcher, previewShapeOk } from './autowatch.js';
 import vanilla from '../../data/Vanilla.json' with { type: 'json' };
@@ -74,7 +74,7 @@ function catalog(raw = []) {
         try {
           const calc = calculate({ target: it.id, rate: 60, raw: raw.filter((n) => n !== it.name) });
           const self = calc.units.find((u) => u.itemId === it.id);
-          status = self && !factory(self.factoryId).supported ? 'self' : calc.units.every((u) => factory(u.factoryId).supported) ? 'ok' : 'partial';
+          status = self && !plannable(self.recipeId, self.factoryId) ? 'self' : calc.units.every((u) => plannable(u.recipeId, u.factoryId)) ? 'ok' : 'partial';
         } catch {
           status = 'partial';
         }
@@ -101,7 +101,7 @@ function minimalExternal(targets, base, recipes = {}) {
   for (let i = 0; i < 60; i++) {
     const c = calculate({ targets, raw: ext, recipes });
     c.targets.forEach((t) => goalIds.add(t.itemId));
-    const bad = c.units.find((u) => !goalIds.has(u.itemId) && !factory(u.factoryId).supported);
+    const bad = c.units.find((u) => !goalIds.has(u.itemId) && !plannable(u.recipeId, u.factoryId));
     if (!bad) return ext;
     ext.push(bad.item);
   }
@@ -160,7 +160,7 @@ function chain({ targets, raw: raw0 = [], recipes: recipes0 = {}, lab = 2901, la
       type: ITEMS.get(u.itemId).type,
       depth: goalIds.has(u.itemId) ? 0 : depth.get(u.itemId) ?? 1,
       factory: f.name,
-      supported: f.supported,
+      supported: plannable(u.recipeId, u.factoryId),
       count: now ? now.count : u.count,
       levels: (now ?? u).levels ?? null, // 研究站：count 是叠数，每叠几层
       rate: now ? now.outputRate : curRaw.get(u.itemId) ?? u.outputRate,
@@ -190,7 +190,7 @@ function chain({ targets, raw: raw0 = [], recipes: recipes0 = {}, lab = 2901, la
     units,
     edges,
     raws: frac.on && frac.isGoal && targets.length === 1 ? [{ name: '氢', rate: Number(targets[0].rate) }] : cur.raw.filter((r) => !raw.includes(r.item)).map((r) => ({ name: r.item, rate: r.rate })),
-    blocking: cur.units.filter((u) => !goalIds.has(u.itemId) && !factory(u.factoryId).supported).map((u) => u.item),
+    blocking: cur.units.filter((u) => !goalIds.has(u.itemId) && !plannable(u.recipeId, u.factoryId)).map((u) => u.item),
     suggested: minimalExternal(targets, raw, recipes),
     // 有新配方的物品（目标和还在产线里的中间产物）：弹窗底部逐个开关
     recipes: [...full.targets.map((t) => t.itemId), ...full.units.map((u) => u.itemId)]

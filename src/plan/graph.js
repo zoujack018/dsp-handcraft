@@ -1,5 +1,5 @@
 // 生产图：配方组（同一配方的一排工厂）+ 物品流。规划器只认这个结构。
-import { factory, recipe as recipeOf, item as itemOf, BYPRODUCT, realItem } from '../gamedata.js';
+import { factory, recipe as recipeOf, item as itemOf, BYPRODUCT, realItem, plannable } from '../gamedata.js';
 
 const GROUP_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 /** 工厂上下两侧里有槽位的列数少的那一侧（一般 3，对撞机 2） */
@@ -13,8 +13,8 @@ const ITEM_LETTERS = 'abcdefghijklmnopqrstuvwxyz0123456789';
 export function buildGraph(calc) {
   const groups = calc.units.map((u, i) => {
     const f = factory(u.factoryId, calc.latitude);
-    if (!f.supported) {
-      const e = new Error(`「${u.item}」需要${f.name}，目前只能排熔炉、制造台、化工厂、研究站和粒子对撞机。可以把它设为外部供应。`);
+    if (!f.supported || !plannable(u.recipeId, u.factoryId)) {
+      const e = new Error(`「${u.item}」需要${f.name}（${u.recipe}），目前只能排熔炉、制造台、化工厂、研究站、粒子对撞机和精炼厂的等离子精炼。可以把它设为外部供应。`);
       e.item = u.item;
       e.code = 'UNSUPPORTED_FACTORY';
       throw e;
@@ -63,6 +63,7 @@ export function buildGraph(calc) {
       levelZ: f.levelZ ?? 0,
       // 一侧可用的分拣器列（中心 −1/0/+1）折算成和间距可比的数；对撞机每侧只有 2 列有槽位，就按 2 算
       colCap: slotCols(f) < 3 || st ? slotCols(f) : Math.min(f.pitch, 4),
+      ...(f.slots && !Object.keys(f.slots.top ?? {}).length ? { noTop: true } : null), // 上侧没有口（精炼厂）：只挂下面那条通道
       count: u.count,
       width: u.count * f.pitch + f.trailing,
       perFactory,

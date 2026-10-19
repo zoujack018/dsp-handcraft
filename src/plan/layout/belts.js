@@ -548,7 +548,8 @@ export function routeItems(c) {
         const i = left[t];
         const p = EB[i];
         const r = p.row;
-        for (let ch = r; ch <= r + 1; ch++) {
+        // 上侧没有口的工厂（精炼厂）只挂下面那条通道
+        for (let ch = r, top = p.g.noTop ? r : r + 1; ch <= top; ch++) {
           sN[ch]++;
           if (i < nP) sProd[ch]++;
           sLo[ch] = Math.min(sLo[ch], p.tmin);
@@ -558,7 +559,7 @@ export function routeItems(c) {
         dem[2 * i] = colDemand(p, r, EF[i]);
         dem[2 * i + 1] = colDemand(p, r + 1, EF[i]);
         sCols[r] += Math.max(0, dem[2 * i] + 1 - p.g.colCap);
-        sCols[r + 1] += Math.max(0, dem[2 * i + 1] + 1 - p.g.colCap);
+        if (!p.g.noTop) sCols[r + 1] += Math.max(0, dem[2 * i + 1] + 1 - p.g.colCap);
       }
       // 覆盖得多的通道优先；一样多时，先挑分拣器列更宽裕的通道（每台工厂一侧只有 3 列，
       // 这一侧和对面那一行在这里接的物品数，多的那一侧超过列数就排不开），
@@ -597,13 +598,13 @@ export function routeItems(c) {
       for (let t = 0; t < nl; t++) {
         const i = left[t];
         const p = EB[i];
-        if (p.row !== ch && p.row + 1 !== ch) {
+        if ((p.row !== ch && p.row + 1 !== ch) || (p.g.noTop && p.row !== ch)) {
           sel[t] = 0;
           continue;
         }
         const low = p.row === ch;
         const other = low ? p.row + 1 : p.row;
-        const fit = !((low ? dem[2 * i] : dem[2 * i + 1]) + 1 > p.g.colCap && (low ? dem[2 * i + 1] : dem[2 * i]) + 1 <= p.g.colCap && sN[other]);
+        const fit = p.g.noTop || !((low ? dem[2 * i] : dem[2 * i + 1]) + 1 > p.g.colCap && (low ? dem[2 * i + 1] : dem[2 * i]) + 1 <= p.g.colCap && sN[other]);
         sel[t] = fit ? 2 : 1;
         if (fit) nFit++;
       }

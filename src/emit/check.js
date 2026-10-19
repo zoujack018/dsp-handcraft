@@ -14,7 +14,7 @@ const SPRAYS = new Set([1141, 1142, 1143]);
 // 槽位 -> 分拣器在工厂一端的落点相对中心的偏移，化工厂下侧落点带 0.284 的小数，研究站、对撞机的槽位不在整格上（x ±0.8、y ±1.83 这类）。
 const BODY = {};
 const isLab = (id) => id === 2901 || id === 2902;
-for (const id of [2302, 2315, 2319, 2303, 2304, 2305, 2318, 2309, 2317, 2901, 2902, 2310]) {
+for (const id of [2302, 2315, 2319, 2303, 2304, 2305, 2318, 2309, 2317, 2901, 2902, 2310, 2308]) {
   const f = factory(id);
   const slot = {};
   for (const side of ['bottom', 'top'])
@@ -289,7 +289,8 @@ export function checkBlueprint(str) {
     const dx = p1.x - p0.x;
     const dy = p1.y - p0.y;
     const len = Math.floor(Math.abs(dx) + Math.abs(dy) + 1e-6); // 化工厂下侧落点带 0.284 的小数，长度按整格算
-    if (Math.abs(dx) > 0.01 && Math.abs(dy) > 0.01) err(`分拣器 ${s.index} 不是直线`); // 游戏自己存的坐标有千分之几的误差
+    // 游戏自己存的坐标有一点斜：一般千分之几，用户 2026/10/19 的精炼厂图里长 2、3 的分拣器斜到 0.017~0.025
+    if (Math.abs(dx) > 0.03 && Math.abs(dy) > 0.03) err(`分拣器 ${s.index} 不是直线`);
     if (len < 1 || len > 3 || s.parameters?.length !== len) err(`分拣器 ${s.index} 长度 ${len} 与参数 ${s.parameters?.length} 不符或超出 1~3`);
     const ends = [
       [s.inputObjIdx, s.inputFromSlot, p0, '起点'],
@@ -585,7 +586,7 @@ export function checkBlueprint(str) {
         }
         const sx = P(n).x, sy = P(n).y;
         if (sx - 1.5 < b.x + b.w / 2 + ext.x1 - EPS && b.x - b.w / 2 - ext.x0 < sx + 1.5 - EPS && sy - 1.5 < b.y + b.h / 2 + ext.y1 - EPS && b.y - b.h / 2 - ext.y0 < sy + 1.5 - EPS) {
-          err(`卫星配电站 ${n.index} 离工厂 ${f.index} 太近（实测：化工厂左边和下沿、叠层研究站四周不能紧贴，对撞机左边和下面要隔 2 格、右边和上面隔 1 格）`);
+          err(`卫星配电站 ${n.index} 离工厂 ${f.index} 太近（实测：化工厂左边和下沿、叠层研究站四周不能紧贴，对撞机左边和下面要隔 2 格、右边和上面隔 1 格，原油精炼厂左右和北边要隔 2 格、南边隔 1 行）`);
         }
       }
     }

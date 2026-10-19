@@ -22,6 +22,7 @@ const FOOT = { smelter: 2.4, assembler: 3.2, lab: 4.3, fractionator: 2.4 };
 function footprint(g) {
   if (g.kind === 'chemical') return { w: (g.w ?? 8) - 0.4, h: (g.below ?? 1) + (g.above ?? 1) + 0.4, dy: ((g.above ?? 1) - (g.below ?? 1)) / 2 };
   if (g.kind === 'collider') return { w: (g.w ?? 10) - 0.4, h: (g.h ?? 5) - 0.4, dy: ((g.above ?? 2) - (g.below ?? 2)) / 2 };
+  if (g.kind === 'refinery') return { w: (g.w ?? 2.8) - 0.2, h: (g.h ?? 5.4) - 0.2, dy: g.shift?.[1] ?? 0 }; // 原油精炼厂：长条，往南偏（gamedata.js）
   const s = FOOT[g.kind] ?? 3;
   return { w: s, h: s, dy: 0 };
 }

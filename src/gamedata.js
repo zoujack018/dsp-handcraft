@@ -162,7 +162,28 @@ const FACTORY_GEOMETRY = {
     colliderShift: [0, 0.5],
     supported: true,
   },
-  refinery: { pitch: 7, bodyHeight: 3, supported: false },
+  // 原油精炼厂（用户 2026/10/19 的两张图 test/fixtures/ref-refinery-*.bp.txt）：两台中心隔 3 并排能放；南边三个口 6 左、7 中、8 右（中心下 2.866 格、
+  // 左右 0.782 格，长 1 的分拣器接中心下 4 格的带），东边 0 1 2（下到上）、西边 3 4 5（上到下）在中心左右 0.88~0.895 格、上下 ±0.8；
+  // 口按逆时针从东边直接跳到西边，北边没有口，所以只接下侧那条通道。碰撞体（体积测试第九张 2026/10/19 实测）：两台左右隔 2 撞、隔 3 能放，
+  // 上下隔 5 撞、隔 6 能放；带子在中心上 1、2 格，下 3 格，右 1 格都撞（上 3、下 4、左右 2 格不撞，用户的图）；塔紧贴本体都能放；
+  // 熔炉、制造台、化工厂、研究站、储物仓、储液罐按行里块挨块的距离并排都能放 → 按 2.8 × 5.6、往南偏 0.4（北到 +2.4、南到 −3.2）。
+  // 卫星配电站另见 substationPad。只排等离子精炼（REFINERY_RECIPES）
+  refinery: {
+    pitch: 3,
+    center: 1,
+    trailing: 0,
+    bodyWidth: 3,
+    bodyBelow: 3,
+    bodyAbove: 2,
+    edgeBelow: 3,
+    edgeAbove: 2,
+    edgeShiftBelow: 0,
+    slots: { bottom: { [-1]: 6, 0: 7, 1: 8 }, top: {} },
+    slotPos: { 6: [-0.782, -2.866], 7: [0, -2.862], 8: [0.782, -2.866], 0: [0.88, -0.799], 1: [0.887, -0.004], 2: [0.895, 0.791], 3: [-0.895, 0.791], 4: [-0.887, -0.004], 5: [-0.88, -0.799] },
+    collider: [2.8, 5.6],
+    colliderShift: [0, -0.4],
+    supported: true,
+  },
   // 微型粒子对撞机：Buildings.json area [5, 2.5]、inserterBorder 上 2 下 2。以前按碰撞体 10×5、间距 10（antian369 的写法）；
   // 2026/10/05 体积测试两台隔 9 能放、隔 8 变红，间距 9。碰撞体往左偏（第二张 E6~E9、G2）：按 9×5、中心往左 0.3 格算，
   // 左边伸出 4.8、右边 4.2（3.2 宽的制造台贴左边要隔 6.4 以上，2.4 宽的熔炉贴左边隔 6 正好，物流站贴左边 3.4 + 4.8 > 8），偏多少是推断；
@@ -355,6 +376,9 @@ export function substationPad(g) {
   if (g.kind === 'chemical') return { pad: { left: 1, right: 0, below: 1, above: 0 }, margin: { left: 0.5, right: 0, below: 0.5, above: 0 } };
   if (g.kind === 'lab' && (g.levels ?? 1) > 1) return { pad: { left: 1, right: 1, below: 1, above: 1 }, margin: { left: 1, right: 1, below: 1, above: 1 } };
   if (g.kind === 'collider') return { pad: { left: 2, right: 1, below: 2, above: 1 }, margin: { left: 1.5, right: 0.5, below: 1.5, above: 0.5 } };
+  // 原油精炼厂（体积测试第九张，2026/10/19）：左右紧贴、隔 1 格都撞，隔 2 格能放；北边紧贴、隔 1 行撞，隔 2 行能放；
+  // 南边（有口那头）紧贴撞，隔 1、2 行能放；右上、右下斜角紧贴都撞 → 左右 2 格、北 2 行、南 1 行，四个角跟着留
+  if (g.kind === 'refinery') return { pad: { left: 2, right: 2, below: 1, above: 2 }, margin: { left: 1.5, right: 1.5, below: 1, above: 1.5 } };
   if (g.kind === 'smelter' || g.kind === 'assembler' || g.kind === 'lab') return { pad: { left: 0, right: 0, below: 0, above: 0 }, margin: null };
   return { pad: { left: 1, right: 1, below: 0, above: 0 }, margin: null };
 }
@@ -473,7 +497,12 @@ export const THERMAL_BANK = {
   // → 横向 6.5、竖向 3.5，不偏（以前按用户蓝图反推的 6 × 3.4、往右偏 0.43 是估计）。框往上挪半格仍是推断（上下只测了对称的两台）
   box: { dx: 0, dy: 0.5, w: 6.5, h: 3.5 },
 };
-const isSupported = (r) => r.factories.some((f) => FACTORY_GEOMETRY[FACTORY_KIND[f]]?.supported);
+/** 精炼厂只排等离子精炼（用户 2026/10/19 给了摆法）：X 射线裂解、重整精炼的原料里有自己的产物，排不了 */
+const REFINERY_RECIPES = new Set([16]);
+const kindOk = (f, recipeId) => !!FACTORY_GEOMETRY[FACTORY_KIND[f]]?.supported && (FACTORY_KIND[f] !== 'refinery' || REFINERY_RECIPES.has(recipeId));
+const isSupported = (r) => r.factories.some((f) => kindOk(f, r.id));
+/** 这道配方在这种工厂里能不能排（储物仓这类按几何表；精炼厂只认等离子精炼） */
+export const plannable = (recipeId, factoryId) => (FACTORY_KIND[factoryId] === 'store' ? true : kindOk(factoryId, recipeId));
 /**
  * 计算器默认用哪个配方做这种物品：编号最小的单产物配方（和以前一样，不管工厂排不排得了）；
  * 没有单产物配方时，才用「这种物品是第一个产物、工厂排得了、原料里没有它自己」的带副产物配方（比如反物质只能用质能储存，同时出氢）。
@@ -485,11 +514,13 @@ export function defaultRecipe(itemId) {
 }
 /**
  * 一种物品可选的配方：类型不是「无中生有」、这种物品是第一个产物、工厂能排、原料里没有它自己。
- * 第一个是默认配方（编号最小的单产物配方），其余是「新配方」（高效、原始等）。
+ * 化工厂、精炼厂带副产物的配方里这种物品排在后面的也算（用户 2026/10/19：氢有两种做法，精炼厂的等离子精炼、可燃冰的石墨烯（高效）；
+ * 选了它，另一个产物当副产物单独送出）。第一个是默认配方（编号最小的单产物配方），其余是「新配方」（高效、原始等）。
  */
+const coProduct = (r, itemId) => r.outputs[0].id === itemId || r.factories.some((f) => FACTORY_KIND[f] === 'chemical' || FACTORY_KIND[f] === 'refinery');
 export function recipeChoices(itemId) {
   const all = recipesProducing(itemId)
-    .filter((r) => r.type !== -1 && r.outputs[0].id === itemId && !r.inputs.some((x) => x.id === itemId) && isSupported(r))
+    .filter((r) => r.type !== -1 && coProduct(r, itemId) && !r.inputs.some((x) => x.id === itemId) && isSupported(r))
     .sort((a, b) => a.id - b.id);
   const def = all.find((r) => r.outputs.length === 1) ?? all[0] ?? null; // 没有单产物配方时（反物质），带副产物的就是默认
   return def ? [def, ...all.filter((r) => r !== def)] : [];
