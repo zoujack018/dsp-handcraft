@@ -291,6 +291,14 @@ export function factory(id, latitude = 'equator') {
 }
 /** 这台工厂有没有高纬度版（化工厂、量子化工厂） */
 export const hasHighLatitude = (id) => id in GEOMETRY_HIGH_LATITUDE;
+/**
+ * 能从头顶跨过的工厂（用户 2026/10/19 实测）：熔炉、制造台（和储物箱）都是 3 层高，第 4~7 层的传送带能从它们头顶经过；
+ * 物流站、卫星配电站更高，不能过；对撞机也更高（高多少不知道）。化工厂、量子化工厂、研究站、火力发电厂没确认，一律按不能过。
+ * 独立检查（emit/check.js）、校验（plan/validate.js）按这个放行；规划器的桥（route.js 的 bridges）按块的几何类型（smelter、assembler）
+ */
+export const OVERPASS_Z = 4; // 带子至少在第几层才能从这些工厂头顶过（比工厂高出的层数，工厂都在地面）
+export const OVERPASS_ZMAX = 7; // 用户只确认到第 7 层，再高的照旧当压着工厂报
+export const OVERPASS_IDS = new Set([2302, 2315, 2319, 2303, 2304, 2305, 2318]);
 
 // 传送带相邻两节在水平方向走一格时，高度最多变几层。玩家实测：一步升 1 层能建、一步跨 3 层报"无法建造"；
 // 但 2026/10/03 用户对比了游戏里手动拉的官方垂直传送带：官方就是同一格里竖直叠放（每节差 1 层），

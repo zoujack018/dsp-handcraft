@@ -108,6 +108,7 @@ export function routeItems(c) {
   // 上游吃到喷过的料不起作用，增产剂白耗）：这种带的访问排成「生产 → 别的消费者 → 最终那几组」，空当留在最终那几组前面；
   // 原料带给最终那几组单开入口，只喷那条。没给时每条进工厂的带都喷（sprayScope 'all'）
   const sprayAll = !!opt.sprayAll;
+  const bridges = !!opt.bridges; // 桥：竖直列能穿过熔炉、制造台的块（positions.js 的 bestColumn），桥段记 leg.bridge
   const sprayItems = sprayAll && opt.sprayItems ? new Set(opt.sprayItems) : null;
   const sprayTo = sprayItems ? new Set(opt.sprayTo ?? []) : null;
   const toFinal = (cc) => sprayTo.has(cc.p.gid); // 这个消费者是最终那几组（吃喷过的料）
@@ -176,7 +177,8 @@ export function routeItems(c) {
   const CHN = R + 1;
   const colMemo = new Map();
   let loadVer = 0; // addLoad 调过几次：试算过的方案在这之后没变过 colLoad 就还能直接用
-  const column = (xs, d0, xd, d1, c1, c2, g0min = 1) => {
+  // noBridge：这一截不走桥（opt.bridges 打开时才有区别，见 positions.js 的 bestColumn）
+  const column = (xs, d0, xd, d1, c1, c2, g0min = 1, noBridge = false) => {
     let lo = xL;
     let hi = xR + 1;
     if (d0 > 0) lo = Math.max(lo, xs + g0min);
@@ -186,10 +188,10 @@ export function routeItems(c) {
     else if (d1 < 0) lo = Math.max(lo, xd + 1);
     else return null;
     if (lo > hi) return null;
-    if (!(xs + XO >= 0 && xs + XO < XW && xd + XO >= 0 && xd + XO < XW && c1 >= 0 && c1 < CHN && c2 >= 0 && c2 < CHN)) return bestColumn(xs, d0, xd, d1, c1, c2, g0min);
-    const key = (((((xs + XO) * XW + xd + XO) * 3 + d0 + 1) * 3 + d1 + 1) * CHN * CHN + c1 * CHN + c2) * 2 + (g0min > 1 ? 1 : 0);
+    if (!(xs + XO >= 0 && xs + XO < XW && xd + XO >= 0 && xd + XO < XW && c1 >= 0 && c1 < CHN && c2 >= 0 && c2 < CHN)) return bestColumn(xs, d0, xd, d1, c1, c2, g0min, noBridge);
+    const key = ((((((xs + XO) * XW + xd + XO) * 3 + d0 + 1) * 3 + d1 + 1) * CHN * CHN + c1 * CHN + c2) * 2 + (g0min > 1 ? 1 : 0)) * 2 + (noBridge ? 1 : 0);
     let r = colMemo.get(key);
-    if (r === undefined) colMemo.set(key, (r = bestColumn(xs, d0, xd, d1, c1, c2, g0min)));
+    if (r === undefined) colMemo.set(key, (r = bestColumn(xs, d0, xd, d1, c1, c2, g0min, noBridge)));
     return r;
   };
   const addLoadM = (x, c1, c2) => {
@@ -760,6 +762,7 @@ export function routeItems(c) {
   let mD = null;
   let mDout = null;
   const cols = []; // 当前方案各段之间竖直列的 x
+  const colsBr = []; // 桥（opt.bridges 打开时才写）：当前方案第 i 截的竖直列是不是桥
   const lk = [];
   // 目前最好的方案（has 为假时还没有）：找到更好的就照抄过来，最后才建 best
   let has = false;
@@ -771,6 +774,7 @@ export function routeItems(c) {
   let bAt = null; // 各段 segOf 的下标（劈开的是 −1）、第几个访问
   let bJ = null;
   const bCols = [];
+  const bBr = [];
   /**
    * 访问 j 排在第 i 个、流向 d（back = d < 0）时的段只取决于 j、i、d：各种顺序、各种流向组合共用一份。
    * 返回下标 at = (j·k + i)·2 + back：段的两端是 GA[at]、GB[at]，GH[at] 第 0 位是喷涂机的空当被站列截短了、
@@ -983,15 +987,18 @@ export function routeItems(c) {
         }
         if (canJoin && i === gapAt) {
           cols[i] = JOIN;
+          if (bridges) colsBr[i] = false;
           len += joinCost;
           continue;
         }
         const li = i * 4 + ((mask >> i) & 3);
         let bc = lk[li];
-        // 段尾骑喷涂机的那截高架（legSpray 的 gapAt）：竖直列离段尾至少 LEG_WINDOW 格，窗口的 5 格直带才放得下
-        if (bc === undefined) bc = lk[li] = column(mOut[i], mDout[i], mIn[i + 1], mD[i + 1], mCh[i], mCh[i + 1], legSpray && i === gapAt ? LEG_WINDOW : 1);
+        // 段尾骑喷涂机的那截高架（legSpray 的 gapAt）：竖直列离段尾至少 LEG_WINDOW 格，窗口的 5 格直带才放得下；
+        // 这截也不走桥（桥段在第 4 层以上，喷涂机的窗口和保护区都跟着抬高，规则没验证过）
+        if (bc === undefined) bc = lk[li] = column(mOut[i], mDout[i], mIn[i + 1], mD[i + 1], mCh[i], mCh[i + 1], legSpray && i === gapAt ? LEG_WINDOW : 1, legSpray && i === gapAt);
         const x = bc?.x ?? null;
         cols[i] = x;
+        if (bridges) colsBr[i] = x !== null && bc.bridge === true;
         if (x === null) bad++;
         else len += bc.cost + Math.abs(mCh[i] - mCh[i + 1]) * CH_PITCH + 2;
       }
@@ -1011,6 +1018,7 @@ export function routeItems(c) {
           bJ[i] = ix[i];
         }
         for (let i = 0; i < k - 1; i++) bCols[i] = cols[i];
+        if (bridges) for (let i = 0; i < k - 1; i++) bBr[i] = colsBr[i];
       }
     }
   };
@@ -1134,7 +1142,9 @@ export function routeItems(c) {
       // gap：喷涂机的空当在哪头；'mid' 是这一段和下一个访问在地面接成一条（bCols 里是 JOIN），空当在中间
       TG[i] = { v: visits[bJ[i]], a, b, d, split: null, cont: null, entryX: d > 0 ? a : b, exitX: d > 0 ? b : a, dout: d, gap: rawSpray && i === 0 ? (offIn ? null : GH[at] & 2 ? 'legIn' : GH[at] & 4 ? 'edgeIn' : 'in') : i === gapAt ? (bCols[i] === JOIN ? (offMid ? 'join' : 'mid') : 'out') : null };
     }
-    return { cost: bCost, shortfall: bShortfall, bad: bBad, sprayShort: bSpray, geo: TG.slice(0, k), cols: bCols.slice(0, k - 1), flow };
+    const res = { cost: bCost, shortfall: bShortfall, bad: bBad, sprayShort: bSpray, geo: TG.slice(0, k), cols: bCols.slice(0, k - 1), flow };
+    if (bridges) res.br = bBr.slice(0, k - 1); // 各截竖直列是不是桥
+    return res;
   };
   /** 把方案落实：记惩罚、加地面段和高架段 */
   const commitChain = (best) => {
@@ -1209,6 +1219,8 @@ export function routeItems(c) {
       if (g2) i++; // 下一个访问已经并进这一段
       if (i < geo.length - 1) {
         pending = addLeg({ itemId: f.itemId, kind: 'link', from: seg.id, xv: best.cols[i] ?? (g.dout > 0 ? xR + 1 : xL), rate: flow, id: legs.length, cells: [], to: -1 });
+        // 竖直那截穿过熔炉、制造台的块（桥）：分层时整段至少在第 bridgeLevel 层（layout/elevation.js）
+        if (best.br?.[i]) pending.bridge = true;
         if (seg.sprayGap === 'legOut') pending.spray = { seg: seg.id, side: 'out' }; // 这截高架紧挨段尾的 5 格骑喷涂机（elevation.js 的 legWindow）
         TQ[nq++] = { leg: pending.id };
       } else if (outRate > 0) {

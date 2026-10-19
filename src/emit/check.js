@@ -1,7 +1,7 @@
 // 出蓝图后的独立检查：只看解码后的蓝图记录本身，不看规划器的任何中间数据。
 // 这是在进游戏之前能做到的最接近实测的检查。
 import { fromStr } from '../codec/parser.js';
-import { RECIPES, ITEMS, factory, RAMP_MAX_DZ, STATION_GAP, STATION_CLEAR, STATION_HALF, powerCells, powerGap, slotPoint, substationPad, THERMAL_PLANT, THERMAL_BANK, FUEL_MJ, BOX_SLOT, TANK_PORT, STORE_BODY, DISTRIBUTOR_LIFT } from '../gamedata.js';
+import { RECIPES, ITEMS, factory, RAMP_MAX_DZ, OVERPASS_Z, OVERPASS_ZMAX, OVERPASS_IDS, STATION_GAP, STATION_CLEAR, STATION_HALF, powerCells, powerGap, slotPoint, substationPad, THERMAL_PLANT, THERMAL_BANK, FUEL_MJ, BOX_SLOT, TANK_PORT, STORE_BODY, DISTRIBUTOR_LIFT } from '../gamedata.js';
 import { POWER, powerReach } from '../plan/power.js';
 
 const isBelt = (id) => id >= 2001 && id <= 2003;
@@ -164,6 +164,10 @@ export function checkBlueprint(str) {
     const off = Math.abs(b.localOffset[0].x - P(b).x) + Math.abs(b.localOffset[0].y - P(b).y);
     if (off > (pileLinked(b) || tankLinked.has(b.index) ? 0.21 : 0.02)) err(`传送带 ${b.index} 偏离格子 ${off.toFixed(4)}`);
     for (const f of solids) {
+      // 熔炉、制造台 3 层高，第 OVERPASS_Z~OVERPASS_ZMAX 层（4~7）的带子能从头顶过（gamedata.js，用户 2026/10/19 实测）；
+      // 别的工厂、更低或更高（没确认）的带子照旧报
+      const dz = P(b).z - P(f).z;
+      if (OVERPASS_IDS.has(f.itemId) && dz >= OVERPASS_Z && dz <= OVERPASS_ZMAX) continue;
       if (inside(f, P(b).x, P(b).y, P)) err(`传送带 ${b.index} 压在工厂 ${f.index} 上`);
     }
   }

@@ -12,7 +12,7 @@ import { optimize, mergeRounds, precompute } from './place.js';
 import { addPower, placePower } from './power.js';
 import { spaceStats } from '../metrics/space.js';
 import { attachStations, linkWarpers } from './stations.js';
-import { groundRoutes } from './ground.js';
+import { groundRoutes, groundOptions } from './ground.js';
 import { addAddons } from './addons.js';
 import { addStores, addProStores } from './storage.js';
 import { addBurners, burnable } from './burn.js';
@@ -36,11 +36,11 @@ export function stationOption(options = {}) {
 
 /**
  * 一个搜索候选走完全部后处理；接不上物流站时返回 null。只用到布局本身，可以放到后台线程里做。
- * ctx：{ station, power, powerOptions, maxWidth, maxHeight, noGrounding, aw, spray, sprayItems, sprayTo, pile, sprayRate, burn,
+ * ctx：{ station, power, powerOptions, maxWidth, maxHeight, noGrounding, ground 高架落地的选项（ground.js 的 groundOptions，变层税没开时 null）, aw, spray, sprayItems, sprayTo, pile, sprayRate, burn,
  *        supply 箱子供货（plan/storage.js 的 SUPPLY，不接物流站时）, sorter 分拣器（箱子组按它的速度算几根）, storeLayers 储物仓最多叠几层 }
  */
 export function finishOne(cand, ctx) {
-  const { station, power, powerOptions, maxWidth, maxHeight, noGrounding, aw = 1, spray = 0, sprayItems = null, sprayTo = null, pile = false, sprayRate = 0, burn = false, supply = null, sorter = 2013, storeLayers = 15 } = ctx;
+  const { station, power, powerOptions, maxWidth, maxHeight, noGrounding, ground = null, aw = 1, spray = 0, sprayItems = null, sprayTo = null, pile = false, sprayRate = 0, burn = false, supply = null, sorter = 2013, storeLayers = 15 } = ctx;
   // 后处理改的是自己的一份。接物流站（edge）时 attachStations 自己先复制一份再改，供电预选只读布局，这里不用先复制；
   // 就地烧副产物要先改布局（标 burn、加发电厂），照旧先复制
   let L = burn || station?.place !== 'edge' ? structuredClone(cand.layout) : cand.layout;
@@ -74,7 +74,7 @@ export function finishOne(cand, ctx) {
     L = attachStations(L, { ...opts, reserve, reserveItem }) ?? (reserve.length ? attachStations(L, opts) : null);
     if (!L) return null;
   }
-  if (!noGrounding && L.feasible) groundRoutes(L);
+  if (!noGrounding && L.feasible) groundRoutes(L, ground);
   // 翘曲器整张一格：一座站存，别的站用传送带接（落地之后、增产剂和供电之前，后面的会让开这些带子）
   if (station?.slots?.warper && L.stations?.length) linkWarpers(L);
   // 增产剂（所有原料和中间产物进工厂前喷）和自动集装机（产物出线前叠层）：在供电之前加，供电要给喷涂机、集装机通电
@@ -158,6 +158,10 @@ function* planFrame(calc, options) {
   const power = options.power && options.power !== 'none' ? options.power : null;
   if (power) Object.assign(routeOptions, { power, powerOptions: options.powerOptions });
   if (options.powerHoles) routeOptions.powerHoles = true; // 卫星配电站在行里挖空位（route.js，标准档、细档开）
+  if (options.groundTax && routeOptions.groundTax == null) routeOptions.groundTax = true; // 高架落地加变层税（ground.js，细档开；routeOptions 里写明的为准）
+  if (options.heightTax && routeOptions.heightTax == null) routeOptions.heightTax = true; // 线性超高税代替金字塔（layout/score.js，细档开；routeOptions 里写明的为准）
+  if (options.bundleFee && routeOptions.bundleFee == null) routeOptions.bundleFee = options.bundleFee; // 开路费（layout/positions.js 的 bestColumn，细档 8；routeOptions 里写明的为准）
+  if (options.openFee && routeOptions.openFee == null) routeOptions.openFee = options.openFee; // 走空地费（layout/positions.js 的 bestColumn，细档 2；routeOptions 里写明的为准）
   // 喷增产剂：走线要给要喷的带留喷涂机的空当（layout/belts.js 的 sprayAll），不喷时几何一字不动。
   // 只喷最终产物的直接原料（calc.spray.items），喷涂机在这几种带上放在最终那几组（calc.spray.to）取料之前、别的工厂取完之后
   if (calc.spray) {
@@ -186,7 +190,7 @@ function* planFrame(calc, options) {
     // 帮手线程按 snapshotMs 开关自己装钩子（web/src/worker.js 的 task 分支）
     return o;
   };
-  const ctx = (aw = routeOptions.areaWeight ?? 1) => ({ station: station && { ...station }, power, powerOptions: options.powerOptions, maxWidth: routeOptions.maxWidth, maxHeight: routeOptions.maxHeight, noGrounding: !!options.noGrounding, aw, spray: calc.spray ? calc.spray.level : 0, sprayItems: calc.spray?.items ?? null, sprayTo: calc.spray?.to ?? null, pile: !!options.pile, sprayRate: calc.spray?.rate ?? 0, burn: options.burn || false, allowMissed: !!routeOptions.allowMissed, supply: options.supply ?? null, sorter: routeOptions.sorter ?? options.sorter ?? 2013, storeLayers: options.storeLayers ?? 15 });
+  const ctx = (aw = routeOptions.areaWeight ?? 1) => ({ station: station && { ...station }, power, powerOptions: options.powerOptions, maxWidth: routeOptions.maxWidth, maxHeight: routeOptions.maxHeight, noGrounding: !!options.noGrounding, ground: groundOptions(routeOptions), aw, spray: calc.spray ? calc.spray.level : 0, sprayItems: calc.spray?.items ?? null, sprayTo: calc.spray?.to ?? null, pile: !!options.pile, sprayRate: calc.spray?.rate ?? 0, burn: options.burn || false, allowMissed: !!routeOptions.allowMissed, supply: options.supply ?? null, sorter: routeOptions.sorter ?? options.sorter ?? 2013, storeLayers: options.storeLayers ?? 15 });
 
   let result = yield { kind: 'search', graph, options: searchOpts(routeOptions, options.timeLimit ?? null) };
 
@@ -310,7 +314,7 @@ function* planFrame(calc, options) {
 export function finishContext(calc, options) {
   const ro = options.routeOptions || {};
   const station = ro.station ? { place: 'side', stack: ro.station.stack, slots: ro.station.slots } : ro.externalStack != null ? { place: 'edge', stack: ro.externalStack, slots: ro.stationSlots } : null;
-  return { station, power: ro.power ?? null, powerOptions: ro.powerOptions, maxWidth: ro.maxWidth, maxHeight: ro.maxHeight, noGrounding: !!options.noGrounding, aw: ro.areaWeight ?? 1, spray: calc.spray ? calc.spray.level : 0, sprayItems: calc.spray?.items ?? null, sprayTo: calc.spray?.to ?? null, pile: !!options.pile, sprayRate: calc.spray?.rate ?? 0, burn: options.burn || false, allowMissed: !!ro.allowMissed, supply: options.supply ?? null, sorter: ro.sorter ?? options.sorter ?? 2013, storeLayers: options.storeLayers ?? 15 };
+  return { station, power: ro.power ?? null, powerOptions: ro.powerOptions, maxWidth: ro.maxWidth, maxHeight: ro.maxHeight, noGrounding: !!options.noGrounding, ground: groundOptions(ro), aw: ro.areaWeight ?? 1, spray: calc.spray ? calc.spray.level : 0, sprayItems: calc.spray?.items ?? null, sprayTo: calc.spray?.to ?? null, pile: !!options.pile, sprayRate: calc.spray?.rate ?? 0, burn: options.burn || false, allowMissed: !!ro.allowMissed, supply: options.supply ?? null, sorter: ro.sorter ?? options.sorter ?? 2013, storeLayers: options.storeLayers ?? 15 };
 }
 
 /** 就地执行一个请求 */

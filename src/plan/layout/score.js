@@ -4,6 +4,62 @@ import { powerBands } from '../power.js';
 import { stationHoles } from '../holes.js';
 import { STATION_COLS, TOL, gk } from './shared.js';
 import { sprayGapCells } from './elevation.js';
+import { OVERPASS_Z } from '../../gamedata.js';
+
+// 线性超高税（opt.heightTax）要查的「这一格在不在熔炉、制造台本体头顶」：按 (x, y) 编号的表，按线程复用，存这一次的戳（不用清零）
+let overBuf = new Int32Array(0);
+let overStamp = 0;
+/**
+ * 熔炉、制造台的块（整段 x0..x1，含制造台之间的窄缝）本体那几行的格子，和 plan/ground.js 落地时的 over 一样；每次 route() 建一次
+ * （有桥段时才建）。块都在 0..xR、0..height−1 里，表外的格子不在工厂头顶。返回 (x, y) → 在不在
+ */
+function overTable(pos, rowCy, xR, height) {
+  const W = xR + 1;
+  const H = height;
+  if (overBuf.length < W * H || overStamp >= 2e9) {
+    overBuf = new Int32Array(Math.max(W * H, Math.ceil(overBuf.length * 1.5)));
+    overStamp = 0;
+  }
+  const st = ++overStamp;
+  const buf = overBuf;
+  pos.forEach((p) => {
+    if (p.g.kind !== 'smelter' && p.g.kind !== 'assembler') return;
+    const cy = rowCy[p.row];
+    for (let x = p.x0; x <= p.x1; x++) {
+      if (!Number.isInteger(x) || x < 0 || x >= W) continue;
+      for (let y = cy - p.g.bodyBelow; y <= cy + p.g.bodyAbove; y++) if (Number.isInteger(y) && y >= 0 && y < H) buf[x * H + y] = st;
+    }
+  });
+  return (x, y) => x >= 0 && x < W && y >= 0 && y < H && buf[x * H + y] === st;
+}
+
+/**
+ * 线性超高税（opt.heightTax）的一格：第 z 层、这一格最低能走第 need 层。
+ * per × max(0, z − need) + topWeight × max(0, z − topFrom + 1)（默认第 5 层每格另加 1、第 6 层另加 2）
+ */
+export const heightCell = (z, need, per, topFrom, topWeight) => per * Math.max(0, z - need) + topWeight * Math.max(0, z - topFrom + 1);
+
+/**
+ * 一段高架的线性超高税：水平走进的每一格（和上一格不在同一 (x, y)、在空中；和 plan/ground.js 的 taxStep 数的格子一样，
+ * 两头升降那一叠只有落下那一叠的叠顶算一格），层按段分到的层 lv 算。完整分层（liftLegs）里这些格子都在第 lv 层；
+ * 快速评估（estimateLegs）里普通段的水平格子只按第 1 层记（只估长度），按 lv 算两边才一致。
+ * isOver：桥段才传（overTable 的结果），桥段在熔炉、制造台本体头顶的格子最低能走第 OVERPASS_Z 层，别处都是第 1 层。
+ * 按「普通格数 × 一格的税 + 工厂头顶格数 × 一格的税」算
+ */
+export function legHeightTax(cs, lv, isOver, per, topFrom, topWeight) {
+  let nH = 0;
+  let nOver = 0;
+  for (let i = 1; i < cs.length; i++) {
+    const q = cs[i];
+    const p = cs[i - 1];
+    if (q[2] > 0 && (q[0] !== p[0] || q[1] !== p[1])) {
+      nH++;
+      if (isOver !== null && isOver(q[0], q[1])) nOver++;
+    }
+  }
+  if (!nH) return 0;
+  return (nH - nOver) * heightCell(lv, 1, per, topFrom, topWeight) + nOver * heightCell(lv, OVERPASS_Z, per, topFrom, topWeight);
+}
 
 /** route() 的一步：读写共享的布局上下文 c */
 /**
@@ -145,7 +201,9 @@ export function preLegFloor(c) {
       opt.highWeight >= 0 &&
       opt.pyramidWeight >= 0 &&
       opt.turnWeight >= 0 &&
-      opt.liftWeight >= 0
+      opt.liftWeight >= 0 &&
+      (!opt.bridges || opt.bridgeWeight >= 0) &&
+      (!opt.heightTax || (Number(opt.heightPerLevel) >= 0 && Number(opt.heightTopWeight) >= 0))
     )
   )
     return null;
@@ -205,7 +263,9 @@ export function scoreLayout(c) {
   for (let i = 0; i < ports.length; i++) maxX = Math.max(maxX, ports[i].x);
   // 高架段扫一遍：最右的格子、高架格数、地面插头格数、超长部分（结构代价）、叠层（第 2 层起每层每段），
   // 以及口味里逐格数的两项（金字塔：在本段所在层的格数；拐弯：连着三格同层、方向变了），每段的格子只走一遍
-  const tasteOn = opt.highWeight || opt.pyramidWeight || opt.turnWeight || opt.liftWeight;
+  // 线性超高税（route.js 的 heightTax，细档开）：开着时代替金字塔，关着时不读它的参数
+  const heightOn = !!opt.heightTax;
+  const tasteOn = opt.highWeight || opt.pyramidWeight || opt.turnWeight || opt.liftWeight || heightOn;
   let airBelts = 0;
   let stubCells = 0;
   let longCells = 0;
@@ -213,6 +273,25 @@ export function scoreLayout(c) {
   let tHigh = 0;
   let tPyramid = 0;
   let tTurns = 0;
+  let tHeight = 0;
+  // 桥（route.js 的 bridges）：关着时不读 leg.bridge
+  const bridgeOn = !!opt.bridges;
+  let nBridge = 0;
+  // 超高税的参数（考卷的 ro.heightPerLevel=1 会解析成 true，一律按数取），有桥段时建「在不在工厂头顶」的表
+  let hPer = 0;
+  let hTopFrom = 0;
+  let hTopW = 0;
+  let isOver = null;
+  if (heightOn) {
+    hPer = Number(opt.heightPerLevel);
+    hTopFrom = Number(opt.heightTopFrom);
+    hTopW = Number(opt.heightTopWeight);
+    for (let li = 0; bridgeOn && li < legs.length; li++) {
+      if (legs[li].bridge !== true || !legs[li].cells.length) continue;
+      isOver = overTable(pos, rowCy, xR, height);
+      break;
+    }
+  }
   for (let li = 0; li < legs.length; li++) {
     const l = legs[li];
     const cs = l.cells;
@@ -233,12 +312,24 @@ export function scoreLayout(c) {
     airBelts += cs.length;
     stubCells += l.stub?.length ?? 0;
     longCells += Math.max(0, (cs?.length ?? 0) - opt.longFrom);
-    lifted += cs?.length && lv > 1 ? lv - 1 : 0;
+    // 桥段（竖直那截从熔炉、制造台头顶过）：叠层、太高、金字塔都按「有效层」= 层 − (bridgeLevel − 1) 算（第 4 层的桥按第 1 层计），
+    // 另外每座桥计 bridgeWeight（下面的 levelCost，和 positions.js 选列时加的一样），「不喜欢桥」只看这一个数；
+    // 两头多叠的升降节数照常算在 airBelts 里（2026/10/19 改：原来按真实层算，第 4 层一格金字塔就 3.5，桥几乎都不划算）。
+    // 线性超高税（heightTax）开着时不用有效层：桥段在工厂头顶那几格本来就得在第 OVERPASS_Z 层、不收，在通道上空那几格按真实层收
+    // （落地开着变层税时桥是整段 0→4→0，通道上空那截也在第 4 层）
+    let ev = lv;
+    if (bridgeOn && l.bridge === true) {
+      ev = lv - (opt.bridgeLevel - 1);
+      if (cs.length) nBridge++;
+    }
+    lifted += cs?.length && ev > 1 ? ev - 1 : 0;
     if (tasteOn && cs?.length) {
       // 太高：第 highFrom 层往上每段 1、3、6……；金字塔：长的段在高层最贵，2 层够多了才值得上 3 层
-      const k = lv - opt.highFrom;
+      const k = ev - opt.highFrom;
       if (k > 0) tHigh += (k * (k + 1)) / 2;
-      if (lv > opt.pyramidFrom) tPyramid += nTop * (2 ** (lv - opt.pyramidFrom) - 1);
+      // 线性超高税开着时代替金字塔：按真实层（lv）算，桥段在工厂头顶的格子从第 OVERPASS_Z 层起算、在通道上空照样从第 1 层起算
+      if (heightOn) tHeight += legHeightTax(cs, lv, isOver !== null && l.bridge === true ? isOver : null, hPer, hTopFrom, hTopW);
+      else if (ev > opt.pyramidFrom) tPyramid += nTop * (2 ** (ev - opt.pyramidFrom) - 1);
       tTurns += turns;
     }
   }
@@ -346,8 +437,9 @@ export function scoreLayout(c) {
     shape.long = longCells;
     shape.cost = shape.single * opt.singleWeight * width + shape.split * opt.splitWeight + shape.far * opt.farWeight + shape.entries * opt.entryWeight + shape.long * opt.longWeight;
   }
-  // 高架叠层的代价：第 2 层起每层每段 levelWeight 格
-  const levelCost = lifted * opt.levelWeight;
+  // 高架叠层的代价：第 2 层起每层每段 levelWeight 格（桥段按有效层）；每座桥再加 bridgeWeight 格（没有桥时不加，结果和原来一字不差）
+  let levelCost = lifted * opt.levelWeight;
+  if (nBridge) levelCost += nBridge * opt.bridgeWeight;
   // 口味（用户 2026/10/06）：太高的高架、拐弯、一条带子反复升降各计一点（权重为 0 时不算，结果和以前一样）
   const taste = { high: 0, pyramid: 0, turns: 0, lifts: 0, cost: 0 };
   if (tasteOn) {
@@ -365,6 +457,11 @@ export function scoreLayout(c) {
       taste.lifts += Math.max(0, n - 1);
     }
     taste.cost = taste.high * opt.highWeight + taste.pyramid * opt.pyramidWeight + taste.turns * opt.turnWeight + taste.lifts * opt.liftWeight;
+    // 线性超高税（开着时金字塔是 0）：权重已经在每格的税里，直接加；关着时 taste 里没有这一项
+    if (heightOn) {
+      taste.height = tHeight;
+      taste.cost += tHeight;
+    }
   }
   // 退火提前拒绝（place.js 的 runRound 传 opt.rejectFloor，只在退火评估邻域时有）：到这里面积、带数、叠层、结构、口味代价
   // 和已经记下的惩罚都定了，还没算的（分拣器、喷涂空当、供电外沿、物流站空地的代价和惩罚，分拣器长度代价）都不是负的，

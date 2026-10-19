@@ -2,7 +2,7 @@
 // errors 表示布局一定有问题；warnings 表示需要留意的风险。
 import { chainTiles } from '../emit/blueprint.js';
 import { occupancy } from './power.js';
-import { RAMP_MAX_DZ } from '../gamedata.js';
+import { RAMP_MAX_DZ, OVERPASS_Z, OVERPASS_ZMAX, OVERPASS_IDS } from '../gamedata.js';
 
 export function validate(graph, layout) {
   const errors = [];
@@ -14,6 +14,7 @@ export function validate(graph, layout) {
     else occ.set(k, what);
   };
   const factoryCell = new Set();
+  const overpassCell = new Set(); // 熔炉、制造台本体的格子：第 OVERPASS_Z~OVERPASS_ZMAX 层的高架带能从头顶过（gamedata.js，用户 2026/10/19 实测）
 
   // 工厂本体（熔炉、制造台 3×3，化工厂 9×4；同一块里相邻两台化工厂共用中间那半格；高架带也不能从工厂上方经过）
   layout.rows.forEach((row, r) => {
@@ -30,6 +31,7 @@ export function validate(graph, layout) {
             mine.add(k);
             claim(x, y, 0, `${p.g.item}#${i}`);
             factoryCell.add(k);
+            if (OVERPASS_IDS.has(p.g.factoryId)) overpassCell.add(k);
           }
         }
       });
@@ -53,7 +55,7 @@ export function validate(graph, layout) {
     for (const tiles of [main, ...extra]) {
       tiles.forEach(([x, y, z], i) => {
         claim(x, y, z, `${name}带`);
-        if (z > 0 && factoryCell.has(`${x},${y}`)) errors.push(`${name}高架带从工厂上方 (${x},${y}) 经过`);
+        if (z > 0 && factoryCell.has(`${x},${y}`) && !(z >= OVERPASS_Z && z <= OVERPASS_ZMAX && overpassCell.has(`${x},${y}`))) errors.push(`${name}高架带从工厂上方 (${x},${y}) 经过`);
         if (z > 0 && stationCell.has(`${x},${y}`)) errors.push(`${name}高架带从物流站上方 (${x},${y}) 经过`);
         if (x < 0 || x >= layout.width || y < 0 || y >= layout.height) errors.push(`${name}带超出蓝图范围 (${x},${y})`);
         const n = tiles[i + 1];

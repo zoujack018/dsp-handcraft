@@ -19,9 +19,16 @@
  * @param {(i: number, L: number) => boolean} o.fixedOk 第 L 层和已经固定的东西（物流站、形状随层变的段）不冲突
  * @param {number} o.maxLevel 不罚的最高层：贪心排出来超过它时先在这几层里找没有冲突的分配
  * @param {number} o.top 最高试到第几层（再高就算断开）
+ * @param {number[]|null} [o.minLevel] 每段最低第几层（桥段从熔炉、制造台头顶过，至少第 4 层；见 route.js 的 bridges）；null 时都从第 1 层起
+ * @param {number[]|null} [o.maxLevels] 每段不罚的最高层（代替 maxLevel，和 minLevel 一起给）；null 时都按 maxLevel
  * @returns {number[]} 每段的层，0 表示断开
  */
-export function solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel, top }) {
+export function solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel, top, minLevel = null, maxLevels = null }) {
+  // 每段最低层、不罚的最高层（都没给时和原来一样：1 和 maxLevel）；fit 的层号表按各段里最高的那个开
+  const lowOf = (i) => (minLevel ? minLevel[i] : 1);
+  const capOf = (i) => (maxLevels ? maxLevels[i] : maxLevel);
+  let capAll = maxLevel;
+  if (maxLevels) for (let i = 0; i < n; i++) capAll = Math.max(capAll, maxLevels[i]);
   const level = new Array(n).fill(0);
   const dead = bad.slice();
   const below = Array.from({ length: n }, () => new Set()); // below[j]：必须比 j 高的段
@@ -61,10 +68,11 @@ export function solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel, top })
    * 刚离开的那层几步之内不回去）；找不到就取冲突最少的那次，冲突的段先拿掉（短的先拿），再从低往高找空层放回去。
    */
   const fit = (ids) => {
-    const dom = new Map(ids.map((i) => [i, Array.from({ length: maxLevel }, (_, k) => k + 1).filter((L) => fixedOk(i, L))]));
+    // 每段能挪的层：最低层到不罚的最高层（没给 minLevel / maxLevels 时就是 1..maxLevel）
+    const dom = new Map(ids.map((i) => [i, Array.from({ length: capAll }, (_, k) => k + 1).filter((L) => L >= lowOf(i) && L <= capOf(i) && fixedOk(i, L))]));
     const free = ids.filter((i) => dom.get(i).length); // 4 层里都被固定的东西挡住的段只能升上去，不动它
     for (const i of free) {
-      if (level[i] <= maxLevel) continue;
+      if (level[i] <= capOf(i)) continue;
       let b = 0;
       for (const L of dom.get(i)) if (!b || clash(i, L) < clash(i, b)) b = L;
       level[i] = b;
@@ -112,18 +120,18 @@ export function solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel, top })
       for (const k of below[i]) if (isFree[k]) { const was = level[k] <= a, now = level[k] <= b; if (was !== now) set(k, cl[k] + (now ? 1 : -1)); } // k 必须比 i 高：k 的冲突里数的是 level[k] <= level[i]
       for (const m of neq[i]) if (isFree[m]) { const was = level[m] === a, now = level[m] === b; if (was !== now) set(m, cl[m] + (now ? 1 : -1)); }
     };
-    // 段 i 在 1..maxLevel 每一层的冲突数一次算出（差分数组）：和对每层各调一次 clash 结果一样
-    const per = new Int32Array(maxLevel + 2);
+    // 段 i 在 1..capAll 每一层的冲突数一次算出（差分数组）：和对每层各调一次 clash 结果一样（capAll 没给 maxLevels 时就是 maxLevel）
+    const per = new Int32Array(capAll + 2);
     const clashAll = (i) => {
       per.fill(0);
-      for (const j of above[i]) if (!dead[j]) { const u = Math.min(level[j], maxLevel); if (u >= 1) { per[1]++; per[u + 1]--; } } // L <= level[j]
-      for (const k of below[i]) if (!dead[k]) { const lo = Math.max(level[k], 1); if (lo <= maxLevel) { per[lo]++; per[maxLevel + 1]--; } } // L >= level[k]
-      for (const m of neq[i]) if (!dead[m]) { const L = level[m]; if (L >= 1 && L <= maxLevel) { per[L]++; per[L + 1]--; } }
-      for (let L = 1; L <= maxLevel; L++) per[L] += per[L - 1];
+      for (const j of above[i]) if (!dead[j]) { const u = Math.min(level[j], capAll); if (u >= 1) { per[1]++; per[u + 1]--; } } // L <= level[j]
+      for (const k of below[i]) if (!dead[k]) { const lo = Math.max(level[k], 1); if (lo <= capAll) { per[lo]++; per[capAll + 1]--; } } // L >= level[k]
+      for (const m of neq[i]) if (!dead[m]) { const L = level[m]; if (L >= 1 && L <= capAll) { per[L]++; per[L + 1]--; } }
+      for (let L = 1; L <= capAll; L++) per[L] += per[L - 1];
     };
-    const stride = maxLevel + 1;
+    const stride = capAll + 1;
     const tabu = new Int32Array(n * stride); // 段 i 离开第 L 层后，第几步之前不回去（0 = 没禁）
-    const pickBuf = new Int32Array(maxLevel);
+    const pickBuf = new Int32Array(capAll);
     let best = level.slice();
     let bestC = tot;
     for (let it = 0; bestC > 0 && it < 100 + 30 * ids.length; it++) {
@@ -176,28 +184,29 @@ export function solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel, top })
     }
     for (const i of order) {
       if (!out.has(i)) continue;
-      let L = 1;
+      let L = lowOf(i);
       for (const j of above[i]) if (!dead[j] && level[j] >= L) L = level[j] + 1;
       while (L <= top && !ok(i, L)) L++;
       if (L > top) dead[i] = true;
       else level[i] = L;
     }
   };
-  /** 段 i 放在第 L 层是否满足所有约束（别的段按当前的层） */
+  /** 段 i 放在第 L 层是否满足所有约束（别的段按当前的层）；低于这段的最低层也不行 */
   const ok = (i, L) => {
+    if (minLevel && L < minLevel[i]) return false;
     for (const j of above[i]) if (!dead[j] && level[j] && L <= level[j]) return false;
     for (const k of below[i]) if (!dead[k] && level[k] && L >= level[k]) return false;
     for (const m of neq[i]) if (!dead[m] && level[m] === L) return false;
     return fixedOk(i, L);
   };
   for (const i of order) {
-    let L = 1;
+    let L = lowOf(i);
     for (const j of above[i]) if (!dead[j] && level[j] >= L) L = level[j] + 1;
     while (L <= top && !ok(i, L)) L++;
     if (L > top) dead[i] = true;
     else level[i] = L;
   }
-  if (order.some((i) => level[i] > maxLevel)) fit(order.filter((i) => !dead[i]));
+  if (order.some((i) => level[i] > capOf(i))) fit(order.filter((i) => !dead[i]));
   // 改进：落低、长短换层。每次改动都让「格子数 × 层」的某种凸代价下降，不会循环；轮数也设了上限
   const live = order.filter((i) => !dead[i]).sort((a, b) => len[b] - len[a] || a - b);
   for (let round = 0; round < 8; round++) {

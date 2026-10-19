@@ -36,10 +36,14 @@ function splitFraction(targets, raw, recipes) {
 // 上限只防极端的长尾，按大约 95% 的人碰不到来定（用户 2026/10/07）；到点还没达标就交出搜到的最好那张，页面照常显示，状态栏说明没到这一档
 // 快档每轮 3000 步（2026/10/08，用户定）：云上和考卷都量过每轮步数是最管用的旋钮，1500 → 3000 不喷的 36 格面积少 4%~5%、利用率 +2 个百分点、
 // 放大 3 倍那套全部可行，线程时间 1.4~1.6 倍；每轮上限跟着 10 → 20 秒，不然 Mac 上引力矩阵 30 一轮（约 12 秒）会被截掉
+// 细档的 groundTax：高架落地加变层税，一段高架少在层之间来回变（src/plan/ground.js，分支 explore/bridges 的试验）
+// 细档的 heightTax：搜索打分里线性超高税代替金字塔，第 5 层起另加（src/plan/layout/score.js，分支 explore/bridges 的试验）
+// 细档的 bundleFee：开路费，高架竖直那截挑列时旁边没有别的竖直段就多计 8 格，带子挨着走成束（src/plan/layout/positions.js，分支 explore/bridges 的试验）
+// 细档的 openFee：走空地费，高架竖直那截穿过的行里既不压着也不挨着建筑的，每行多计 2 格，带子贴着建筑走（src/plan/layout/positions.js，分支 explore/bridges 的试验）
 const EFFORT = {
   quick: { iterations: 3000, restarts: 2, timeLimit: 20000, targetSpace: 0.5, retries: 1, untilTarget: { maxMs: 15 * 60000 } },
   normal: { iterations: 3000, restarts: 4, timeLimit: 30000, targetSpace: 0.66, retries: 2, untilTarget: { maxMs: 60 * 60000 }, powerHoles: true },
-  fine: { iterations: 8000, restarts: 6, timeLimit: null, targetSpace: 0.8, retries: 4, untilTarget: { maxMs: 200 * 60000 }, powerHoles: true },
+  fine: { iterations: 8000, restarts: 6, timeLimit: null, targetSpace: 0.8, retries: 4, untilTarget: { maxMs: 200 * 60000 }, powerHoles: true, groundTax: true },
 };
 
 // 别的网页带来的物品和配方（嵌在量产量化计算器里时，那边新出的物品随方案带过来，见 web/src/handoff.js 的 defs）。

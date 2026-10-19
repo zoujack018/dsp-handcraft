@@ -689,10 +689,17 @@ export function liftLegs(c) {
   }
   const name = (l) => graph.items.get(l.itemId).name;
   const top = opt.maxLevel + 24;
+  // 桥段（leg.bridge，竖直那截从熔炉、制造台头顶过）：最低第 bridgeLevel 层，超过 bridgeMaxLevel 层才罚；普通段从第 1 层起、超过 maxLevel 罚。
+  // 桥关着时不读 leg.bridge。记 level 惩罚的两处照原来写在原地（2026/10/19 量过：换成一个共用的小函数，下面分层后那一圈
+  // 每段调一次，bench 的 route() 就慢 10%~35%，原因没查清）
+  const bridgeOn = !!opt.bridges;
+  const lowOf = (l) => (bridgeOn && l.bridge ? opt.bridgeLevel : 1);
+  const capOf = (l) => (bridgeOn && l.bridge ? opt.bridgeMaxLevel : opt.maxLevel);
   const settle = (l, L) => {
     const c = cellsAt(l, L);
     place(l, L, c.cells, c.shadow);
-    if (L > opt.maxLevel) addPenalty('level', P.level * (L - opt.maxLevel), `${name(l)} 的高架段和别的高架段撞在一起（${opt.maxLevel} 层都占满了，升到第 ${L} 层）`, itemBids(l.itemId));
+    const cap = bridgeOn && l.bridge ? opt.bridgeMaxLevel : opt.maxLevel;
+    if (L > cap) addPenalty('level', P.level * (L - cap), `${name(l)} 的高架段和别的高架段撞在一起（${cap} 层都占满了，升到第 ${L} 层）`, itemBids(l.itemId));
   };
   const broken = (l) => {
     l.broken = true;
@@ -752,7 +759,7 @@ export function liftLegs(c) {
   for (let i = 0; i < todo.length; i++) {
     const l = todo[i];
     if (geo(l).flat && !l.spray) continue;
-    let L = 1;
+    let L = lowOf(l);
     if (l.spray) {
       while (L <= top && !(isFree(l, L) && winFree(l, L))) L++;
       if (L <= top) {
@@ -880,7 +887,16 @@ export function liftLegs(c) {
     }
     return t !== null && flatFree(flat[k].id, t.pbOff, t.pbLen, t.psOff, t.psLen, L);
   };
-  const lv = solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel: opt.maxLevel, top });
+  // 有桥段时才给每段的最低层、不罚的最高层（关着时不建，solveLevels 照原来的走）
+  let minLevel = null;
+  let maxLevels = null;
+  for (let k = 0; bridgeOn && k < n; k++) {
+    if (!flat[k].bridge) continue;
+    minLevel = flat.map(lowOf);
+    maxLevels = flat.map(capOf);
+    break;
+  }
+  const lv = solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel: opt.maxLevel, top, minLevel, maxLevels });
   // 只有高度变的段：直接按第 1 层的格子落到分到的层（见 realizeFlat）。之后再没有人查归属表，不用再写
   const isFlat = new Uint8Array(legs.length);
   for (let k = 0; k < n; k++) {
@@ -892,7 +908,8 @@ export function liftLegs(c) {
     }
     isFlat[l.id] = 1;
     l.level = L;
-    if (L > opt.maxLevel) addPenalty('level', P.level * (L - opt.maxLevel), `${name(l)} 的高架段和别的高架段撞在一起（${opt.maxLevel} 层都占满了，升到第 ${L} 层）`, itemBids(l.itemId));
+    const cap = bridgeOn && l.bridge ? opt.bridgeMaxLevel : opt.maxLevel;
+    if (L > cap) addPenalty('level', P.level * (L - cap), `${name(l)} 的高架段和别的高架段撞在一起（${cap} 层都占满了，升到第 ${L} 层）`, itemBids(l.itemId));
   }
 
   for (let li = 0; li < legs.length; li++) {
@@ -916,6 +933,7 @@ export function liftLegs(c) {
  */
 export function estimateLegs(c) {
   const { P, addPenalty, graph, itemBids, legs, opt } = c;
+  const bridgeOn = !!opt.bridges; // 桥（见 liftLegs）：关着时不读 leg.bridge
   const cellsFor = makeCellsFor(c);
   const paths = []; // { l, r, keys, ends }
   for (const l of legs) {
@@ -969,7 +987,8 @@ export function estimateLegs(c) {
   };
   for (const p of paths) {
     const used = new Set();
-    let lo = 1;
+    const isBridge = bridgeOn && p.l.bridge === true;
+    let lo = isBridge ? opt.bridgeLevel : 1; // 桥段最低第 bridgeLevel 层（见 liftLegs 的 lowOf）
     let hi = Infinity;
     for (const k of p.keys) {
       const ls = at.get(k);
@@ -984,11 +1003,20 @@ export function estimateLegs(c) {
     const w = winOf(p.l);
     let L = lo;
     while (used.has(L) || (w && winBlocked(w, L))) L++;
-    let over = Math.max(0, L - opt.maxLevel);
+    const cap = isBridge ? opt.bridgeMaxLevel : opt.maxLevel;
+    let over = Math.max(0, L - cap);
     if (L > hi) over += 1; // 两头的约束矛盾：完整算法要靠请出重排才可能放下，按多占一层计
     p.l.level = L;
-    p.l.cells = p.r.cells;
-    realizeLeg(p.l, p.r);
+    if (isBridge && L !== 1) {
+      // 桥段：水平部分按分到的层落实（别的段这里照旧按第 1 层的格子记，金字塔只数到两头那叠的顶上一格；
+      // 桥段打分按有效层（score.js），第 5 层的桥按第 2 层计金字塔，按第 1 层记格子会少算，和完整分层对不上）
+      const rL = cellsFor(p.l, L);
+      p.l.cells = rL.cells;
+      realizeLeg(p.l, rL);
+    } else {
+      p.l.cells = p.r.cells;
+      realizeLeg(p.l, p.r);
+    }
     for (const k of p.keys) {
       if (!at.has(k)) at.set(k, []);
       at.get(k).push({ L, end: p.ends.has(k) });
@@ -1004,7 +1032,7 @@ export function estimateLegs(c) {
         at.get(k).push({ L: L + 1, end: true });
       }
     }
-    if (over) addPenalty('level', P.level * over, `${graph.items.get(p.l.itemId).name} 的高架段和别的高架段撞在一起（${opt.maxLevel} 层都占满了，升到第 ${L} 层）`, itemBids(p.l.itemId));
+    if (over) addPenalty('level', P.level * over, `${graph.items.get(p.l.itemId).name} 的高架段和别的高架段撞在一起（${cap} 层都占满了，升到第 ${L} 层）`, itemBids(p.l.itemId));
   }
   c.roads = roadStats(c);
 }
