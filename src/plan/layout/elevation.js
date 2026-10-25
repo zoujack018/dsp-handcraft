@@ -1,7 +1,7 @@
 // 高架：每段高架的格子、逐段分配高度（可请出重排）、升降落成原地竖直的一叠、路网统计
 import { RAMP_MAX_DZ } from '../../gamedata.js';
 import { gk, line } from './shared.js';
-import { solveLevels } from './levels.js';
+import { solveLevels, toCsr } from './levels.js';
 
 // 归属表的缓冲区按线程复用：每次 liftLegs 换一个代际，表不够大才重新分配；代际用到上限时清零重来
 let gridBuf = new Int32Array(0);
@@ -67,12 +67,38 @@ const geoPush = (v) => {
   geoBuf[geoTop++] = v;
 };
 
-// 两段之间的约束（不能同层、必须更高）这一次加过没有：n × n 的表按线程复用，存这一次的戳。
-// 两段有一长串格子重合时同一对约束要加很多遍，Set 里已有的再加不会变（先后次序也不变），记过的就不再调 add
-let pairNeq = new Int32Array(0);
-let pairAbove = new Int32Array(0);
-let pairStamp = 0;
-const PAIR_MAX = 512; // 段数再多就不用表（表太大），照原来每次都 add
+// 两段之间的约束（不能同层 neq、必须更高 above）：原来每段一个 Set（n ≤ 512 时再用 n × n 的戳表挡掉重复的 add），
+// 现在按原来 add 的先后记成边（行 = 哪一段的表，值 = 对面那段），加完用 levels.js 的 toCsr 按行排成 CSR 交给 solveLevels。
+// toCsr 同一行按记下的先后、重复的只留第一次——和往 Set 里 add 一样（已有的再 add 不变，先后也不变），
+// 所以每行的元素和遍历顺序跟原来的 Set 一模一样，段数多少都成立，戳表也不要了。缓冲区按线程复用：边用满了换两倍大的，别的不够大才换
+let neqE = new Int32Array(2048); // 第 t 条边：行 neqE[2t]、值 neqE[2t + 1]
+let neqTop = 0;
+let aboveE = new Int32Array(2048);
+let aboveTop = 0;
+function pushNeq(i, j) {
+  if (2 * neqTop + 2 > neqE.length) {
+    const grown = new Int32Array(neqE.length * 2);
+    grown.set(neqE);
+    neqE = grown;
+  }
+  neqE[2 * neqTop] = i;
+  neqE[2 * neqTop + 1] = j;
+  neqTop++;
+}
+function pushAbove(i, j) {
+  if (2 * aboveTop + 2 > aboveE.length) {
+    const grown = new Int32Array(aboveE.length * 2);
+    grown.set(aboveE);
+    aboveE = grown;
+  }
+  aboveE[2 * aboveTop] = i;
+  aboveE[2 * aboveTop + 1] = j;
+  aboveTop++;
+}
+let neqOff = new Int32Array(0);
+let neqAdj = new Int32Array(0);
+let aboveOff = new Int32Array(0);
+let aboveAdj = new Int32Array(0);
 
 /** 横着沿方向 d 从 a 走到 b 的格子 [x, y, z] 推进 cells（b 在 a 的反方向时没有）：和 line(a, b) 逐格一样，不拼临时数组 */
 function runX(cells, a, b, d, y, z) {
@@ -228,6 +254,13 @@ function makeCellsFor(c) {
           return r;
         }
         ramp(r, L, leg.edge, s.y, leg.edge + d, s.y);
+      } else if (leg.bus != null) {
+        // 侧边总线（layout/ports.js）：口在右边布局外最外那一列，原地升起往里走到自己那一列，沿这一列竖着走到段那一行，再往里走到段首落下
+        const dy = Math.sign(s.y - leg.py);
+        runX(cells, leg.edge - 1, leg.bus, -1, leg.py, L);
+        runY(cells, leg.py + dy, s.y, dy, leg.bus, L);
+        runX(cells, leg.bus + d, s.entryX - d, d, s.y, L);
+        ramp(r, L, leg.edge, leg.py, leg.edge - 1, leg.py);
       } else if (s.entryX === leg.edge) {
         // 段首就在走廊这一列（最靠左的那台工厂紧挨走廊）：沿走廊升起、走到段首前一格、斜坡落下
         const dy = Math.sign(s.y - leg.py);
@@ -491,7 +524,11 @@ export function liftLegs(c) {
   // 代际不同就当没人占，这样每次 route() 不用清零整张表。退火里 isFree / place 要查几万次，这里是热点。
   const GM = 24; // 四周留的余量（高架可能走到布局外一两格）
   const GH = height + 2 * GM;
-  const GW = xR + 2 + 2 * GM;
+  // 右边从最靠外的出入口算起：侧边总线的口在布局外、每条原料带各占一列（layout/ports.js），原料带多的大线能排出去几十列。
+  // 下标只用到 GH，宽只管表开多大，所以没排出去的线一格不变
+  let xOut = xR;
+  for (let i = 0; i < legs.length; i++) if (legs[i].edge > xOut) xOut = legs[i].edge;
+  const GW = xOut + 2 + 2 * GM;
   const grid = ownerGrid(GW * GH * levelStride);
   const G = grid.buf;
   const gen = grid.gen;
@@ -773,8 +810,8 @@ export function liftLegs(c) {
     else broken(l);
   }
   const n = flat.length;
-  const neq = Array.from({ length: n }, () => new Set());
-  const above = Array.from({ length: n }, () => new Set());
+  neqTop = 0;
+  aboveTop = 0;
   const bad = flat.map((l) => geo(l).dup);
   // 每个平面格子上有哪些段：水平部分记 2k，升降那一叠记 2k + 1。
   // 格子按第一次出现的顺序编槽号（逐对加约束的顺序和以前按 Map 插入顺序遍历一样），每槽的段按加入顺序串成链，
@@ -811,16 +848,7 @@ export function liftLegs(c) {
     for (let i = g.psOff; i < g.psOff + g.psLen; i++) putAt(buf[i], 2 * k + 1);
   }
   const list = atList;
-  const usePair = n <= PAIR_MAX;
-  if (usePair) {
-    if (pairNeq.length < n * n || pairStamp >= 2e9) {
-      pairNeq = new Int32Array(Math.max(n * n, pairNeq.length));
-      pairAbove = new Int32Array(Math.max(n * n, pairAbove.length));
-      pairStamp = 0;
-    }
-    pairStamp++;
-  }
-  const pst = pairStamp;
+  // 约束按原来 add 的先后记成边（neq 两边各一条，先 i 行后 j 行），加完排成 CSR
   for (let sl = 0; sl < nS; sl++) {
     const m = slotCnt[sl];
     if (m < 2) continue;
@@ -833,30 +861,21 @@ export function liftLegs(c) {
         const ri = list[u] & 1;
         const rj = list[v] & 1;
         if (!ri && !rj) {
-          if (usePair) {
-            const key = i < j ? i * n + j : j * n + i;
-            if (pairNeq[key] === pst) continue;
-            pairNeq[key] = pst;
-          }
-          neq[i].add(j);
-          neq[j].add(i);
-        } else if (!ri && rj) {
-          if (usePair) {
-            const key = i * n + j;
-            if (pairAbove[key] === pst) continue;
-            pairAbove[key] = pst;
-          }
-          above[i].add(j);
-        } else if (ri && !rj) {
-          if (usePair) {
-            const key = j * n + i;
-            if (pairAbove[key] === pst) continue;
-            pairAbove[key] = pst;
-          }
-          above[j].add(i);
-        } else bad[flat[i].cells.length <= flat[j].cells.length ? i : j] = true;
+          pushNeq(i, j);
+          pushNeq(j, i);
+        } else if (!ri && rj) pushAbove(i, j);
+        else if (ri && !rj) pushAbove(j, i);
+        else bad[flat[i].cells.length <= flat[j].cells.length ? i : j] = true;
       }
   }
+  if (neqOff.length < n + 1) neqOff = new Int32Array(Math.max(n + 1, Math.ceil(neqOff.length * 1.5)));
+  if (aboveOff.length < n + 1) aboveOff = new Int32Array(Math.max(n + 1, Math.ceil(aboveOff.length * 1.5)));
+  if (neqAdj.length < neqTop) neqAdj = new Int32Array(Math.max(neqTop, Math.ceil(neqAdj.length * 1.5)));
+  if (aboveAdj.length < aboveTop) aboveAdj = new Int32Array(Math.max(aboveTop, Math.ceil(aboveAdj.length * 1.5)));
+  toCsr(n, neqE, neqTop, neqOff, neqAdj);
+  toCsr(n, aboveE, aboveTop, aboveOff, aboveAdj);
+  const neq = { off: neqOff, adj: neqAdj };
+  const above = { off: aboveOff, adj: aboveAdj };
   const len = flat.map((l) => cellsAt(l, 1).cells.length + geo(l).psLen);
   // 第 L 层和固定的东西冲不冲突（就是 isFree）：只有固定的东西占过的平面格才可能有人，每段先挑出这几格（多数段一格都没有），
   // 之后每次只查它们。自己走回头路的段哪一层都不行（null）

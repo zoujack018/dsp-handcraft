@@ -4,22 +4,26 @@
 //   带子直接接罐口，不放配送器。
 // 固体原料、成品的仓当工厂排进生产行里（storeUnits，用户 2026/10/19），原料按用料的工厂组各配一组，挨着它们摆；增产剂仓摆在蓝图里面的空地上
 // （storeSites，增产剂那一步挑位置）。下面说的「外面一组」是剩下的：液体的储液罐、一组工厂要的比一条带多的原料、放不进里面的增产剂仓。
+// 矿（ORES）不放进仓，照旧从边缘送进来（用户 2026/10/24：矿物不再放进箱子，小型仓、大型仓都一样）。
 // 外面每个原料入口、成品出口接一组：一截横着的进料带，仓排在带子上方、隔 1 行放分拣器（仓口在仓身里，分拣器长 1）；储液罐在带子的远头。
 // 几个仓：先按流量 ÷ 分拣器速度（左栏的分拣器、长 1）喂得过来；再看 STORE_MINUTES 分钟的量（用户：储物仓要装得下整条线跑这么久，成品也算；2026/10/19 从 60 砍到 30），
 // 叠层不超过 maxLayers（左栏「研究站最多叠几层」：推断储物仓、储液罐的叠层也是「垂直建造」管），叠满还装不下就加仓。
 // 组摆在产线外框外面、出入口原来那一侧，一组一组竖着排（上下隔 GAP_Y 行、和产线隔 GAP_X 列，放供电设施）；组口用寻路接到那条带的
 // 段头 / 段尾（照接物流站、就地烧副产物的做法），原来通到边缘的那截作废。在烧副产物之后、落地、增产剂、供电之前做。
 // 间距（gamedata.js 的 STORE_BODY，体积测试第八张）：小型仓隔 3（实测能放），大型仓隔 6（隔 5 没测，先保守）。
-import { FLUIDS, ITEMS, BYPRODUCT, STORE_COPY, BELT_SPEED, realItem, stackSize, STORE_BODY, BOX_SLOT, TANK_PORT } from '../gamedata.js';
+import { FLUIDS, ITEMS, BYPRODUCT, STORE_COPY, BELT_SPEED, RAW_ITEM_IDS, realItem, stackSize, STORE_BODY, BOX_SLOT, TANK_PORT } from '../gamedata.js';
 import { obstacles, pathfind, dirIndex, cropToContent } from './stations.js';
 import { translateLayout } from './coordinates.js';
 import { SORTER_SPEED } from './sorters.js';
 import { contentBox, burnable } from './burn.js';
 import { chainTiles } from '../emit/blueprint.js';
+import { portRays } from './layout/shared.js';
 
 export const SMALL_BOX = 2101;
 export const BIG_BOX = 2102;
 export const TANK = 2106;
+/** 矿：原矿（物品 Type 1）里的固体，木材、植物燃料（手采的）除外。箱子供货时照旧从边缘送进来，不放进仓（用户 2026/10/24） */
+export const ORES = new Set([...RAW_ITEM_IDS].filter((id) => !FLUIDS.has(id) && id !== 1030 && id !== 1031));
 /** 一组仓、罐要装得下整条线跑几分钟（用户 2026/10/18 定 60，10/19 砍到 30） */
 export const STORE_MINUTES = 30;
 /** 一个储液罐装多少（推断：BWIKI 写的储液罐容量 10000） */
@@ -120,6 +124,10 @@ export function storeUnits(calc, { supply, sorter = 2013, maxLayers = 15, burn =
   const raw = [];
   const beltCap = (BELT_SPEED[belt] ?? 30) * 60;
   for (const r of calc.raw) {
+    if (ORES.has(r.itemId)) {
+      raw.push(r); // 矿照旧从边缘进
+      continue;
+    }
     // 每组用料的工厂各配一组仓（用户 2026/10/19：仓可以摆在任何地方，挨着用料的工厂）：第二组起换个编号（STORE_COPY），各走各的带。
     // 一组工厂要的比一条带运得多（储液罐还有叠满 maxLayers 层也装不下 30 分钟）时这份照旧从边缘进（从边缘进能拆成几个入口走几条带），原来的编号留给它
     const fluid = FLUIDS.has(r.itemId);
@@ -257,7 +265,7 @@ export function addStores(L, { supply, sorter = 2013, maxLayers = 15, maxWidth =
   L.storeNotes = [];
   if (!spec) return L;
   const name = (id) => ITEMS.get(realItem(id))?.name ?? String(id);
-  const ports = L.ports.filter((p) => !p.burn && p.station == null && (p.kind === 'in' || p.kind === 'out'));
+  const ports = L.ports.filter((p) => !p.burn && p.station == null && (p.kind === 'out' || (p.kind === 'in' && !ORES.has(realItem(p.itemId)))));
   if (!ports.length) return L;
   const [cx0, cy0, cx1, cy1] = contentBox(L);
   const sprayed = (p) => p.kind === 'in' && sprayItems && (sprayItems === true || sprayItems.includes(realItem(p.itemId)));
@@ -299,6 +307,8 @@ export function addStores(L, { supply, sorter = 2013, maxLayers = 15, maxWidth =
     let done = false;
     const O = obstacles(L); // 这一组试各个位置时共用（试过的那块地试完拿掉）
     for (const r of plans) if (!r.tried) O.ground.add(r.door); // 还没轮到的口段头前那一格
+    // 不接仓、照旧从边缘进出的口（矿等）往外那一行的地面留空（layout/shared.js 的 portRays）：仓组不压上去，接线只能从头顶过
+    for (const [x, y] of portRays(L, (q) => plans.some((r) => r.p === q))) O.ground.add(`${x},${y}`);
     let tries = 0;
     // 进料带那一行：尽量和原来的出入口同一行，不行就往上、往下挪；真去找路的位置最多试 12 个
     for (let d = 0; d <= 2 * TH && !done && tries < 12; d++) {
@@ -371,6 +381,7 @@ export function addProStores(L, { supply, sorter = 2013, maxLayers = 15, maxLeve
       O.projection.add(`${x},${y}`);
     }
     for (const c of L.coaters || []) for (const z of [(c.z ?? 0) + 1, (c.z ?? 0) + 2]) O.belts.add(`${c.x},${c.y},${z}`);
+    for (const [x, y] of portRays(L, (q) => q === port)) O.ground.add(`${x},${y}`); // 别的从边缘进出的口往外那一行留空
     const gx = s0[0] + side;
     let done = null;
     for (let d = 0; d <= 8 && !done; d++) {

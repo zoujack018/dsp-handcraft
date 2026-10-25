@@ -51,3 +51,21 @@ export function line(from, to) {
   for (let v = from; v !== to + step; v += step) out.push(v);
   return out;
 }
+
+/**
+ * 边缘出入口往外的那一行（用户 2026/10/24：入口外面还有一层带子、上面再有高架就接不出去）：每个还从边缘进出的口
+ * （不接站、仓、不就地烧），所在那一行从口外一格一直往外 RAY_OUT 格（接仓、接发电厂时寻路的地比布局宽，一直留到外面）。这些格子的地面留空：高架落地（plan/ground.js）、
+ * 供电设施（plan/power.js）、增产剂带（plan/addons.js）、外面的仓组（plan/storage.js）、火力发电厂（plan/burn.js）都不占，
+ * 外面的线能沿地面直接接进来（emit/check.js 的 3d 查）。skip(p)：这几个口不算（正在给它接仓、接发电厂的那个）。返回 [[x, y]]
+ */
+export function portRays(L, skip = null) {
+  const out = [];
+  for (const p of L.ports || []) {
+    if (p.station != null || p.store != null || p.burn || skip?.(p)) continue;
+    const d = p.x <= (L.width - 1) / 2 ? -1 : 1;
+    for (let x = p.x + d; d < 0 ? x >= -RAY_OUT : x < L.width + RAY_OUT; x += d) out.push([x, p.y]);
+  }
+  return out;
+}
+/** portRays 往布局外延伸几格 */
+const RAY_OUT = 64;

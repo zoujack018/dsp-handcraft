@@ -1,6 +1,7 @@
 // 供电：布局定下来之后，在空地上放电力感应塔或卫星配电站。这是后处理，不参与摆放搜索。
 //
-// 要覆盖的不只是工厂：分拣器也耗电，每根分拣器（取它两端的中点）也必须在某个电力设施的范围内。
+// 要覆盖的不只是工厂：分拣器也耗电，每根分拣器取料的那一头也必须在某个电力设施的范围内
+// （游戏的用电插头在建筑位置上，分拣器的位置是取料端，也就是蓝图里它的第一个坐标；docs/game-rules.md 第 33 条）。
 // 传送带不耗电。
 //
 // 距离换算：蓝图坐标以格为单位。标准星球（半径 200）赤道上一圈 1000 格，一格约 1.2566 m；
@@ -20,6 +21,7 @@
 // 设施之间超出连接距离时，在两群之间补一座中继。
 import { STATION_CLEAR, powerCells, powerGap, powerHugs, substationPad, slotPoint } from '../gamedata.js';
 import { bankSorters, bankLanes } from './burn.js';
+import { portRays } from './layout/shared.js';
 
 export const CELL_M = 1.2566;
 export const POWER = {
@@ -171,13 +173,13 @@ function mark(L, rowGaps, power, occ, T) {
     const lanes = new Set(power === 2201 ? bankLanes(b) : []);
     for (let x = b.rect[0]; x <= b.rect[2]; x++) for (let y = b.rect[1]; y <= b.rect[3]; y++) if (!lanes.has(x) || y >= b.feedY) add(x, y);
     for (const [x, y] of b.plants) put(T, x, y, '火力发电厂', NOBID);
-    for (const s of bankSorters(b)) put(T, (s.p0[0] + s.p1[0]) / 2, (s.p0[1] + s.p1[1]) / 2, '分拣器', NOBID);
+    for (const s of bankSorters(b)) put(T, s.p0[0], s.p0[1], '分拣器', NOBID); // p0 是取料端
   }
   for (const d of [...(L.coaters || []), ...(L.pilers || [])]) put(T, d.x, d.y, L.coaters?.includes(d) ? '喷涂机' : '自动集装机', NOBID);
   // 箱子供货的储物仓、储液罐（plan/storage.js）：那一块地不放设施；仓口的分拣器、仓顶的物流配送器要通电（配送器要电是推断）
   for (const b of L.stores || []) {
     for (let x = b.rect[0]; x <= b.rect[2]; x++) for (let y = b.rect[1]; y <= b.rect[3]; y++) add(x, y);
-    for (const so of b.sorters) put(T, (so.p0[0] + so.p1[0]) / 2, (so.p0[1] + so.p1[1]) / 2, '分拣器', NOBID);
+    for (const so of b.sorters) put(T, so.p0[0], so.p0[1], '分拣器', NOBID); // p0 是取料端
     if (b.dist) for (const [x, y] of b.boxes) put(T, x, y, '物流配送器', NOBID);
   }
   // 物流站占 7×7，外面还有 1 格碰撞圈（只挡卫星配电站，按 9×9 算），自己也耗电
@@ -196,10 +198,10 @@ function mark(L, rowGaps, power, occ, T) {
     const lo = Math.min(edge, seg.y);
     const hi = Math.max(edge, seg.y);
     for (let y = lo + 1; y < hi; y++) add(s.col, y);
-    // 覆盖按分拣器两端的中点算，和独立检查一致（化工厂下侧落点带 0.284 的小数，研究站、对撞机的分拣器对齐槽位的 x）
+    // 覆盖按取料端算，和独立检查一致：进料取带子那头，出料取工厂那头（化工厂下侧落点带 0.284 的小数，研究站、对撞机的分拣器对齐槽位的 x）
     if (s.stub) continue; // 储液罐口那截是带子，不用电
     const pt = slotPoint(p.g, s.side, s.col - s.cx);
-    put(T, s.cx + pt.dx, (L.rowCy[p.row] + pt.dy + seg.y) / 2, '分拣器', s.bid);
+    put(T, s.cx + pt.dx, s.io === 'in' ? seg.y : L.rowCy[p.row] + pt.dy, '分拣器', s.bid);
   }
 }
 
@@ -238,7 +240,7 @@ function bandCands(L, side, spec, blocked, occ = { has: () => false }) {
   return out.filter((c) => cellsOf(spec, c.x, c.y).every(([x, y]) => !blocked.has(K(x, y)) && !occ.has(x, y)));
 }
 
-/** 出入口正外面那一格要留给玩家接带子（已经接到物流站的不用留） */
+/** 出入口正外面那一格要留给玩家接带子（已经接到物流站的不用留）；从边缘进出的口往外那一行整条都留 */
 function portBlocks(L) {
   const b = new Set();
   for (const p of L.ports || []) {
@@ -248,6 +250,8 @@ function portBlocks(L) {
     if (p.y <= 0) b.add(K(p.x, p.y - 1));
     if (p.y >= L.height - 1) b.add(K(p.x, p.y + 1));
   }
+  // 边缘出入口往外那一行整条留空（layout/shared.js 的 portRays）：口不在布局最外一列时，外面那几格也不放设施
+  for (const [x, y] of portRays(L)) b.add(K(x, y));
   return b;
 }
 

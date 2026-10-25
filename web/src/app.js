@@ -30,6 +30,7 @@ let last = null;
 let split = null; // 切成几块时整个结果（每块的结果在 split.modules 里），不切时为空
 let busy = false;
 let reqId = 0;
+const presses = new Map(); // 每套输入点过几次「生成蓝图」：第几次就用第几个种子（worker.js 的 AGAIN_SEED）
 let catId = 0;
 let chainId = 0;
 let chainData = null;
@@ -42,7 +43,7 @@ const viewer = createViewer({ box: $('drawing'), enabled: () => true, onSelect: 
 // ---------- 后台线程（打不开时退回到主线程运行） ----------
 // 有的浏览器不允许本地文件启动后台线程，而且是异步报错；在第一条回复到达之前出错就整体切到主线程。
 function inlineRunner() {
-  const api = { onmessage: null, postMessage: null };
+  const api = { onmessage: null, postMessage: null, inline: true };
   const inner = { onmessage: null, postMessage: (data) => setTimeout(() => api.onmessage && api.onmessage({ data })) };
   new Function('self', WORKER_SRC)(inner);
   api.postMessage = (data) => setTimeout(() => inner.onmessage({ data }));
@@ -83,6 +84,16 @@ try {
 } catch {
   attach(inlineRunner());
 }
+// 测速（worker.js 的 runBench）：页面好了、闲下来时让后台测一次这台机器多快，开搜前的预计按它折算；每次打开页面只测一次，页面上不显示。
+// 后台线程打不开、整个跑在主线程上时不测（会让页面卡一下），预计按参照机算
+let benchAsked = false;
+function scheduleBench() {
+  if (benchAsked || runner?.inline) return;
+  benchAsked = true;
+  setTimeout(() => {
+    if (!busy) send({ type: 'bench' });
+  }, 1500);
+}
 function handle(m) {
   if (m.type === 'catalog' && m.id === catId) {
     catalog = m.list;
@@ -91,6 +102,9 @@ function handle(m) {
     takeHandoffExt();
     renderCatalog();
     renderSpec();
+    scheduleBench();
+  } else if (m.type === 'bench') {
+    console.info(`[dsp-handcraft] 测速 ${Math.round(m.ms)} 毫秒（${m.threads} 个线程）`);
   } else if (m.type === 'progress' && m.id === reqId) {
     progress = { ...progress, ...m, est0: progress?.est0 ?? m.est ?? null }; // est0 是开搜前报的第一个预计，之后不改
   } else if (m.type === 'preview' && m.id === reqId) {
@@ -830,6 +844,10 @@ $('spec').addEventListener('submit', (e) => {
   params.orient = 'h';
   params.labstack = state.labstack;
   params.burn = state.burn.slice(); // 要就地烧掉的副产物（真实物品编号）
+  // 同样的输入再点一次换一个种子（用户 2026/10/24：对这个方案不满意，再点就换一个）；改了输入再回来也接着换，不重复
+  const key = JSON.stringify(params);
+  params.again = presses.get(key) ?? 0;
+  presses.set(key, params.again + 1);
   $('labstack').value = state.labstack;
   setBusy(true);
   reqId++;
@@ -1291,7 +1309,7 @@ function fillNotes(d) {
   if (!d.metrics.power) li.push('<li>没放供电，贴好后自己补。</li>');
   for (const b of d.burn ?? []) li.push(`<li>多余的${esc(b.item)} ${fmt(b.rate)}/分就地烧掉：火力发电厂 ${b.plants} 台，约 ${fmt(b.mw)} MW，要接在用得完这些电的电网上。</li>`);
   for (const n of d.burnNotes ?? []) li.push(`<li>${esc(n)}</li>`);
-  if (d.latitude && !d.latitude.high) li.push(`<li>${esc(d.latitude.factory)}按赤道的紧凑间距排，只能贴在赤道附近。要贴到高纬度，打开「化工厂高纬度间距展开」。</li>`);
+  if (d.latitude && !d.latitude.high) li.push(`<li>${esc(d.latitude.factory)}按赤道的紧凑间距排，只能贴在赤道附近。要贴到高纬度，打开「化工厂、精炼厂高纬度间距展开」。</li>`);
   const ad = d.addons;
   if (ad?.spray) {
     // 增产剂从哪进：只说哪几座物流站（站口编号进控制台），没有站时从边缘入口

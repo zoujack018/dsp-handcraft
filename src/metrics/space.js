@@ -51,9 +51,9 @@ export function blueprintText(L, name) {
   const s = L.space ?? spaceStats(L);
   const pct = (v) => `${Math.round(v * 100)}%`;
   const power = L.power ? `；${L.power.name} ${L.power.nodes.length} 座` : '';
-  // 化工厂按赤道压缩的间距排的写一句：只在赤道附近放得下，贴之前看得出来
-  const tight = [...L.pos.values()].find((p) => p.g.latitude === 'equator');
-  const lat = tight ? `；${tight.g.factory}赤道压缩间距，只在赤道附近能放` : '';
+  // 化工厂、精炼厂按赤道压缩的间距排的写一句：只在赤道附近放得下，贴之前看得出来
+  const tight = [...new Set([...L.pos.values()].filter((p) => p.g.latitude === 'equator').map((p) => p.g.factory))];
+  const lat = tight.length ? `；${tight.join('、')}赤道压缩间距，只在赤道附近能放` : '';
   return {
     title: `${name} 利用率${pct(s.space)}`,
     desc: `${blueprintSize(L).width}×${blueprintSize(L).height}=${L.area} 格${L.rotated ? '（竖排）' : ''}；${spaceLine(L)}；传送带 ${L.belts}，分拣器 ${L.sorters}，工厂 ${L.factories}${power}${lat}。dsp-handcraft 生成`,

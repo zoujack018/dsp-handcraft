@@ -186,7 +186,7 @@ function tracksMsg(t) {
 // 守卫（参照 scoreLayout 里 early 第 309 行并加严）：所有进最终代价的权重和惩罚项都要 ≥ 0，任一不成立（或没传 rejectFloor）
 // 就返回 null，调用方照旧往下算。默认值都满足。
 export function preLegFloor(c) {
-  const { opt, P, penalties, segments, ports, legs, height, xR } = c;
+  const { opt, P, penalties } = c;
   if (!opt.rejectFloor) return null;
   if (
     !(
@@ -209,6 +209,18 @@ export function preLegFloor(c) {
     return null;
   for (const k in P) if (!(P[k] >= 0)) return null; // opt.penalty 里每一项都要 ≥ 0
   for (let i = 0; i < penalties.length; i++) if (!(penalties[i].amount >= 0)) return null;
+  // 已经记下的惩罚（最终 penalty 的前缀子集）
+  let pen = 0;
+  for (let i = 0; i < penalties.length; i++) pen += penalties[i].amount;
+  return preLegBase(c) + pen;
+}
+
+/**
+ * 高架前的下限里不含惩罚的那两项：面积下限 × areaWeight + 地面带，和最终代价开头的 (面积 + 外沿) × areaWeight + groundBelts 同一个先后
+ * （preLegFloor、preLegSorterFloor 共用；拆出来以前 preLegFloor 直接写 areaLb * w + (seg + port + stub) + pen，从左到右加，和 preLegBase(c) + pen 逐位一样）
+ */
+function preLegBase(c) {
+  const { opt, segments, ports, legs, height, xR } = c;
   // 面积下限：少了高架格子那一项（最终 maxX 只会更大）
   let maxX = xR - 1;
   for (let i = 0; i < segments.length; i++) maxX = Math.max(maxX, segments[i].b);
@@ -221,10 +233,71 @@ export function preLegFloor(c) {
   for (let i = 0; i < ports.length; i++) if (!ports[i].direct) portCells++;
   let stubCells = 0;
   for (let i = 0; i < legs.length; i++) stubCells += legs[i].stub?.length ?? 0;
-  // 已经记下的惩罚（最终 penalty 的前缀子集）
+  return areaLb * opt.areaWeight + (segCells + portCells + stubCells);
+}
+
+/** 排分拣器（scoreLayout 和 route.js 的 layout() 提前排时共用，参数一模一样） */
+export function sorterPlanOf(c) {
+  const { graph, rows, pos, rowCy, rowBelow, rowAbove, channels, segments, sides, opt } = c;
+  return assignSorters(graph, { rows, pos, rowCy, rowBelow, rowAbove, channels, segments }, sides, { sorter: opt.sorter, headroom: opt.headroom, fourthTrack: !!opt.fourthTrack, wideTracks: !!opt.wideTracks, cache: opt.sorterCache !== false });
+}
+
+// 退火提前拒绝，第四处（route.js 的 earlySorters）：分拣器挪到高架之前排，用它的惩罚和长度代价把 preLegFloor 补紧，再问一次。
+// 背景（2026/10/24 影子评估）：慢线上高架占 route 的 40%~57%，preLegFloor 只拦下注定被拒的 1%~11%，九成要跑完高架、到下面
+// scoreLayout 的第一处（分拣器之前）才被拒；差的主要就是分拣器那一步的惩罚。加上它能多拦没拦住的 45%~70%（master）、64%~89%（排版内核）。
+// 能挪的根据：分拣器只读 rows、pos、rowCy、rowBelow、rowAbove、channels、segments、sides（sorterPlanOf），placePorts 之后都定了；
+// elevation（liftLegs）只写各 leg 的 cells/shadow/level/broken/road、c.roads 和 level/route 惩罚，不碰这些（segments 的
+// a/b/ch/itemId/id/taps/track/split/dir/fed、channels 的 c/n、pos 里的 g/gid/centers、sides 里的表都只读），
+// 所以提前排出来和 scoreLayout 里排的逐字一样，scoreLayout 直接用这一份（c.sorterPlan）。
+//
+// 为什么这个下限不超过最终代价（论证照 preLegFloor）：
+//   最终代价按 (面积+外沿)×w + groundBelts + airBelts + penalty + sorterLenCost + levelCost + shape.cost + holes项 + taste.cost 从左到右加；
+//   这里是 面积下限×w + groundBelts + pen + sorterLenCost，同样从左到右加：
+//   - 面积下限×w、groundBelts：和 preLegFloor 一样（preLegBase），前者 ≤ 最终、后者相等。
+//   - pen：最终的惩罚数组按记下的先后是 高架前已记的 → 高架记的（level、route）→ slots → clash → shortfall → tracks → slow
+//     → spray → late（belt/width/height/aspect/long/fill）→ power。这里按 高架前已记的 → slots → clash → shortfall → tracks → slow
+//     逐条加，是它的一个子序列（相对先后不变，只少了中间几段）；每条的数和 scoreLayout 记的同一个式子、同样的输入（slots 照
+//     scoreLayout 开头的算法，其余几项来自同一份分拣器结果），逐位相同。一串非负数的部分和里任意位置插进非负项，后面每个部分和
+//     都只增不减（fl(s+e) ≥ s，fl 单调），所以 pen ≤ 最终 penalty。
+//   - sorterLenCost：同一份 sorters、同一个式子，相等。
+//   - 少掉的 airBelts、levelCost、shape.cost、holes 项、taste.cost 在守卫成立时都 ≥ 0，按 0。
+//   浮点加法、乘法对非负操作数单调，逐项套下来这个下限 ≤ 最终代价，和 preLegFloor 一样不会把本会算完的候选误拒。
+//   同样的道理，它也不超过 scoreLayout 里供电之前那一问的下限（那一问的各项按同样的先后都在，只多了非负项；分拣器之前那一问
+//   没有分拣器的惩罚，不一定比它大）：开着供电或站空地、有那一问时，这一问能拒的，算下去到那一问也一定被拒。
+//   不往 c.penalties 里记任何东西：最终惩罚数组的内容和先后和原来一样。
+// 守卫：调用方只在 preLegFloor 不是 null（权重、opt.penalty 每一项、已记的惩罚都 ≥ 0）时才来，这里再看一遍新用到的几项；不成立返回 null
+export function preLegSorterFloor(c, plan) {
+  const { opt, P, penalties, pos, sides } = c;
+  if (!(P.slots >= 0 && P.clash >= 0 && P.shortfall >= 0 && P.tracks >= 0 && P.slow >= 0 && opt.sorterLenWeight >= 0)) return null;
+  // 高架前已经记下的惩罚
   let pen = 0;
   for (let i = 0; i < penalties.length; i++) pen += penalties[i].amount;
-  return areaLb * opt.areaWeight + (segCells + portCells + stubCells) + pen;
+  // slots：和 scoreLayout 开头同一个算法、同一个先后（按块、先下侧后上侧）
+  sides.forEach((sd, bid) => {
+    const g = pos.get(bid).g;
+    const nb = sd.bottom.size;
+    const cb = sideCap(g, 'bottom');
+    if (nb > cb) pen += P.slots * (nb - cb);
+    const nt = sd.top.size;
+    const ct = sideCap(g, 'top');
+    if (nt > ct) pen += P.slots * (nt - ct);
+  });
+  // 分拣器的 clash → shortfall → tracks → slow，和 scoreLayout 记的先后一样
+  if (plan.clashes) pen += P.clash * plan.clashes;
+  const { starved, tooLong, slow, sorters } = plan;
+  for (let i = 0; i < starved.length; i++) pen += P.shortfall;
+  for (let i = 0; i < tooLong.length; i++) pen += P.tracks;
+  for (let i = 0; i < slow.length; i++) pen += P.slow;
+  // 分拣器长度代价：和 scoreLayout 的 sorterLengths[2]、sorterLengths[3] 一样按 === 数
+  let n2 = 0;
+  let n3 = 0;
+  for (let i = 0; i < sorters.length; i++) {
+    const len = sorters[i].length;
+    if (len === 2) n2++;
+    else if (len === 3) n3++;
+  }
+  const sorterLenCost = (n2 + 2 * n3) * opt.sorterLenWeight;
+  return preLegBase(c) + pen + sorterLenCost;
 }
 
 // 退火里每一步都要打一次分：下面的循环都按下标走（不用 for…of、不解构、不拼临时数组），
@@ -476,7 +549,8 @@ export function scoreLayout(c) {
     const floor = area * opt.areaWeight + groundBelts + airBelts + pen + levelCost + shape.cost + taste.cost;
     if (early(floor)) return { rejected: true, cost: floor };
   }
-  const sorterPlan = assignSorters(graph, { rows, pos, rowCy, rowBelow, rowAbove, channels, segments }, sides, { sorter: opt.sorter, headroom: opt.headroom, fourthTrack: !!opt.fourthTrack, wideTracks: !!opt.wideTracks });
+  // route.js 的 layout() 在高架之前已经排过（earlySorters，见 preLegSorterFloor）就直接用那一份，排出来逐字一样
+  const sorterPlan = c.sorterPlan !== undefined ? c.sorterPlan : sorterPlanOf(c);
   if (sorterPlan.clashes) addPenalty('clash', P.clash * sorterPlan.clashes, `${sorterPlan.clashes} 处上下两侧分拣器在同一列`);
   const { starved, tooLong, slow, sorters } = sorterPlan;
   for (let i = 0; i < starved.length; i++) {

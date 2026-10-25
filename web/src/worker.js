@@ -1,7 +1,8 @@
 // 网页后台线程：计算 → 规划 → 出蓝图 → 独立检查。和命令行用的是同一套代码。
 import { blueprintText, blueprintSize, spaceStats } from '../../src/metrics/space.js';
 import { calculate } from '../../src/calc/calculator.js';
-import { planLine, planLineAsync, finishOne, finishContext } from '../../src/plan/index.js';
+import { planLine, planLineAsync, planSteps, finishOne, finishContext } from '../../src/plan/index.js';
+import { SORTER_SPEED } from '../../src/plan/sorters.js';
 import { buildGraph } from '../../src/plan/graph.js';
 import { splitLine, planModule } from '../../src/plan/modules.js';
 import { stitchBlueprints } from '../../src/emit/stitch.js';
@@ -352,29 +353,157 @@ async function poolReady() {
   return p.ok ? p : null;
 }
 
-/**
- * 开搜前的预计用时（秒），给进度条：每段（一遍搜索 + 后处理）按实测拟合的乘幂模型
- *   log 秒数 = 常数 + b·log 台数 + c·log 配方组数 + 物流站的偏移（放进空地 / 左侧站列）+ 供电的偏移（塔 / 配电站），
- * 搜索和后处理各一套系数。数据：2026/10/07 在 Apple M4 Pro 上 12 线程按「快」档实跑 47 条线（5~576 台、2~36 组）× 6 种初始条件
- * （tools/time-measure.js），拟合和统计图见 tools/time-fit.js、docs/timing/。2026/10/07 夜 v2.0 提速后重量重拟：整条线留出的留一法验证
- * 每段总时间误差中位数 18%、80% 分位 37%（Windows 15%、28%）；只看台数是 36%、71%（台数多组数少的线会估高，组数多的估低），
- * 用户 2026/10/07 猜「和有多少群有关」是对的。
- * 拟合按每个线程一轮 1500 步量（2026/10/07 的快档）；各档按步数 ÷ 1500、每线程轮数等比放大，有时间上限的档到点封顶（快档现在 3000 步、20 秒）。
- * 跑约一秒后页面改用实测速度（previewer 的 liveEst），这里只管开头和别的机器上的初值（Windows i9-14900HX 16 线程的系数也在 docs/timing/fits.json）。
- */
-// [常数, log 台数, log 组数, 放进空地, 左侧站列, 电力感应塔, 卫星配电站]
-const TIME_FIT = {
-  search: [-3.9901, 0.3211, 0.9172, 0.1342, 0.7914, -0.1539, -0.1512],
-  finish: [-10.5757, 0.9436, 0.9816, 1.5398, 0.4525, 0.9804, 0.7883],
+// ---------- 测速 ----------
+// 页面打开、闲下来后测一次这台机器多快（页面发 { type: 'bench' }，每次打开页面一次，页面上不显示）：
+// 每个帮手线程同时跑同一段固定的搜索（粒子容器 60/分、精炼油外部供应、页面默认设置、快档第一段的第 0 轮，只跑 BENCH_STEPS 步、不设时间上限），
+// 在帮手线程里计时、取中位数；开搜前的预计（estimateSeconds）按它和参照机同一段测速的比折算。只计时，不碰任何规划结果
+const BENCH_STEPS = 1000;
+const BENCH_TARGET = 1206; // 粒子容器
+let bench = null; // { ms, threads }：测速的中位毫秒、几个线程同时跑；没测或测失败为 null（按参照机估）
+let benchTask = null; // 那份固定的搜索活，只建一次
+let benchRunning = false;
+let planning = 0; // 正在跑的规划份数：有就不测速
+
+function makeBenchTask() {
+  if (benchTask) return benchTask;
+  const p = { assembler: '2303', smelter: '2302', chemical: '2309', chemwide: '0', lab: '2901', labstack: 15, belt: '3', sorter: '2013', power: 'tesla', station: '', spray: '0', aspect: '3', effort: 'quick', orient: 'h' };
+  const targets = [{ target: BENCH_TARGET, rate: 60 }];
+  const calc = calculate(lineInput(p, targets, splitFraction(targets, ['精炼油'], {})));
+  // 和 planOne 给第一段搜索的设置一样（快档，每段 2 轮）
+  const options = {
+    ...EFFORT.quick,
+    restarts: 2,
+    routeOptions: { belt: 3, sorter: 2013, maxAspect: 3, maxWidth: null, maxHeight: null },
+    station: null,
+    power: 'tesla',
+    burn: false,
+    supply: null,
+    storeLayers: 15,
+    orient: 'h',
+  };
+  delete options.untilTarget;
+  const req = planSteps(calc, options).next().value;
+  benchTask = { kind: 'bench', calc, options: { ...req.options, iterations: BENCH_STEPS, timeLimit: null } };
+  return benchTask;
+}
+
+/** 跑一遍测速的搜索（帮手线程里，或单线程回退时就地），返回毫秒 */
+function timeBench(task) {
+  const t0 = performance.now();
+  runTask({ kind: 'search', calc: task.calc, options: task.options, rounds: [0] });
+  return performance.now() - t0;
+}
+
+const median = (xs) => {
+  const s = [...xs].sort((a, b) => a - b);
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 };
-function estimateSeconds(calc, effort, p, threads, restarts) {
-  const machines = calc.units.reduce((n, u) => n + u.count, 0);
-  const st = p.station === 'ils-side' ? 'side' : p.station ? 'edge' : 'none';
-  const x = [1, Math.log(machines), Math.log(calc.units.length), st === 'edge' ? 1 : 0, st === 'side' ? 1 : 0, p.power === 'tesla' ? 1 : 0, p.power === 'substation' ? 1 : 0];
-  const ev = (w) => Math.exp(w.reduce((a, wi, i) => a + wi * x[i], 0));
-  let search = ev(TIME_FIT.search) * (effort.iterations / 1500) * Math.ceil(restarts / Math.max(1, threads));
+
+async function runBench() {
+  if (bench || benchRunning || planning) return; // 有规划在跑就不测
+  benchRunning = true;
+  try {
+    const task = makeBenchTask();
+    const helpers = await poolReady();
+    if (planning) return; // 等帮手线程回话的工夫开始了规划：不往它前面插活，这次不测
+    let ms;
+    let n;
+    if (helpers) {
+      n = helpers.size;
+      ms = median(await Promise.all(Array.from({ length: n }, () => helpers.run(task))));
+    } else {
+      n = 1;
+      ms = timeBench(task);
+    }
+    if (!(ms > 0)) return;
+    bench = { ms, threads: n };
+    self.postMessage({ type: 'bench', ms, threads: n });
+  } catch {
+    bench = null; // 测速出错：照旧按参照机估
+  } finally {
+    benchRunning = false;
+  }
+}
+
+/**
+ * 开搜前的预计用时（秒），页面「预计约 X 秒」就是它（跑约一秒后进度条改用 previewer 的实测 liveEst，预计那个数不改）。
+ * 2026/10/19 在 Mac mini（M6，8 线程）上按「打开页面先测速、再点生成」实跑快、标准、细三档，27 条线（300 座建筑以内）× 各种选项 618 份量出来：
+ *   每段（一遍搜索 + 后处理）秒数 = 乘幂模型（组数、台数、物品种类，再加选项的倍数），乘每线程要跑几波；
+ *   段数按开搜前的瓶颈规则（bottleneck：分拣器或带子运力不够、组数多）取每类的中位；
+ *   别的机器按页面打开时的测速（runBench）和参照机同一段测速的比折算。
+ * 整条线留一：每段误差中位 13%、80% 分位 23%；总用时中位 19%、80% 分位 45%（没瓶颈的 17%、36%；有瓶颈的多半要搜十几段，偶尔一段就完，会估长）。
+ */
+const TIME_MODEL = {
+  ref: { benchMs: 294, threads: 8 }, // 参照机（Mac mini M6，8 线程）上同一段测速的中位毫秒
+  seg: [-4.209, 0.318, 0.454, 0.471], // log 每段秒数 = c0 + a·log 组数 + b·log 台数 + d·log 物品种类（参照机 8 线程、1 波）
+  opt: { edge: 0.312, side: 0.814, spray: 0.24, normal: -0.034, fine: 0.689, belt1: 0.077, sorter2011: 0.062 }, // 选项的 log 倍数
+  segs: { quick: { ok: 1, flag: 14 }, normal: { ok: 1, flag: 18 }, fine: { ok: 1, flag: 19 } }, // 段数（没瓶颈 / 有瓶颈），每类的中位
+};
+const BELT_CAP = { 1: 360, 2: 720, 3: 1800 }; // 每条带每分钟运多少（不叠）
+const FINISH_SHARE = 0.02; // 每段里算给后处理的份额（previewer 的 liveEst 要加上它）
+
+/**
+ * 开搜前的瓶颈：某组每台的进料或出料超过一根 1 格分拣器速度的八成（快档 536 份里判没瓶颈的 425 份只有 2 份卡住，按 1 倍判漏 16 份）、某条带的流量超过运力 1.5 倍、或者组数很多。
+ * 有瓶颈的线往往一段搜不达标，要多搜好几段
+ */
+function bottleneck(graph, p) {
+  const speed = (SORTER_SPEED[Number(p.sorter)] ?? SORTER_SPEED[2013])[1];
+  const cap0 = BELT_CAP[Number(p.belt)] ?? BELT_CAP[3];
+  let sorterLoad = 0;
+  let beltLoad = 0;
+  for (const it of graph.items.values()) {
+    const cap = it.producer === 'RAW' && p.station ? cap0 * Number(p.pile || 1) : cap0; // 物流站出的原料能叠
+    const toGroup = new Map();
+    for (const c of it.consumers) {
+      beltLoad = Math.max(beltLoad, c.rate / cap);
+      if (graph.byId.has(c.to)) toGroup.set(c.to, (toGroup.get(c.to) ?? 0) + c.rate);
+    }
+    for (const [to, rate] of toGroup) sorterLoad = Math.max(sorterLoad, rate / graph.byId.get(to).count / speed);
+  }
+  for (const g of graph.groups) {
+    for (const o of g.outputs) {
+      sorterLoad = Math.max(sorterLoad, o.perFactory / speed);
+      beltLoad = Math.max(beltLoad, (o.perFactory * g.count) / cap0);
+    }
+  }
+  return sorterLoad > 0.8 || beltLoad > 1.5 || graph.groups.length >= 36;
+}
+
+/** 返回每段的搜索、后处理秒数和期望段数 segs；总数 =（search + finish）× segs */
+function estimateSeconds(calc, effort, p, threads) {
+  const name = Object.keys(EFFORT).find((k) => EFFORT[k] === effort) ?? 'normal';
+  let graph = null;
+  try {
+    graph = buildGraph(calc);
+  } catch {
+    graph = null; // 有还不支持的工厂：让规划那边照常报错、建议外部供应，这里不抢着抛
+  }
+  const groups = calc.units.length;
+  const machines = calc.units.reduce((n, u) => n + u.count, 0); // 研究站一叠算一台
+  const items = graph ? graph.items.size : new Set(calc.flows.map((f) => `${f.itemId}:${!!f.byproduct}`)).size;
+  const [c0, a, b, d] = TIME_MODEL.seg;
+  const o = TIME_MODEL.opt;
+  const station = p.station ? (p.station === 'ils-side' ? 'side' : 'edge') : null; // 'ils' 放进空地，'ils-side' 靠左侧站列
+  const opt =
+    (station === 'edge' ? o.edge : 0) +
+    (station === 'side' ? o.side : 0) +
+    (Number(p.spray || 0) > 0 ? o.spray : 0) +
+    (name === 'normal' ? o.normal : 0) +
+    (name === 'fine' ? o.fine : 0) +
+    (Number(p.belt) === 1 ? o.belt1 : 0) +
+    (Number(p.sorter) === 2011 ? o.sorter2011 : 0);
+  const devFactor = bench ? bench.ms / TIME_MODEL.ref.benchMs : 1;
+  const waves = Math.ceil(effort.restarts / Math.max(1, threads)); // 单线程（threads 1）时各轮一轮接一轮跑
+  const segSec = Math.exp(c0 + a * Math.log(groups) + b * Math.log(machines) + d * Math.log(items) + opt) * devFactor * waves;
+  let search = segSec * (1 - FINISH_SHARE);
+  let finish = segSec * FINISH_SHARE;
   if (effort.timeLimit) search = Math.min(search, effort.timeLimit / 1000);
-  return { search, finish: ev(TIME_FIT.finish) };
+  const segs = TIME_MODEL.segs[name][(graph ? bottleneck(graph, p) : groups >= 36) ? 'flag' : 'ok'];
+  // 总数不超过没达标接着搜的总时限
+  const maxSec = effort.untilTarget?.maxMs ? effort.untilTarget.maxMs / 1000 : Infinity;
+  const k = Math.min(1, maxSec / ((search + finish) * segs));
+  return { search: search * k, finish: finish * k, segs };
 }
 /**
  * 给帮手线程池包一层，数搜索的轮数和后处理的候选数，报给页面（type: 'progress'）。
@@ -384,9 +513,9 @@ function tracked(helpers, id, est, restarts, preview = null) {
   const n = { search: [0, 0], finish: [0, 0] };
   const post = () => {
     const phases = Math.max(1, Math.ceil(n.search[1] / Math.max(1, restarts)));
-    // 实测估时（previewer 跑约一秒后算出）比开搜前按配方组数估的公式准，有就用它
+    // 实测估时（previewer 跑约一秒后算出）比开搜前的公式准，有就用它；公式按期望段数估，实际搜的段数多了就按实际的
     const live = preview?.liveEst;
-    self.postMessage({ type: 'progress', id, est: live ?? est.search * phases + est.finish * phases, live: live != null, maxMs: preview?.maxMs ?? null, search: n.search, finish: n.finish });
+    self.postMessage({ type: 'progress', id, est: live ?? (est.search + est.finish) * Math.max(est.segs ?? 1, phases), live: live != null, maxMs: preview?.maxMs ?? null, search: n.search, finish: n.finish });
   };
   post();
   if (!helpers) return null;
@@ -514,7 +643,7 @@ function takeShown(id) {
 }
 const PREVIEW_EVERY = 25000; // 预览的图多久换一张
 
-/** 页面参数 → calculate() 的参数。chemwide：左栏「化工厂高纬度间距展开」，默认化工厂、量子化工厂按赤道的紧凑间距排（只在赤道附近放得下），开了才加宽（任何纬度都能放） */
+/** 页面参数 → calculate() 的参数。chemwide：左栏「化工厂、精炼厂高纬度间距展开」，默认化工厂、量子化工厂、原油精炼厂按赤道的紧凑间距排（只在赤道附近放得下），开了才加宽（任何纬度都能放） */
 function lineInput(p, targets, frac) {
   // 供货（不接物流站时）：原料、成品换成排进行里的储物仓（plan/storage.js 的 storeUnits），液体照旧在外面接储液罐
   const supply = !p.station && p.supply ? (p.dist === '1' ? p.supply.replace('box', 'dist') : p.supply) : null;
@@ -536,7 +665,7 @@ async function run(p, id = 0) {
   const restarts = pool ? Math.ceil(effort.restarts / pool.size) * pool.size : effort.restarts;
   // 开了「自动切分」时：物品种类太多、一块排不下的产线切成几块（src/plan/modules.js），每块单独排，一起交给线程池
   const mods = p.split === '1' ? splitLine(input) : null;
-  const est = estimateSeconds(calculate(input), effort, p, pool ? pool.size : 1, restarts);
+  const est = estimateSeconds(calculate(input), effort, p, pool ? pool.size : 1);
   activeId = id;
   curRun = mods ? null : { id, calc: calculate(input), p, effort, t0: Date.now(), threads: pool ? pool.size : 1 };
   // 实时预览 + 实测估时：切块时几块同时搜，轮号对不上块，先不开（估时也照旧用公式）
@@ -579,6 +708,9 @@ async function run(p, id = 0) {
   return planOne(calculate(input), p, helpers, effort, restarts, false, onRound, preview);
 }
 
+/** 再点一次「生成蓝图」时种子每次加多少：取个大质数，和规划器里各处的种子偏移（每轮 1013、没进展 7919、重排 4099、切块 1000）错开 */
+const AGAIN_SEED = 1000003;
+
 /** 排一块：搜索、出蓝图、检查，整理成页面要的结果。module：切出来的一块（物流站退回站列时换种子再排） */
 async function planOne(calc, p, helpers, effort, restarts, module = false, onRound = null, preview = null) {
   let plan;
@@ -604,6 +736,8 @@ async function planOne(calc, p, helpers, effort, restarts, module = false, onRou
       storeLayers: Number(p.labstack || 15), // 储物仓最多叠几层：按「研究站最多叠几层」（推断同一个「垂直建造」科技管）
       orient: p.orient || 'h',
       onRound,
+      // 同样的输入再点一次「生成蓝图」换一个种子（app.js 记这是第几次，用户 2026/10/24）；第一次用规划器默认的种子，和命令行、考卷一样
+      ...(p.again > 0 ? { seed: 7 + AGAIN_SEED * p.again } : {}),
     };
     if (preview) {
       options.snapshotMs = 500; // 实时预览：每半秒报一次步数（实测估时用），绘图模型最多一秒一份
@@ -635,7 +769,7 @@ async function planOne(calc, p, helpers, effort, restarts, module = false, onRou
     for (let k = 1; k <= 3 && plan.targetMet && !blueprintOk(plan) && stopAt - Date.now() > 5000; k++) {
       try {
         // 重排只能用总时限剩下的时间（不然每次重排又领一份完整的时限）
-        const again = await once({ ...options, seed: 7 + 4099 * k, untilTarget: { maxMs: Math.max(0, stopAt - Date.now()) } });
+        const again = await once({ ...options, seed: (options.seed ?? 7) + 4099 * k, untilTarget: { maxMs: Math.max(0, stopAt - Date.now()) } });
         if (again.targetMet) plan = { ...again, ms: (plan.ms ?? 0) + (again.ms ?? 0) };
       } catch {
         break;
@@ -692,10 +826,10 @@ function describePlan(plan, calc, p, effort, threadCount) {
     // 就地烧掉的副产物（plan/burn.js）：烧什么、每分钟多少、几台火力发电厂、满负荷发多少电；没烧成的原因
     burn: (L.burners || []).map((b) => ({ item: ITEMS.get(b.itemId).name, rate: b.rate, plants: b.plants.length, mw: b.mw, cols: b.cols, depth: b.depth })),
     burnNotes: L.burnNotes ?? [],
-    // 化工厂按赤道的紧凑间距排的（左栏默认；页面检查栏写一句：只在赤道附近放得下）
+    // 化工厂、精炼厂按赤道的紧凑间距排的（左栏默认；页面检查栏写一句：只在赤道附近放得下）
     latitude: (() => {
-      const g = plan.graph.groups.find((x) => hasHighLatitude(x.factoryId));
-      return g ? { factory: g.factory, high: g.latitude === 'high' } : null;
+      const gs = plan.graph.groups.filter((x) => hasHighLatitude(x.factoryId));
+      return gs.length ? { factory: [...new Set(gs.map((g) => g.factory))].join('、'), high: gs[0].latitude === 'high' } : null;
     })(),
     byproducts: calc.byproducts.map((b) => ({ name: b.item, rate: b.rate, of: ITEMS.get(b.of).name })),
     recipes: calc.units.filter((u) => recipeChoices(u.itemId)[0]?.id !== u.recipeId).map((u) => ({ item: u.item, recipe: u.recipe })),
@@ -847,7 +981,8 @@ self.onmessage = async (ev) => {
       };
     }
     try {
-      self.postMessage({ id: msg.id, result: msg.task.kind === 'ping' ? 'pong' : runTask(msg.task) });
+      // 测速（runBench）：在这个线程里计时，只回毫秒
+      self.postMessage({ id: msg.id, result: msg.task.kind === 'ping' ? 'pong' : msg.task.kind === 'bench' ? timeBench(msg.task) : runTask(msg.task) });
     } catch (e) {
       self.postMessage({ id: msg.id, error: e.message || String(e) });
     }
@@ -874,9 +1009,16 @@ self.onmessage = async (ev) => {
     if (msg.type === 'catalog') self.postMessage({ type: 'catalog', id: msg.id, list: catalog(msg.raw || []) });
     else if (msg.type === 'chain') self.postMessage({ type: 'chain', id: msg.id, data: chain(msg.params) });
     else if (msg.type === 'plan') {
-      const data = await run(msg.params, msg.id);
+      planning++;
+      let data;
+      try {
+        data = await run(msg.params, msg.id);
+      } finally {
+        planning--;
+      }
       if (!taken.has(msg.id)) self.postMessage({ type: 'result', id: msg.id, data });
     } else if (msg.type === 'take') takeShown(msg.id);
+    else if (msg.type === 'bench') await runBench(); // 不抛错：测不成就算了
   } catch (e) {
     if (!taken.has(msg.id)) self.postMessage({ type: 'result', id: msg.id, data: { error: e.message } });
   }

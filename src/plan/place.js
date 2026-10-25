@@ -605,7 +605,8 @@ function polish(P, best, archive, roundEnd) {
     let pick = null;
     let n = 0;
     const ref = () => (pick ?? cur).layout;
-    const fast = { ...routeOptions, rejectFloor: (floor) => ref().feasible && floor >= ref().cost };
+    // 这里被拒的候选不进存档（archive.remember），多拦一些就会改存档：不挪分拣器（route.js 的 earlySorters），被拒的和以前一样
+    const fast = { ...routeOptions, earlySorters: false, rejectFloor: (floor) => ref().feasible && floor >= ref().cost };
     for (const st of polishCandidates(graph, cur, cur.layout.hot, P.caps, P.usable, P.gapsOn, P.aspect)) {
       if (++n > POLISH_BUDGET || ((n & 15) === 0 && Date.now() > roundEnd)) break;
       const L = route(graph, st.rows, fast, st.pads, st.blocks, st.streets || []);

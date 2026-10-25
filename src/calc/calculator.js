@@ -30,8 +30,8 @@ const EPS = 1e-9;
  *   calc.spray 里没有 items、to）
  * @param {number[]} [o.sprayFor] 吃到增产的是哪些物品的配方（默认就是目标）：大产线切块时（plan/modules.js）各块的目标是中间产物，
  *   这里传整条线的最终产物，最终产物不在这一块里时这一块不喷
- * @param {'equator'|'high'} [o.latitude='high'] 化工厂、量子化工厂的间距：默认 'high' 加宽（任何纬度都能放，gamedata.js 的 GEOMETRY_HIGH_LATITUDE），
- *   'equator' 赤道压缩（化工厂隔 7、量子化工厂隔 8，只在赤道附近放得下；网页默认这套，左栏「化工厂高纬度间距展开」打开才加宽）。
+ * @param {'equator'|'high'} [o.latitude='high'] 化工厂、量子化工厂、原油精炼厂的间距：默认 'high' 加宽（任何纬度都能放，gamedata.js 的 GEOMETRY_HIGH_LATITUDE），
+ *   'equator' 赤道压缩（化工厂隔 7、量子化工厂隔 8、精炼厂隔 3，只在赤道附近放得下；网页默认这套，左栏「化工厂、精炼厂高纬度间距展开」打开才加宽）。
  *   只影响排布，不影响台数；原样放进返回值，buildGraph 按它取工厂几何
  * @param {string} [o.supply] 箱子供货（不接物流站时，plan/storage.js 的 SUPPLY）：原料、成品、副产物换成排进行里的储物仓
  *   （plan/storage.js 的 storeUnits，液体、一条带装不下的原料、要烧掉的副产物除外）；storeSorter 左栏的分拣器、storeLayers 最多叠几层、

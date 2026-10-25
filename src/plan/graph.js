@@ -58,7 +58,7 @@ export function buildGraph(calc) {
       slotPos: f.slotPos ?? null,
       collider: f.collider,
       colliderShift: f.colliderShift,
-      ...(f.latitude ? { latitude: f.latitude } : null), // 化工厂、量子化工厂按哪套间距排：high 加宽、equator 赤道压缩
+      ...(f.latitude ? { latitude: f.latitude } : null), // 化工厂、量子化工厂、精炼厂按哪套间距排：high 加宽、equator 赤道压缩
       levels,
       levelZ: f.levelZ ?? 0,
       // 一侧可用的分拣器列（中心 −1/0/+1）折算成和间距可比的数；对撞机每侧只有 2 列有槽位，就按 2 算

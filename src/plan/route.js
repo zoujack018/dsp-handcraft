@@ -20,7 +20,7 @@ import { routeItems } from './layout/belts.js';
 import { placeTracks } from './layout/tracks.js';
 import { placePorts } from './layout/ports.js';
 import { liftLegs, estimateLegs } from './layout/elevation.js';
-import { scoreLayout, preLegFloor } from './layout/score.js';
+import { scoreLayout, preLegFloor, preLegSorterFloor, sorterPlanOf } from './layout/score.js';
 import { powerHoles } from './layout/powerholes.js';
 
 export { STATION_SIZE, TRUNK, STATION_COLS, STATION_SLOTS } from './layout/shared.js';
@@ -67,6 +67,11 @@ export const DEFAULTS = {
   splitWeight: 8, // 一个配方组拆成的块数超过限宽所需：每多一块计这么多格
   farWeight: 4, // 同组的块之间隔了不相邻的行：每多隔一行计这么多格
   entryWeight: 40, // 同一种原料的入口数超过运力所需：每多一个入口计这么多格（也用来决定原料带串不串通道）
+  sameSide: true, // 同一种原料的几个入口都在同一边（用户 2026/10/24），layout/belts.js 左右各试算一遍取便宜的
+  // 同一种原料的几个入口挨在一起（用户 2026/10/24，要硬性的）：侧边总线，口都在右边布局外最外那一列、相邻几行，
+  // 每条带在外面各占一列竖着走到自己那段的行（layout/ports.js、layout/elevation.js）。只挪口、不挪竖走的列时
+  // 都沿边缘那一列走，同一列叠的段太多，高架层不够用（铁块 18000 那种十几条带的排不出）
+  groupPorts: true,
   longFrom: 24, // 高架段超过这么长（格）的部分
   longWeight: 1, // 每格再多计这么多（为一种子材料拉跨半张图的长带）
   levelWeight: 3, // 高架每多抬一层（第 2 层起）计入成本的格数：叠得高不好看，也难手搭
@@ -115,6 +120,11 @@ export const DEFAULTS = {
   sprayTo: null,
   areaWeight: 1, // 面积在代价里的权重；空间利用率不达标时 planLine 会加倍再搜一次
   quick: false, // 快速评估：不分配高架高度（只估长度）、不估供电外沿和物流站空地，给搜索的全局阶段用（约快一倍）
+  // 退火提前拒绝时把分拣器挪到高架之前排、补紧下限（layout() 里的 earlySorters）：'auto' 按线自适应，true 总挪、false 总不挪。
+  // 只改算的先后、不改结果，三种取值结果逐字一样；true / false 只给测试和量速度用
+  earlySorters: 'auto',
+  // 分拣器落位按通道记住算过的结果，同一个通道输入一模一样时直接复用（sorters.js 的 SC）。只省时间、不改结果，开关结果逐字一样；false 只给测试和量速度用
+  sorterCache: true,
   penalty: { tracks: 3000, slots: 3000, shortfall: 2000, belt: 2000, clash: 3000, slow: 400, long: 25, level: 3000, route: 5000, fill: 2, power: 300, width: 400, height: 400, spray: 1500 },
 };
 
@@ -165,6 +175,8 @@ function layout(graph, rows, options, opt, pads, blocks, streets, holePlan) {
     channels: undefined, height: undefined, rowCy: undefined, ports: undefined, stations: undefined,
     // layout/elevation.js
     roads: undefined,
+    // 下面的 earlySorters：高架之前排好的分拣器（scoreLayout 直接用）
+    sorterPlan: undefined,
   };
   placeBlocks(c);
   routeItems(c);
@@ -174,7 +186,76 @@ function layout(graph, rows, options, opt, pads, blocks, streets, holePlan) {
   // 下限怎么算、为什么不超过最终代价、为什么不改结果，见 score.js 的 preLegFloor。守卫不满足时返回 null，照常往下算。
   const floorPre = preLegFloor(c);
   if (floorPre !== null && opt.rejectFloor(floorPre)) return { rejected: true, cost: floorPre };
+  // 第四处（earlySorters）：分拣器挪到高架之前排，加上它的惩罚和长度代价再问一次（下限为什么不超过最终代价、为什么能挪，见 score.js 的
+  // preLegSorterFloor）。没拒就把这份留给 scoreLayout 用。挪不挪按线自适应（earlyArm），只改算的先后、不改拒不拒、不改结果
+  let st = null; // 自适应时这条线的统计（quick、没有 rejectFloor、强制开关时不记、不计时）
+  let early = false;
+  let t0 = 0;
+  if (floorPre !== null && !opt.quick && opt.earlySorters !== false) {
+    if (opt.earlySorters === true) early = true;
+    else {
+      st = earlyStatsOf(graph);
+      early = earlyArm(st);
+      t0 = performance.now();
+    }
+  }
+  if (early) {
+    const plan = sorterPlanOf(c);
+    c.sorterPlan = plan;
+    const floor = preLegSorterFloor(c, plan);
+    if (floor !== null && opt.rejectFloor(floor)) {
+      if (st !== null) noteArm(st, true, performance.now() - t0);
+      return { rejected: true, cost: floor };
+    }
+  }
   if (opt.quick) estimateLegs(c);
   else liftLegs(c);
-  return scoreLayout(c);
+  const res = scoreLayout(c);
+  if (st !== null) noteArm(st, early, performance.now() - t0);
+  return res;
+}
+
+// earlySorters 的自适应开关（opt.earlySorters 'auto'）：两臂赌博机，直接比两种做法的实测用时。
+// 每条线（graph）记两个滑动平均：每次评估从做决定那一刻到 layout() 返回的毫秒数——
+//   开（提前排）：提前排分拣器、问下限，没拦下时接着高架和 scoreLayout（用现成的分拣器）；被拦下提前返回也算一次；
+//   关：高架和 scoreLayout。
+// 前 EARLY_WARMUP 次两臂交替（开的先），之后走平均用时小的那臂，每 EARLY_EXPLORE 次强制走一次另一臂（退火降温时拒绝率会变，
+// 两臂的估计都要新鲜）。2026/10/24 上一版按 c × 高架时间 > (c + r) × 分拣器时间估，假定拦下的那些原本都不排分拣器，多算了成本、偏保守
+// （macmini：master 引力矩阵 90 塔 auto 比总开慢 5%~10%），换成直接量。少走的那臂约每 EARLY_EXPLORE 次才有一个样本，
+// 平均值跟得慢一些（约 EARLY_EXPLORE × EARLY_SPAN 次评估），强制走的那几次会慢慢纠正过来。只有 'auto' 计时（每次两回 performance.now()，约 50 ns）。
+// 为什么怎么定都逐字一致：开不开只决定高架之前多不多问一次 rejectFloor。问的下限不超过这一遍的最终代价，也不超过 scoreLayout 里
+// 供电之前那一问的下限（score.js 的 preLegSorterFloor），rejectFloor 对下限单调（下限越大越容易拒）：
+//   - 开着供电或站空地（有供电之前那一问）时，这一问能拒的，算下去到那一问也一定被拒：route() 拒不拒和不提前排一模一样，只是拒得早；
+//   - 没有那一问时，这一问拒了的，原来算完也注定被 runRound 的接受判断拒掉（最终代价不低于这个下限），两边都只抽掉一个随机数，
+//     随机数序列、状态、存档、best 都一样；
+//   - stateMemo 记下的下限回放时逐项问，单调性保证结论一样（记下这个下限、没记完整代价的，再被提出时照常重算，结果一样）；
+//   - 没拒时 scoreLayout 用的分拣器和自己排的逐字一样。
+// 计时（performance.now()，浏览器、worker 里都有；浏览器里精度粗，多次平均下来差不多）只影响快慢。
+// 定点精修（place.js 的 polish）不一样：那里被拒的候选不进存档，没有供电那一问时多拦会改存档，所以那里传 earlySorters: false
+const EARLY_WARMUP = 64; // 每条线前这么多次两臂交替（各 32 次）
+const EARLY_EXPLORE = 16; // 之后每这么多次强制走一次平均用时大的那臂
+const EARLY_SPAN = 32; // 滑动平均：每臂前 EARLY_SPAN 个样本按算术平均起步，之后每个新样本占 1/EARLY_SPAN
+const earlyStats = new WeakMap(); // graph → 统计；线程各自一份
+function earlyStatsOf(graph) {
+  let s = earlyStats.get(graph);
+  if (s === undefined) earlyStats.set(graph, (s = { n: 0, nOn: 0, tOn: 0, nOff: 0, tOff: 0 }));
+  return s;
+}
+/** 第 k 个样本（从 1 数）进滑动平均 */
+const ema = (m, x, k) => m + (x - m) / Math.min(k, EARLY_SPAN);
+/** 这一次走哪臂：true 提前排 */
+function earlyArm(s) {
+  const n = ++s.n;
+  if (n <= EARLY_WARMUP) return (n & 1) === 1;
+  const best = s.tOn < s.tOff;
+  return n % EARLY_EXPLORE === 0 ? !best : best;
+}
+/** 这一次评估走了哪臂、用了 ms 毫秒 */
+function noteArm(s, on, ms) {
+  if (on) s.tOn = ema(s.tOn, ms, ++s.nOn);
+  else s.tOff = ema(s.tOff, ms, ++s.nOff);
+}
+/** 只给工具和测试看：这条线自适应的统计（没有时 null）。n 做过几次决定；nOn、tOn 开的那臂走了几次、平均毫秒；nOff、tOff 关的那臂 */
+export function earlySortersStats(graph) {
+  return earlyStats.get(graph) ?? null;
 }

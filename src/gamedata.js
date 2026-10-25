@@ -260,11 +260,14 @@ const GEOMETRY_BY_ID = {
  * 高纬度版每台左右各多留 1 格，按本体加宽占格子（站、供电设施、带子也都离开这一格）：化工厂间距 8、块两头各空 1 列（中心 4、块宽 8n + 1），
  * 要格宽 ≥ 85%，85° 以内只有 64.8°、70.2°、75.6°、82.9° 这几条分界线南边不到 1° 的窄条不够；
  * 量子化工厂碰撞体按 8 算（实测 7.2~8 之间），间距 10、中心 5、块宽 10n + 1，要格宽 ≥ 80%，82.6° 以内都够。
+ * 原油精炼厂（用户 2026/10/24：不在赤道上有时放不下，并进同一个开关）：碰撞体宽 2.8、并排隔 3 只有 7% 余量，格宽不到 93% 就撞；
+ * 高纬度版同样每台左右各多留 1 格：间距 4、中心 2、块宽 4n + 1，左右挨制造台时要格宽 ≥ 75%，任何纬度都够。
  * 别的建筑（研究站隔 5、对撞机隔 9）余量也小，用户还没说撞，先不动。
  */
 const GEOMETRY_HIGH_LATITUDE = {
   2309: { pitch: 8, center: 4, trailing: 1, bodyWidth: 9 },
   2317: { pitch: 10, center: 5, trailing: 1, bodyWidth: 11 },
+  2308: { pitch: 4, center: 2, trailing: 1, bodyWidth: 5 },
 };
 const FACTORY_KIND = {
   2302: 'smelter', 2315: 'smelter', 2319: 'smelter',
@@ -277,9 +280,9 @@ const FACTORY_KIND = {
 };
 
 /**
- * latitude：'high' 时化工厂、量子化工厂用高纬度版的间距（GEOMETRY_HIGH_LATITUDE），'equator' 用赤道压缩的间距，别的工厂不变。
+ * latitude：'high' 时化工厂、量子化工厂、原油精炼厂用高纬度版的间距（GEOMETRY_HIGH_LATITUDE），'equator' 用赤道压缩的间距，别的工厂不变。
  * 这里默认 'equator' 是工厂本来的几何（独立检查、体积测试按碰撞体查，和间距无关）；规划默认用哪套看 calculate() 的 latitude。
- * 化工厂、量子化工厂的返回值带 latitude，说明这次按哪套间距排。
+ * 这三种的返回值带 latitude，说明这次按哪套间距排。
  */
 export function factory(id, latitude = 'equator') {
   const kind = FACTORY_KIND[id];
@@ -289,7 +292,7 @@ export function factory(id, latitude = 'equator') {
   const geo = kind === 'store' ? STORE_GEOMETRY[id] : { ...FACTORY_GEOMETRY[kind], ...GEOMETRY_BY_ID[id], ...high };
   return { id, name: it.name, speed: it.speed, kind, ...geo, bodyHeight: (geo.bodyBelow ?? 1) + (geo.bodyAbove ?? 1) + 1, ...(id in GEOMETRY_HIGH_LATITUDE ? { latitude: high ? 'high' : 'equator' } : null) };
 }
-/** 这台工厂有没有高纬度版（化工厂、量子化工厂） */
+/** 这台工厂有没有高纬度版（化工厂、量子化工厂、原油精炼厂） */
 export const hasHighLatitude = (id) => id in GEOMETRY_HIGH_LATITUDE;
 /**
  * 能从头顶跨过的工厂（用户 2026/10/19 实测）：熔炉、制造台（和储物箱）都是 3 层高，第 4~7 层的传送带能从它们头顶经过；

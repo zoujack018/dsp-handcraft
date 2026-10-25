@@ -68,6 +68,97 @@ const inside = (f, x, y, P) => {
 };
 const name = (id) => ITEMS.get(id)?.name ?? String(id);
 
+/**
+ * 出入口接得出去（用户 2026/10/24：「边缘」供货时入口外面有时还有一层带子，上面再有高架就接不出去）。
+ * 从外面进料的入口：贴了物品标签、前面没有带子、站、罐接进来、也没有分拣器从仓里往这条带放料的那节；
+ * 往外送的出口：贴了标签、后面不接东西、也没有分拣器从这条带往仓里收、往火力发电厂里送（就地烧掉的副产物）的那节。
+ * 每个入口、出口至少有一个水平方向能在地面沿直线一路走出整张图：路上的格子没有地面带、建筑、分拣器、供电设施（头顶有高架不要紧）。
+ * 入口不算朝自己下游那一边、出口不算朝自己上游那一边；原地升降的口（下一节在头顶）四个方向都算。
+ * P：坐标取整（同 checkBlueprint）。返回接不出去的 [{ index, itemId, kind: 'in' | 'out' }]
+ */
+function unreachablePorts(B, P) {
+  const blocked = new Set();
+  const mark = (x, y) => blocked.add(`${x},${y}`);
+  const markBox = (cx, cy, w, h) => {
+    for (let x = Math.ceil(cx - w / 2); x <= Math.floor(cx + w / 2); x++) for (let y = Math.ceil(cy - h / 2); y <= Math.floor(cy + h / 2); y++) if (Math.abs(x - cx) < w / 2 - EPS && Math.abs(y - cy) < h / 2 - EPS) mark(x, y);
+  };
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const b of B) {
+    const p = P(b);
+    x0 = Math.min(x0, p.x), x1 = Math.max(x1, p.x), y0 = Math.min(y0, p.y), y1 = Math.max(y1, p.y);
+    if (isBelt(b.itemId)) {
+      if (p.z === 0) mark(p.x, p.y);
+    } else if (isSorter(b.itemId)) {
+      const [a, c] = b.localOffset;
+      const n = Math.max(1, Math.ceil(Math.hypot(c.x - a.x, c.y - a.y)));
+      for (let k = 0; k <= n; k++) mark(Math.round(a.x + ((c.x - a.x) * k) / n), Math.round(a.y + ((c.y - a.y) * k) / n));
+    } else if (BODY[b.itemId]) {
+      const f = box(b, P);
+      markBox(f.x, f.y, f.w, f.h);
+    } else if (isStation(b.itemId)) markBox(p.x, p.y, 2 * STATION_HALF, 2 * STATION_HALF);
+    else if (isStore(b.itemId)) {
+      const s = STORE_BODY[b.itemId];
+      markBox(p.x, p.y, yawOf(b) % 180 ? s.h : s.w, yawOf(b) % 180 ? s.w : s.h);
+    } else if (b.itemId === 2201 || b.itemId === 2212) for (const [x, y] of powerCells(b.itemId, p.x, p.y)) mark(x, y);
+    else if (b.itemId !== DISTRIBUTOR && p.z === 0) mark(p.x, p.y); // 喷涂机、集装机骑在带子上（那格已经算了）；别的建筑按它那一格算
+  }
+  const belts = B.filter((b) => isBelt(b.itemId));
+  const into = new Map(); // 带子 → 接进它的上一节
+  for (const b of belts) if (b.outputObjIdx >= 0 && isBelt(B[b.outputObjIdx]?.itemId)) into.set(b.outputObjIdx, b);
+  // 仓经分拣器往带上放料（箱子供货的原料）、从带上收进仓（成品）或送进火力发电厂（就地烧掉）：这条带的头尾不是对外的口
+  const boxFed = new Set();
+  const boxTaken = new Set();
+  for (const s of B) {
+    if (!isSorter(s.itemId)) continue;
+    if (isStore(B[s.inputObjIdx]?.itemId) && isBelt(B[s.outputObjIdx]?.itemId)) boxFed.add(s.outputObjIdx);
+    if (isBelt(B[s.inputObjIdx]?.itemId) && (isStore(B[s.outputObjIdx]?.itemId) || B[s.outputObjIdx]?.itemId === THERMAL_PLANT)) boxTaken.add(s.inputObjIdx);
+  }
+  const chain = (b, step) => {
+    const out = [];
+    for (let cur = b, n = 0; cur && isBelt(cur.itemId) && n < 100000; n++) {
+      out.push(cur.index);
+      cur = step(cur);
+    }
+    return out;
+  };
+  const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  const out = [];
+  const rays = [];
+  const entries = new Map(); // 原料 → 它的各个入口 { x, y, left 在左半边 }
+  for (const b of belts) {
+    if (!b.parameters?.iconId || P(b).z !== 0) continue;
+    const isIn = b.inputObjIdx === -1 && !into.has(b.index) && !chain(b, (c) => (c.outputObjIdx >= 0 ? B[c.outputObjIdx] : null)).some((i) => boxFed.has(i));
+    const isOut = !isIn && b.outputObjIdx === -1 && !chain(b, (c) => into.get(c.index)).some((i) => boxTaken.has(i));
+    if (!isIn && !isOut) continue;
+    const own = isIn ? (b.outputObjIdx >= 0 ? B[b.outputObjIdx] : null) : into.get(b.index);
+    const ox = own ? P(own).x - P(b).x : 0;
+    const oy = own ? P(own).y - P(b).y : 0;
+    const free = DIRS.filter(([dx, dy]) => {
+      if (dx === ox && dy === oy) return false; // 自己那条带的方向
+      for (let x = P(b).x + dx, y = P(b).y + dy; x >= x0 && x <= x1 && y >= y0 && y <= y1; x += dx, y += dy) if (blocked.has(`${x},${y}`)) return false;
+      return true;
+    });
+    if (!free.length) out.push({ index: b.index, itemId: b.parameters.iconId, kind: isIn ? 'in' : 'out' });
+    rays.push({ x: P(b).x, y: P(b).y, free }); // 每个口能走出去的方向（拼接时别让别的块挡住，见 portRays）
+    if (isIn) (entries.get(b.parameters.iconId) ?? entries.set(b.parameters.iconId, []).get(b.parameters.iconId)).push({ x: P(b).x, y: P(b).y, left: P(b).x - x0 <= x1 - P(b).x });
+  }
+  out.entries = entries;
+  out.rays = rays;
+  return out;
+}
+const cellOf = (b) => {
+  const o = b.localOffset[0];
+  return { x: Math.round(o.x), y: Math.round(o.y), z: Math.round(o.z) };
+};
+/** 只查出入口接不接得出去（考卷外壳拿它量任何一份代码出的蓝图，见 unreachablePorts） */
+export function blockedPorts(str) {
+  return [...unreachablePorts(fromStr(str.trim()).buildings, cellOf)]; // 只要接不出去的口（不带入口表）
+}
+/** 每个对外的口（同 unreachablePorts）在这张图里往哪几个方向能沿地面直线走出去：[{ x, y, free: [[dx, dy], …] }]（emit/stitch.js 拼接时用） */
+export function portRays(str) {
+  return unreachablePorts(fromStr(str.trim()).buildings, cellOf).rays;
+}
+
 export function checkBlueprint(str) {
   const bp = fromStr(str.trim());
   const B = bp.buildings;
@@ -284,6 +375,18 @@ export function checkBlueprint(str) {
         else if (Math.abs(t.localOffset[0].x + off[0] - b.localOffset[0].x) > 0.05 || Math.abs(t.localOffset[0].y + off[1] - b.localOffset[0].y) > 0.05) err(`传送带 ${b.index} 接在储液罐 ${t.index} 的 ${slot} 号口，但位置不在口上`);
       }
     }
+  }
+
+  // 3d. 出入口接得出去：每个对外的入口、出口至少一个方向能在地面沿直线走出整张图（见 unreachablePorts）
+  const ports = unreachablePorts(B, P);
+  for (const q of ports) err(`${q.kind === 'in' ? '入口' : '出口'}传送带 ${q.index}（${name(q.itemId)}）往外接不出去：四个方向沿地面走出图外都被挡住`);
+  // 3e. 同一种原料的几个入口在一处（用户 2026/10/24：同一边，相邻两个口中间空不超过 3 行），不在一处的记提醒
+  for (const [item, es] of ports.entries) {
+    if (es.length < 2) continue;
+    const ys = es.map((e) => e.y).sort((a, b) => a - b);
+    const gap = Math.max(...ys.slice(1).map((y, i) => y - ys[i] - 1));
+    if (es.some((e) => e.left) && es.some((e) => !e.left)) warnings.push(`原料「${name(item)}」的入口分在左右两边`);
+    else if (gap > 3) warnings.push(`原料「${name(item)}」的入口没挨在一起：相邻两个口中间空了 ${gap} 行`);
   }
 
   // 4. 分拣器几何：直线、长度 1~3、端点落在所连对象上、槽位与位置一致
@@ -607,10 +710,8 @@ export function checkBlueprint(str) {
     for (const st of stations) if (!covered(P(st))) err(`物流站 ${st.index} 不在供电范围内`);
     for (const d of [...pilers, ...coaters]) if (!covered(P(d))) err(`${d.itemId === PILER ? '自动集装机' : '喷涂机'} ${d.index} 不在供电范围内`);
     for (const d of distributors) if (!covered(P(d))) err(`物流配送器 ${d.index} 不在供电范围内`); // 推断：给配送运输机充电要电（参数里有最大充能功率）
-    for (const s of sorters) {
-      const [p0, p1] = s.localOffset;
-      if (!covered({ x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 })) err(`分拣器 ${s.index} 不在供电范围内`);
-    }
+    // 分拣器按取料端判（第一个坐标；游戏的用电插头在建筑位置上，分拣器的位置是取料端，docs/game-rules.md 第 33 条）
+    for (const s of sorters) if (!covered(s.localOffset[0])) err(`分拣器 ${s.index} 取料那头不在供电范围内`);
     const seen = new Set([0]);
     const st = [0];
     while (st.length) {

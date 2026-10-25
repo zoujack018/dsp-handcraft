@@ -15,6 +15,7 @@ import { chainTiles } from '../emit/blueprint.js';
 import { translateLayout } from './coordinates.js';
 import { obstacles, obstacleGrid, pathfind, dirIndex, STATION_PORTS, CUT } from './stations.js';
 import { sprayGapCells } from './layout/elevation.js';
+import { portRays } from './layout/shared.js';
 import { SPRAY_LEVELS, ITEMS, realItem, baseItem } from '../gamedata.js';
 import { storeSites } from './storage.js';
 
@@ -293,7 +294,8 @@ export function addAddons(L, { spray = 0, sprayItems = null, sprayTo = null, pil
     //    （物流站空口，或边缘的一个入口）出来，依次横穿就近的喷涂机背后那格。障碍是工厂、物流站、已有的带子
     //    （各层）、分拣器（地面）、已开的增产剂带；集装机和选定的喷涂机头顶两层让开，往外接的入口那几节地面也让开。
     //    整张蓝图存增产剂仍然只占一个物流站格：先用已经存了增产剂的站的空口，没有了才在有空格的别的站再开一格。
-    const O = { ...O0, belts: new Set(O0.belts) };
+    // 边缘出入口往外那一行的地面也让开（layout/shared.js 的 portRays）：增产剂带可以从头顶横穿，不在地面挡住别的口
+    const O = { ...O0, belts: new Set(O0.belts), ground: new Set([...O0.ground, ...portRays(L).map(([x, y]) => key(x, y))]) };
     for (const w of wants) for (const o of w.options) for (const c of o.pre?.cells ?? []) O.belts.add(cell(...c));
     for (const p of L.pilers) for (const z of [1, 2]) O.belts.add(cell(p.x, p.y, z));
     // 障碍的格子版（寻路直接查数组，不再每格拼字符串查集合）：带子集合每增删一格，网格的 belts 层跟着改（put / drop）

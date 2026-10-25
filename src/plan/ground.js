@@ -3,6 +3,7 @@ import { chainTiles } from '../emit/blueprint.js';
 import { sprayGuards } from './layout/elevation.js';
 import { RAMP_MAX_DZ, OVERPASS_Z, OVERPASS_ZMAX } from '../gamedata.js';
 import { DEFAULTS } from './route.js';
+import { portRays } from './layout/shared.js';
 
 const key = (x, y, z = 0) => `${x},${y},${z}`;
 /** 半路落地时，每多造 1 节带至少要换来这么多格落到地面 */
@@ -188,6 +189,8 @@ export function groundRoutes(L, opts = null) {
     const t = chainTiles(L, ch);
     for (const p of [...t.main, ...t.extra.flat()]) occupied.add(key(...p));
   }
+  // 边缘出入口往外那一行的地面留空（layout/shared.js 的 portRays）：落地的带子不压上去，外面的线能沿地面直接接进来
+  for (const [x, y] of portRays(L)) occupied.add(key(x, y, 0));
   // 喷涂机空当的保护区（喷增产剂时才有）：落地的带子也不许压到候选格头顶两层、取料格邻格第 1 层
   const g = sprayGuards(L.segments, L.legs);
   for (const [x, y] of g.guard2) for (const z of [1, 2]) occupied.add(key(x, y, z));
@@ -197,6 +200,7 @@ export function groundRoutes(L, opts = null) {
   for (const l of L.legs) {
     if (!l.cells.length) continue;
     if (l.spray) continue; // 喷涂机骑在这截高架上（layout/belts.js 的 legOut）：窗口那几格要在同一层直走，这段不落地
+    if (l.bus != null) continue; // 侧边总线（layout/ports.js）整条留在高架上，几条并排走得整齐
     const ch = L.chains.find((c) => c.parts.some((p) => p.leg === l.id));
     if (!ch) continue;
     const main = chainTiles(L, ch).main;

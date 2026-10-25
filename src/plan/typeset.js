@@ -342,7 +342,10 @@ function dpCache(I, W, bays, gaps, seq, prev) {
   return P0 > 0 ? { cost: dp.cost, prev: dp.prev, P0 } : null;
 }
 
-/** 排版的准备：队里各单元（us，台数是单元的）、几何（gs，组的）、一块最多几台（cap）、开没开缝（gap）、各单元从第几台起（start）、每台属于第几个单元（grp） */
+/**
+ * 排版的准备：队里各单元（us，台数是单元的）、几何（gs，组的）、一块最多几台（cap）、开没开缝（gap）、各单元从第几台起（start）、每台属于第几个单元（grp）；
+ * 断行扫描用的按单元下标的几何（pitch、trail、chunk）、各单元止于第几台（stop）和能不能倒数计数（steady），见 scanRow
+ */
 function seqInfo(graph, seq, caps, gaps) {
   // 队里是分身单元（unitsOf）：us[k] 的台数是单元的，几何（gs[k]）是组的
   const units = unitsOf(graph, caps);
@@ -351,6 +354,21 @@ function seqInfo(graph, seq, caps, gaps) {
   // 一块最多几台：运力（caps）和供电缝（gaps 里的组每 G 台一块，块之间留 1 列）取小的
   const gap = gs.map((g) => (gaps?.includes(g.id) ? gapChunk(g) > 0 : false));
   const cap = gs.map((g, k) => Math.min(caps?.get(g.id) ?? Infinity, gap[k] ? gapChunk(g) : Infinity));
+  // 断行扫描每台都要读的几何先按单元下标抄成数组（值就是原来每台现算的那几个式子，不取整），扫描里不再读 gs[k].pitch 这些属性。
+  // chunk：行内另起一块时加的列数（trailing + 开缝的 1 列）。用 new Array 逐个填、不用 map：用 map 时断行的循环反复因 wrong map
+  // 去优化（实测几百次，推断是 map 造出的数组元素种类不固定），这样和改前一样只有十几次；换成 Float64Array 实测更慢
+  const n = gs.length;
+  const pitch = new Array(n);
+  const trail = new Array(n);
+  const chunk = new Array(n);
+  for (let k = 0; k < n; k++) {
+    pitch[k] = gs[k].pitch;
+    trail[k] = gs[k].trailing;
+    chunk[k] = gs[k].trailing + (gap[k] ? 1 : 0);
+  }
+  // 倒数计数（scanRow / breakRows 代替每台一次 run % cap[k]）只在 cap 都是正整数（安全整数内，减一是精确的）或 +Infinity 时和取模逐字一致：
+  // blockCaps 给的是 Math.max(1, Math.floor(·))、gapChunk 是 1~64、都不限时是 Infinity，正常就这两种；有别的值照旧取模
+  const steady = cap.every((c) => c === Infinity || (Number.isSafeInteger(c) && c >= 1));
   const start = [];
   let N = 0;
   for (const u of us) {
@@ -358,8 +376,12 @@ function seqInfo(graph, seq, caps, gaps) {
     N += u.count;
   }
   const grp = new Int32Array(N);
-  for (let k = 0; k < us.length; k++) grp.fill(k, start[k], start[k] + us[k].count);
-  return { us, gs, gap, cap, start, N, grp };
+  const stop = new Int32Array(us.length); // 第 k 个单元止于第几台（不含），breakRows 按单元扫
+  for (let k = 0; k < us.length; k++) {
+    grp.fill(k, start[k], start[k] + us[k].count);
+    stop[k] = start[k] + us[k].count;
+  }
+  return { us, gs, gap, cap, start, stop, N, grp, pitch, trail, chunk, steady };
 }
 
 /** 第 r 行的目标宽度：站位盖到的行每个站位少 BAY 列 */
@@ -372,21 +394,30 @@ const rowTarget = (W, bays, r) => {
 /**
  * 从第 p 台起铺一行（目标宽 Wt），逐台调 visit(q, slack)（这一行铺到第 q 台为止），宽度规则见 typeset 的说明：
  * 换组加 trailing、开缝的组和邻块之间加 1 列、超过一块的运力或缝距行内另起一块。一台都放不下时只报那一台。
- * breakRows 为省掉每台一次闭包把这段扫描内联了进去，两处的宽度算法必须逐行一致，改一处要同步改另一处；breakWindow 还在调这里
+ * breakRows 为省掉每台一次闭包把这段扫描内联了进去（按单元分了两层，见那里），两处的宽度算法必须一致，改一处要同步改另一处；breakWindow 还在调这里。
+ * 行内另起一块原来是 run % cap[k] === 0（run：这组在这一行已经排了几台，换组时归 0），每台一次取模。
+ * steady（cap 都是正整数或 +Infinity）时改成倒数计数 left：换组时置成 cap[k]，同组每台先减一，减到 0 就另起一块、
+ * 再置回 cap[k]。同组第 i 台（i ≥ 1，第 0 台走换组）减到 0 正好是 i = cap、2cap…，就是 i % cap === 0；cap = Infinity 时
+ * Infinity − 1 还是 Infinity，永远不到 0，原来 i % Infinity = i 也只在 i = 0 时为 0（那台走的是换组），所以两边都从不另起
  */
 function scanRow(I, p, end, Wt, visit) {
-  const { gs, gap, cap, grp } = I;
+  const { pitch, trail, chunk, gap, cap, grp, steady } = I;
   let width = 0;
   let last = -1;
-  let run = 0; // 这一行里当前这组已经排了几台
+  let run = 0; // 这一行里当前这组已经排了几台（取模那条路用）
+  let left = 0; // 倒数计数：当前这组再排几台就另起一块（steady 时用）
   for (let q = p + 1; q <= end; q++) {
     const k = grp[q - 1];
-    width += gs[k].pitch;
+    width += pitch[k];
     if (k !== last) {
-      width += gs[k].trailing + (last >= 0 && (gap[k] || gap[last]) ? 1 : 0); // 供电缝：开缝的组和邻块之间留 1 列
+      width += trail[k] + (last >= 0 && (gap[k] || gap[last]) ? 1 : 0); // 供电缝：开缝的组和邻块之间留 1 列
       last = k;
       run = 0;
-    } else if (run % cap[k] === 0) width += gs[k].trailing + (gap[k] ? 1 : 0); // 超过一块的运力或缝距：行内另起一块
+      left = cap[k];
+    } else if (steady ? --left === 0 : run % cap[k] === 0) {
+      width += chunk[k]; // 超过一块的运力或缝距：行内另起一块
+      left = cap[k];
+    }
     run++;
     if (width > Wt && q > p + 1) break;
     visit(q, Math.max(0, Wt - width));
@@ -400,10 +431,13 @@ function scanRow(I, p, end, Wt, visit) {
  * q > P0 重算。外层循环不从 p = 0 起，从 p_start 起：p < p_start 的那一行连 P0 都够不到，松弛不到 q > P0。
  * p_start = 最小的 p 使 width(p..P0) ≤ W——这里从 P0 往前累加 pitch（真宽度的下界，少算 trailing / 缝只会让 p_start 更小、
  * 多算几个 p，结果不变）一超过 W 就停。进入 q ≤ P0 的松弛重算出和缓存一样的值，严格小于不覆盖、prev 不变；进入 q > P0 的
- * 来自和原来同样的一批 p、同样的先后，所以 cost / prev 逐字一样，回溯出的 cuts 一样。scanRow 的扫描在这里内联（省掉每台一次闭包）
+ * 来自和原来同样的一批 p、同样的先后，所以 cost / prev 逐字一样，回溯出的 cuts 一样。scanRow 的扫描在这里内联（省掉每台一次闭包），
+ * 用的是倒数计数（见 scanRow）；cap 不是 steady 时照旧调 scanRow 走取模。内联里只把不变的量提出来：几何读 I 的数组、
+ * 同一单元的 pitch / cap 和止于第几台提到单元外、prev 要记的 p·S + r 提到行外、at = q·S + to 每台加 S（都是整数）；
+ * width 的累加先后、slack、c0 + slack² + split 的加法先后、严格小于（一样的不覆盖）和两处 break 都照原样，所以每个 cost[at] / prev[at] 逐字一样
  */
 function breakRows(I, W, bays, cache = null) {
-  const { N, gs, gap, cap, grp } = I;
+  const { N, pitch, trail, chunk, gap, cap, grp, stop, steady } = I;
   // 行号状态：0..nb−1 是第几行，nb 是第 nb 行及以后（都按 W）。没有站位时只有一个状态，和不分行号一模一样
   const nb = bays?.length ? Math.max(...bays.map((b) => b.r)) + 2 : 0;
   const S = nb + 1;
@@ -419,7 +453,7 @@ function breakRows(I, W, bays, cache = null) {
     let acc = 0;
     pStart = P0;
     for (let p = P0 - 1; p >= 0; p--) {
-      acc += gs[grp[p]].pitch;
+      acc += pitch[grp[p]];
       if (acc > W) break;
       pStart = p;
     }
@@ -431,28 +465,44 @@ function breakRows(I, W, bays, cache = null) {
       if (c0 === Infinity) continue;
       const to = Math.min(r + 1, nb);
       const Wt = Wr[r];
-      // 内联 scanRow（宽度规则逐行照抄，和 scanRow 必须一致；一台都放不下时只报那一台）
+      const from = p * S + r;
+      if (!steady) {
+        relaxScan(I, p, Wt, c0, split, cost, prev, S, to, from);
+        continue;
+      }
+      // 内联 scanRow（宽度规则和 scanRow 必须一致；一台都放不下时只报那一台），按单元分两层走：外层每个单元一次（换组：加 pitch、
+      // trailing + 缝，倒数计数置成 cap[k]），内层同单元的后面几台（加 pitch，倒数到 0 再加 chunk）。逐台的先后、每台往 width 加的数
+      // 和先后都和 scanRow 一样，只是单元内不再每台查 grp、比 k !== last；没有台的单元（stop[k] < q）跳过，不算换组（scanRow 里碰不到它）
       let width = 0;
       let last = -1;
-      let run = 0;
-      for (let q = p + 1; q <= N; q++) {
-        const k = grp[q - 1];
-        width += gs[k].pitch;
-        if (k !== last) {
-          width += gs[k].trailing + (last >= 0 && (gap[k] || gap[last]) ? 1 : 0);
-          last = k;
-          run = 0;
-        } else if (run % cap[k] === 0) width += gs[k].trailing + (gap[k] ? 1 : 0);
-        run++;
-        if (width > Wt && q > p + 1) break;
-        const slack = Math.max(0, Wt - width);
-        const c = c0 + slack * slack + split;
-        const at = q * S + to;
-        if (c < cost[at]) {
-          cost[at] = c;
-          prev[at] = p * S + r;
+      let at = p * S + to;
+      let q = p + 1; // 这一行铺到第 q 台为止（第 q − 1 台刚加上）
+      scan: for (let k = grp[p]; q <= N; k++) {
+        const e = stop[k];
+        if (e < q) continue;
+        const pk = pitch[k];
+        const ck = cap[k];
+        width += pk;
+        width += trail[k] + (last >= 0 && (gap[k] || gap[last]) ? 1 : 0);
+        last = k;
+        let left = ck;
+        for (;;) {
+          if (width > Wt && q > p + 1) break scan;
+          const slack = Math.max(0, Wt - width);
+          const c = c0 + slack * slack + split;
+          at += S; // = q·S + to
+          if (c < cost[at]) {
+            cost[at] = c;
+            prev[at] = from;
+          }
+          if (width > Wt) break scan;
+          if (++q > e) break;
+          width += pk;
+          if (--left === 0) {
+            width += chunk[k];
+            left = ck;
+          }
         }
-        if (width > Wt) break;
       }
     }
   }
@@ -463,6 +513,21 @@ function breakRows(I, W, bays, cache = null) {
   for (let at = end; at >= S; at = prev[at]) cuts.push([Math.floor(prev[at] / S), Math.floor(at / S)]);
   cuts.reverse();
   return { cuts, cost, prev, S };
+}
+
+/**
+ * breakRows 的兜底：cap 里有正整数和 +Infinity 以外的值（blockCaps / gapChunk 给不出，防万一）时，从第 p 台起的一行照旧用 scanRow
+ * 的取模扫，松弛和 breakRows 的内联一样。单独成函数：闭包写在 breakRows 里会把 cost、S 这些变量挪进上下文，内联的循环跟着变慢
+ */
+function relaxScan(I, p, Wt, c0, split, cost, prev, S, to, from) {
+  scanRow(I, p, I.N, Wt, (q, slack) => {
+    const c = c0 + slack * slack + split;
+    const at = q * S + to;
+    if (c < cost[at]) {
+      cost[at] = c;
+      prev[at] = from;
+    }
+  });
 }
 
 /**

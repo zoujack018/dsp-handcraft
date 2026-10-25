@@ -11,6 +11,7 @@ import { BYPRODUCT, ITEMS, realItem, burnPerMinute, THERMAL_BANK as T, THERMAL_M
 import { obstacles, pathfind, dirIndex, cropToContent } from './stations.js';
 import { translateLayout } from './coordinates.js';
 import { chainTiles } from '../emit/blueprint.js';
+import { portRays } from './layout/shared.js';
 
 const key = (x, y) => `${x},${y}`;
 const cell = (x, y, z) => `${x},${y},${z}`;
@@ -154,6 +155,8 @@ export function addBurners(source, { power = null, maxWidth = null, maxHeight = 
       bank.feedY += ty;
       const TW = bx[2] - bx[0] + 5, TH = bx[3] - bx[1] + 5;
       const O = obstacles(trial);
+      // 别的从边缘进出的口往外那一行的地面留空（layout/shared.js 的 portRays）：发电厂不压上去，接线只能从头顶过
+      for (const [x, y] of portRays(trial, (q) => q.leg === p0.leg)) O.ground.add(key(x, y));
       // 保险：这一块地（连入口格）上不能已经有东西
       let clash = O.solid.has(key(bank.gate[0], bank.gate[1])) || O.projection.has(key(bank.gate[0], bank.gate[1]));
       for (let x = bank.rect[0]; x <= bank.rect[2] && !clash; x++) for (let y = bank.rect[1]; y <= bank.rect[3]; y++) if (O.solid.has(key(x, y)) || O.ground.has(key(x, y)) || O.projection.has(key(x, y))) clash = true;

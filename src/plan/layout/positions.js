@@ -10,6 +10,19 @@ let busyRowBuf = new Uint8Array(0);
 let hardBitsBuf = new Int32Array(0);
 // 走空地费（opt.openFee）打开时才用：每一列按行累计「挨着或压着建筑」的行数（第 r 行之前有几行），(R + 1) × WB 格
 let nearAccBuf = new Int32Array(0);
+// 每列的竖直高架段（下面的 colLoad）也按线程复用：0..WB−1 的整数列各一个持久的数组 LOAD[x]，这一次记了几条在 loadN[x]，
+// loadGen[x] 不是这一次的代际就当这列还空着（不用清零；每次 placeBlocks 换一个代际）
+const LOAD = [];
+let loadN = new Int32Array(0);
+let loadGen = new Int32Array(0);
+let loadStamp = 0;
+// 拼对外数组用的共用数组（块的 centers、rowBelow 用 TMP，rowAbove 用 TMP2）：先写进前 n 项，再切一份刚好长度的出去
+// （原来逐个 push，多留出十几格；值和先后一样）
+const TMP = [];
+const TMP2 = [];
+
+/** v 是 [lo, hi) 里的整数（-0 也算 0） */
+const isInt = (v, lo, hi) => (v | 0) === v && v >= lo && v < hi;
 
 /** 能从头顶跨过的块：熔炉、制造台（用户 2026/10/19 实测 3 层高，第 4~7 层的带子能过；别的工厂没确认，按不能过） */
 const bridgeable = (g) => g.kind === 'smelter' || g.kind === 'assembler';
@@ -37,8 +50,9 @@ export function placeBlocks(c) {
       if (sx >= x && sx <= x + w0 - 1) x = sx + 1; // 块压在辅路上：整块挪到辅路右边
     }
     // 一台工厂中心在其占位内的偏移：熔炉 3 格占位取中间，制造台 4 格占位取第 3 格，化工厂 7 格取第 4 格，对撞机左边空 1 列取第 6 格
-    const centers = [];
-    for (let i = 0; i < b.n; i++) centers.push(x + i * g.pitch + g.center);
+    let nc = 0;
+    for (let i = 0; i < b.n; i++) TMP[nc++] = x + i * g.pitch + g.center;
+    const centers = TMP.slice(0, nc);
     const w = b.n * g.pitch + g.trailing;
     // 取放料的列：中心左右各 1 列（三个槽位）；储液罐（箱子供货）只有中间那一列
     const reach = g.store?.tank ? 0 : 1;
@@ -85,17 +99,17 @@ export function placeBlocks(c) {
   const stationX = (STATION_SIZE - 1) / 2; // 物流站中心列
   // 每行本体在中心下方、上方各占几行：化工厂上方多一行，同一行里混着制造台时，制造台上侧的分拣器要多伸 1 格
   // （和 Math.max(1, ...各块) 一样：逐个取大，有 NaN 时同样得 NaN）
-  const rowBelow = [];
-  const rowAbove = [];
   for (let r = 0; r < rows.length; r++) {
     const row = rows[r];
     let below = 1;
     let above = 1;
     for (let i = 0; i < row.length; i++) below = Math.max(below, pos.get(row[i]).g.bodyBelow);
     for (let i = 0; i < row.length; i++) above = Math.max(above, pos.get(row[i]).g.bodyAbove);
-    rowBelow.push(below);
-    rowAbove.push(above);
+    TMP[r] = below;
+    TMP2[r] = above;
   }
+  const rowBelow = TMP.slice(0, rows.length);
+  const rowAbove = TMP2.slice(0, rows.length);
   /** 块的分拣器从工厂落点到通道第一条轨道还要多伸几格 */
   const extraTop = (p) => rowAbove[p.row] - p.g.edgeAbove;
   const extraBottom = (p) => rowBelow[p.row] - p.g.edgeBelow;
@@ -107,13 +121,17 @@ export function placeBlocks(c) {
     if (n !== g.count) throw new Error(`${g.item} 的块合计 ${n} 台，应为 ${g.count} 台`);
   }
   /** 一种物品的生产者和消费者所在的块（每条惩罚都要问一次，块排好以后不变：每种物品只算一次，每次给一份副本） */
-  const bidsMemo = new Map();
+  // （表到第一次问才建，很多排法一条都不问；记下的那份按生产者、各消费者的先后逐个排开，和原来先拼 ID 再 filter、flatMap 一样）
+  let bidsMemo = null;
   const itemBids = (itemId) => {
-    let bids = bidsMemo.get(itemId);
+    let bids = (bidsMemo ??= new Map()).get(itemId);
     if (!bids) {
       const f = graph.items.get(itemId);
-      const gids = [f.producer, ...f.consumers.map((c) => c.to)].filter((g) => blocksOf.has(g));
-      bids = gids.flatMap((g) => blocksOf.get(g).map((p) => p.bid));
+      bids = [];
+      for (let j = -1; j < f.consumers.length; j++) {
+        const list = blocksOf.get(j < 0 ? f.producer : f.consumers[j].to);
+        if (list) for (let i = 0; i < list.length; i++) bids.push(list[i].bid);
+      }
       bidsMemo.set(itemId, bids);
     }
     return bids.slice();
@@ -238,22 +256,58 @@ export function placeBlocks(c) {
    */
   // 每列已经有哪些竖直高架段（按通道号的区间记）：同一列上区间相交的两段只能叠在不同层。
   // 选列时把「这列已经挤了几条」算进代价，车流就会分到外圈、主干走廊和内部的辅路上，而不是全叠在一列里
-  // 按列号下标的数组（列号都在 xL..xR+1 之间），每列存一串 [下端, 上端, 下端, 上端, …]
-  const colLoad = [];
-  const crowd = (x, c1, c2) => {
-    const lo = Math.min(c1, c2);
-    const hi = Math.max(c1, c2);
-    const list = colLoad[x];
-    if (!list) return 0;
+  // 每列存一串 [下端, 上端, 下端, 上端, …]（列号都在 xL..xR+1 之间）：原来是按列号下标的数组 colLoad，每列第一次记时新建一个数组再 push。
+  // 现在 0..WB−1 的整数列记在按线程复用的 LOAD[x] 里（前 2 × loadN[x] 项是这一次的，loadGen[x] 是这一次的代际才算有），
+  // 别的列号（WB 不是整数之类，几乎不会）照旧记在按列号下标的数组 farLoad 里（用到才建）。两边的列号不会撞上同一列：
+  // 数作下标时只有 -0 和 0 是同一格，isInt 也把 -0 当 0。crowd 数相交的条数、lonely 只看有没有，都和记下的先后无关
+  const LW = bitsOk ? WB : 0;
+  if (loadN.length < LW || loadStamp >= 1e9) {
+    const n = Math.max(LW, 64, Math.ceil(loadN.length * 1.5));
+    loadN = new Int32Array(n);
+    loadGen = new Int32Array(n);
+    loadStamp = 0;
+  }
+  const lst = ++loadStamp;
+  let farLoad = null;
+  /** 第 x 列已有的竖直段里和 [lo, hi] 相交的有几条（first：碰到一条就返回 1） */
+  const hits = (x, lo, hi, first) => {
+    let list;
+    let len;
+    if (isInt(x, 0, LW)) {
+      if (loadGen[x] !== lst) return 0;
+      list = LOAD[x];
+      len = 2 * loadN[x];
+    } else {
+      list = farLoad === null ? undefined : farLoad[x];
+      if (!list) return 0;
+      len = list.length;
+    }
     let n = 0;
-    for (let i = 0; i < list.length; i += 2) if (list[i] <= hi && lo <= list[i + 1]) n++;
+    for (let i = 0; i < len; i += 2) {
+      if (list[i] <= hi && lo <= list[i + 1]) {
+        if (first) return 1;
+        n++;
+      }
+    }
     return n;
   };
+  const crowd = (x, c1, c2) => hits(x, Math.min(c1, c2), Math.max(c1, c2), false);
   const addLoad = (x, c1, c2) => {
-    if (!colLoad[x]) colLoad[x] = [];
-    colLoad[x].push(Math.min(c1, c2), Math.max(c1, c2));
+    const lo = Math.min(c1, c2);
+    const hi = Math.max(c1, c2);
+    if (isInt(x, 0, LW)) {
+      const n = loadGen[x] === lst ? loadN[x] : 0;
+      loadGen[x] = lst;
+      loadN[x] = n + 1;
+      const list = (LOAD[x] ??= []);
+      list[2 * n] = lo;
+      list[2 * n + 1] = hi;
+    } else {
+      farLoad ??= [];
+      if (!farLoad[x]) farLoad[x] = [];
+      farLoad[x].push(lo, hi);
+    }
   };
-  const isInt = (v, lo, hi) => (v | 0) === v && v >= lo && v < hi;
   // 同样的参数在 colLoad 没变时结果一样：重复的调用由 layout/belts.js 的 column 按参数记住（这里原来也记一份，
   // 前面那份记住以后这里一次都没再碰上，去掉了）
   // crowd 不小于 0：crowdWeight 不为负时，不算拥挤已经不比当前最好的便宜的列不用再数（浮点加非负数不会变小，NaN 照常算）
@@ -267,12 +321,7 @@ export function placeBlocks(c) {
   const bundleReach = Number(opt.bundleReach);
   /** x 左右 bundleReach 列以内都没有和 [lo, hi] 相交的竖直段（要收开路费） */
   const lonely = (x, lo, hi) => {
-    for (let k = 1; k <= bundleReach; k++) {
-      for (let s = -1; s <= 1; s += 2) {
-        const list = colLoad[x + s * k];
-        if (list) for (let i = 0; i < list.length; i += 2) if (list[i] <= hi && lo <= list[i + 1]) return false;
-      }
-    }
+    for (let k = 1; k <= bundleReach; k++) for (let s = -1; s <= 1; s += 2) if (hits(x + s * k, lo, hi, true)) return false;
     return true;
   };
   /**
