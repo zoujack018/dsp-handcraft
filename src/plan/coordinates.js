@@ -12,7 +12,7 @@ export function translateLayout(L, dx, dy) {
     s.y += dy;
   }
   for (const l of L.legs) {
-    for (const k of ['edge', 'xv']) if (l[k] != null) l[k] += dx;
+    for (const k of ['edge', 'xv', 'bus']) if (l[k] != null) l[k] += dx; // bus：侧边总线竖走的那一列（layout/ports.js）
     if (l.py != null) l.py += dy;
     points(l.cells);
     points(l.stub);

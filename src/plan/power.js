@@ -92,17 +92,21 @@ export function occupancy(L, { rowGaps = false, power = null } = {}) {
   return { occ, targets };
 }
 
-/** occupancy 的主体：被占的格子记进 occ，需要供电的目标按顺序记进 T（powerBands 搜索时直接用，不生成目标对象） */
-function mark(L, rowGaps, power, occ, T) {
+/**
+ * occupancy 的主体：被占的格子记进 occ，需要供电的目标按顺序记进 T（powerBands 搜索时直接用，不生成目标对象）。
+ * ox：布局最左那一列（侧边总线排到左边时搜索里是负数，见 powerBands；别处 0），位图按它对齐：第 x 列记在位图的 x − ox + M 列
+ */
+function mark(L, rowGaps, power, occ, T, ox = 0) {
   const { bits, GW, GH, M } = occ;
+  const MX = M - ox;
   const add = (x, y) => {
-    const gx = x + M;
+    const gx = x + MX;
     const gy = y + M;
     if (gx >= 0 && gy >= 0 && gx < GW && gy < GH) bits[gy * GW + gx] = 1;
   };
   const cells = (cs) => {
     for (let i = 0; i < cs.length; i++) {
-      const gx = cs[i][0] + M;
+      const gx = cs[i][0] + MX;
       const gy = cs[i][1] + M;
       if (gx >= 0 && gy >= 0 && gx < GW && gy < GH) bits[gy * GW + gx] = 1;
     }
@@ -116,7 +120,7 @@ function mark(L, rowGaps, power, occ, T) {
     }
     if (gy < 0 || gy >= GH) return;
     const o = gy * GW;
-    for (let gx = Math.max(x0 + M, 0), b = Math.min(x1 + M, GW - 1); gx <= b; gx++) bits[o + gx] = 1;
+    for (let gx = Math.max(x0 + MX, 0), b = Math.min(x1 + MX, GW - 1); gx <= b; gx++) bits[o + gx] = 1;
   };
   for (const p of L.pos.values()) {
     const cy = L.rowCy[p.row];
@@ -269,13 +273,16 @@ export function powerBands(L, type, opt = {}) {
   const { cover } = powerReach(type, opt);
   const W = L.width;
   const H = L.height;
+  // 侧边总线排到左边（route.js 的 busSide 'auto'）时布局从第 ox 列（< 0）起、宽 W：下面的列号都从 ox 数起（位图、可放格的表），
+  // 目标照旧是布局坐标，查的时候减 ox。没有时 ox 是 0
+  const ox = L.x0 ?? 0;
   // 和 occupancy 一样的格子、一样顺序的目标，只是位图借缓冲、目标先不生成对象
   BUF.occ = grow(BUF.occ, (W + 48) * (H + 48));
   const occ = occGrid(W, H, BUF.occ);
   const T = BUF.T;
   T.n = 0;
   const { rowGaps = false } = opt;
-  mark(L, rowGaps, spec.itemId, occ, T);
+  mark(L, rowGaps, spec.itemId, occ, T, ox);
   const h = (spec.size - 1) / 2;
   const r = ringOf(spec); // 等于 h
   const band = 1 + h + r; // 外沿加地的宽度（等于设施边长）
@@ -359,13 +366,13 @@ export function powerBands(L, type, opt = {}) {
     return false;
   };
   const lonely = [];
-  for (let i = 0; i < T.n; i++) if (!near(T.x[i], T.y[i])) lonely.push(target(T, i));
+  for (let i = 0; i < T.n; i++) if (!near(T.x[i] - ox, T.y[i])) lonely.push(target(T, i));
   const none = { left: 0, right: 0, bottom: 0, top: 0 };
   if (!lonely.length) return { ext: none, extraArea: 0, unreachable: 0, lonely };
   // 每条边能够着哪些：设施中心离这条边外面那条地的距离 ≤ 覆盖半径（沿边方向随便挪）
   const reach = {
-    left: (t) => t.x + 1 + h <= cover,
-    right: (t) => W + h - t.x <= cover,
+    left: (t) => t.x - ox + 1 + h <= cover,
+    right: (t) => W + h - (t.x - ox) <= cover,
     bottom: (t) => t.y + 1 + h <= cover,
     top: (t) => H + h - t.y <= cover,
   };

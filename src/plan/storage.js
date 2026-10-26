@@ -2,6 +2,8 @@
 //   supply（左栏「供货」）：'box-s' 小型储物仓、'box-l' 大型储物仓，'dist-s'、'dist-l' 同样的仓、最上面那个顶上放物流配送器
 //   （原料那边「向其他配送器需求」、成品那边「供应」，照用户的蓝图不和机甲交换）。液体（gamedata.js 的 FLUIDS）一律用储液罐，
 //   带子直接接罐口，不放配送器。
+//   左侧一列仓组（用户 2026/10/26）：'side-s'、'side-l'、'sdist-s'、'sdist-l' 同样的仓和配送器，但不排进行里（storeUnits 不动），原料（矿除外）、
+//   成品、副产物每个出入口都是外面一组、一律摆在左边一列（addStores）；走线时出入口都在左边（route.js 的 leftPorts），矿也从左边缘送进来。
 // 固体原料、成品的仓当工厂排进生产行里（storeUnits，用户 2026/10/19），原料按用料的工厂组各配一组，挨着它们摆；增产剂仓摆在蓝图里面的空地上
 // （storeSites，增产剂那一步挑位置）。下面说的「外面一组」是剩下的：液体的储液罐、一组工厂要的比一条带多的原料、放不进里面的增产剂仓。
 // 矿（ORES）不放进仓，照旧从边缘送进来（用户 2026/10/24：矿物不再放进箱子，小型仓、大型仓都一样）。
@@ -34,7 +36,16 @@ export const SUPPLY = {
   'box-l': { box: BIG_BOX, dist: false },
   'dist-s': { box: SMALL_BOX, dist: true },
   'dist-l': { box: BIG_BOX, dist: true },
+  // 左侧一列仓组（column，见文件开头）
+  'side-s': { box: SMALL_BOX, dist: false, column: true },
+  'side-l': { box: BIG_BOX, dist: false, column: true },
+  'sdist-s': { box: SMALL_BOX, dist: true, column: true },
+  'sdist-l': { box: BIG_BOX, dist: true, column: true },
 };
+/** 是不是左侧一列仓组（SUPPLY 里标 column 的几种）：走线时出入口都在左边（route.js 的 leftPorts） */
+export function isColumnSupply(supply) {
+  return !!SUPPLY[supply]?.column;
+}
 const PITCH = { [SMALL_BOX]: 3, [BIG_BOX]: 6 }; // 沿进料带每个仓占几列
 const PER_BOX = { [SMALL_BOX]: 3, [BIG_BOX]: 3 }; // 一个仓朝带子那边能接几根分拣器（每边三个口，用户 2026/10/19 的蓝图）
 const GAP_X = 2; // 组和产线之间空几列（放供电设施、接线）
@@ -105,7 +116,8 @@ export function storeStacks(itemId, rate, { box = SMALL_BOX, sorter = 2013, maxL
  */
 export function storeUnits(calc, { supply, sorter = 2013, maxLayers = 15, burn = false, belt = 3 } = {}) {
   const spec = SUPPLY[supply];
-  if (!spec || calc.storeUnits) return calc;
+  // 左侧一列仓组（column）不排进行里：原料（矿除外）、成品照旧从边缘进出，收尾时在左边接仓组（addStores）
+  if (!spec || spec.column || calc.storeUnits) return calc;
   if (calc.units.reduce((n, u) => n + u.count * (u.levels ?? 1), 0) > STORE_ROW_MAX) return calc;
   const name = (id) => ITEMS.get(realItem(id))?.name ?? String(id);
   const units = [...calc.units];
@@ -271,7 +283,8 @@ export function addStores(L, { supply, sorter = 2013, maxLayers = 15, maxWidth =
   const sprayed = (p) => p.kind === 'in' && sprayItems && (sprayItems === true || sprayItems.includes(realItem(p.itemId)));
   const plans = ports.map((p) => {
     const size = storeSize(p.itemId, p.rate ?? 0, { box: spec.box, sorter, maxLayers });
-    return { p, side: p.x <= (cx0 + cx1) / 2 ? -1 : 1, size, shape: shapeOf(size, sprayed(p) ? SPRAY_TAIL : 0) };
+    // 左侧一列仓组（column）：一律摆在左边
+    return { p, side: spec.column || p.x <= (cx0 + cx1) / 2 ? -1 : 1, size, shape: shapeOf(size, sprayed(p) ? SPRAY_TAIL : 0) };
   });
   // 先把地方留够：左右各留最长那组 + 空当，上下各留一侧所有组的高度（用不着的最后裁掉）
   const mX = { [-1]: 0, 1: 0 };

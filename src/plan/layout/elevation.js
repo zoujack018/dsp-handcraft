@@ -255,12 +255,14 @@ function makeCellsFor(c) {
         }
         ramp(r, L, leg.edge, s.y, leg.edge + d, s.y);
       } else if (leg.bus != null) {
-        // 侧边总线（layout/ports.js）：口在右边布局外最外那一列，原地升起往里走到自己那一列，沿这一列竖着走到段那一行，再往里走到段首落下
+        // 侧边总线（layout/ports.js）：口在右边布局外最外那一列，原地升起往里走到自己那一列，沿这一列竖着走到段那一行，再往里走到段首落下。
+        // 排在左边的（busSide 'auto'）镜像：口在左边最外那一列，往里是往右
+        const di = leg.bus < leg.edge ? -1 : 1; // 往里走的方向
         const dy = Math.sign(s.y - leg.py);
-        runX(cells, leg.edge - 1, leg.bus, -1, leg.py, L);
+        runX(cells, leg.edge + di, leg.bus, di, leg.py, L);
         runY(cells, leg.py + dy, s.y, dy, leg.bus, L);
         runX(cells, leg.bus + d, s.entryX - d, d, s.y, L);
-        ramp(r, L, leg.edge, leg.py, leg.edge - 1, leg.py);
+        ramp(r, L, leg.edge, leg.py, leg.edge + di, leg.py);
       } else if (s.entryX === leg.edge) {
         // 段首就在走廊这一列（最靠左的那台工厂紧挨走廊）：沿走廊升起、走到段首前一格、斜坡落下
         const dy = Math.sign(s.y - leg.py);
@@ -525,17 +527,24 @@ export function liftLegs(c) {
   const GM = 24; // 四周留的余量（高架可能走到布局外一两格）
   const GH = height + 2 * GM;
   // 右边从最靠外的出入口算起：侧边总线的口在布局外、每条原料带各占一列（layout/ports.js），原料带多的大线能排出去几十列。
-  // 下标只用到 GH，宽只管表开多大，所以没排出去的线一格不变
+  // 下标只用到 GH，宽只管表开多大，所以没排出去的线一格不变。
+  // 左边从最靠外的总线口算起（busSide 'auto' 时总线可以排在左边布局外，口在 x < 0）：没有排到左边的总线时 xIn 是 0，表和下标都和原来一样
   let xOut = xR;
-  for (let i = 0; i < legs.length; i++) if (legs[i].edge > xOut) xOut = legs[i].edge;
-  const GW = xOut + 2 + 2 * GM;
+  let xIn = 0;
+  for (let i = 0; i < legs.length; i++) {
+    const e = legs[i].edge;
+    if (e > xOut) xOut = e;
+    else if (e < xIn && legs[i].bus != null) xIn = e;
+  }
+  const GX = GM - xIn; // x 方向左边留的余量
+  const GW = xOut - xIn + 2 + 2 * GM;
   const grid = ownerGrid(GW * GH * levelStride);
   const G = grid.buf;
   const gen = grid.gen;
   if (legs.length + 2 >= 4096) throw new Error(`高架段太多（${legs.length}）`);
   /** (x, y) 的平面格号（不含层）；超出表的范围就报错，免得悄悄算错 */
   const planeIdx = (x, yy) => {
-    const gx = x + GM;
+    const gx = x + GX;
     const gy = yy + GM;
     if (gx < 0 || gy < 0 || gx >= GW || gy >= GH) throw new Error(`高架格 (${x},${yy}) 超出归属表范围`);
     return gx * GH + gy;

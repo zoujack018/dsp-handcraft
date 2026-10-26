@@ -22,12 +22,16 @@ import { placePorts } from './layout/ports.js';
 import { liftLegs, estimateLegs } from './layout/elevation.js';
 import { scoreLayout, preLegFloor, preLegSorterFloor, sorterPlanOf } from './layout/score.js';
 import { powerHoles } from './layout/powerholes.js';
+import { BELT_SPEED } from '../gamedata.js';
 
 export { STATION_SIZE, TRUNK, STATION_COLS, STATION_SLOTS } from './layout/shared.js';
 
 export const DEFAULTS = {
   belt: 3, // 传送带等级 1/2/3
   stack: 1, // 带上堆叠层数（保守按 1 计算运力）
+  // 自动集装机（用户 2026/10/26）：产物（不是原料）一种超过单条带的运力时，不拆成几条带，一条带最多运单条带的 4 倍；
+  // 带上每放约 1700/分的单个物品，后处理就在下游放一台自动集装机叠成 4 层（plan/addons.js 的 stackPilers）。关掉时照旧按单条带拆带
+  pilers: true,
   maxTracks: 3, // 分拣器最长 3 格 => 每个通道最多 3 条地面轨道
   // 第 4 条轨：一个通道 4 条地面轨道，条件是每根分拣器都够得着（下方那行只接第 0~2 条、上方那行只接第 1~3 条，layout/tracks.js 挑排法）。
   // 默认关；喷增产剂时 plan/index.js 打开（2026/10/08，待办 3 第二步，先只在喷涂线上量）
@@ -72,6 +76,12 @@ export const DEFAULTS = {
   // 每条带在外面各占一列竖着走到自己那段的行（layout/ports.js、layout/elevation.js）。只挪口、不挪竖走的列时
   // 都沿边缘那一列走，同一列叠的段太多，高架层不够用（铁块 18000 那种十几条带的排不出）
   groupPorts: true,
+  // 侧边总线排哪边：'right' 一律右边（现状）；'auto' 每种原料左右各试算一遍取便宜的那边，总线可以左右都有（用户 2026/10/26 边缘优化的候选，试验开关）。
+  // 左边的总线口、竖走的列在 x < 0，宽和面积照右边一样算上（layout/score.js），收尾时整张挪回从 0 起（plan/index.js 的 finishOne）
+  busSide: 'right',
+  // 出入口都在左边（箱子供货的左侧仓列模式，用户 2026/10/26）：原料从左边进、成品从左边出，和靠左侧站列一样的方向约束，边缘口照旧
+  leftPorts: false,
+  busGround: false, // 侧边总线的竖直段也落地（试验开关，默认关；用户 2026/10/26 边缘优化的候选之一）：开着时 ground.js 不再跳过总线的段，能落地的照常落地
   longFrom: 24, // 高架段超过这么长（格）的部分
   longWeight: 1, // 每格再多计这么多（为一种子材料拉跨半张图的长带）
   levelWeight: 3, // 高架每多抬一层（第 2 层起）计入成本的格数：叠得高不好看，也难手搭
@@ -128,6 +138,11 @@ export const DEFAULTS = {
   penalty: { tracks: 3000, slots: 3000, shortfall: 2000, belt: 2000, clash: 3000, slow: 400, long: 25, level: 3000, route: 5000, fill: 2, power: 300, width: 400, height: 400, spray: 1500 },
 };
 
+/** 自动集装机（pilers）开着时单条带的运力（后处理按它放集装机，plan/addons.js 的 stackPilers），关着时 0。ro 是 route() 的选项 */
+export function stackCapOf(ro = {}) {
+  return (ro.pilers ?? DEFAULTS.pilers) ? BELT_SPEED[ro.belt ?? DEFAULTS.belt] * (ro.stack ?? DEFAULTS.stack) * 60 : 0;
+}
+
 /**
  * @param {*} graph buildGraph 的结果
  * @param {string[][]} rows 自下而上，每行从左到右的块 ID（不拆分时块 ID 就是组 ID）
@@ -170,7 +185,7 @@ function layout(graph, rows, options, opt, pads, blocks, streets, holePlan) {
     addLoad: undefined, atPort: undefined, bestColumn: undefined, blocksOf: undefined, corridor: undefined, entryCol: undefined, exitCol: undefined, extraBottom: undefined, extraTop: undefined,
     itemBids: undefined, pos: undefined, powerHoles: undefined, rowAbove: undefined, rowBelow: undefined, stationX: undefined, streetX: undefined, xL: undefined, xR: undefined,
     // layout/belts.js
-    beltCap: undefined, chains: undefined, legs: undefined, rawCap: undefined, segments: undefined, sides: undefined,
+    beltCap: undefined, chains: undefined, legs: undefined, pileCap: undefined, rawCap: undefined, segments: undefined, sides: undefined,
     // layout/tracks.js、layout/ports.js（height 两步都写）
     channels: undefined, height: undefined, rowCy: undefined, ports: undefined, stations: undefined,
     // layout/elevation.js

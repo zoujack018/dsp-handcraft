@@ -158,7 +158,7 @@ export function taxCost(cells, needAt, tax) {
  * opts：groundOptions 的结果，或同样平铺的 routeOptions（{ groundTax, taxGround, … }）；不传或 groundTax 没开时照旧落地。
  * 只读写布局本身，外面拿一份布局 structuredClone 直接调也行
  */
-export function groundRoutes(L, opts = null) {
+export function groundRoutes(L, opts = null, busGround = false) {
   const tax = groundOptions(opts);
   const occupied = new Set();
   const solid = new Set();
@@ -200,7 +200,7 @@ export function groundRoutes(L, opts = null) {
   for (const l of L.legs) {
     if (!l.cells.length) continue;
     if (l.spray) continue; // 喷涂机骑在这截高架上（layout/belts.js 的 legOut）：窗口那几格要在同一层直走，这段不落地
-    if (l.bus != null) continue; // 侧边总线（layout/ports.js）整条留在高架上，几条并排走得整齐
+    if (l.bus != null && !busGround) continue; // 侧边总线（layout/ports.js）整条留在高架上，几条并排走得整齐（routeOptions.busGround 开着时照常落地）
     const ch = L.chains.find((c) => c.parts.some((p) => p.leg === l.id));
     if (!ch) continue;
     const main = chainTiles(L, ch).main;

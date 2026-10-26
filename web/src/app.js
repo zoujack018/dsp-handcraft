@@ -1,13 +1,13 @@
 // 页面逻辑：物品面板选目标 → 外部供应弹窗 → 交给后台线程规划 → 画图纸、填标题栏、给出蓝图字符串。
 /* global WORKER_SRC */
-import { SPRITE, glyphSvg } from './glyphs.js';
-import { sliceRoutes, drawingSvg, routeColor, linkedRuns, LINE } from './drawing.js';
+import { SPRITE, glyphSvg, glyphOf } from './glyphs.js';
+import { sliceRoutes, drawingSvg, routeColor, linkedRuns, LINE, FINE } from './drawing.js';
 import { createViewer } from './viewer.js';
 import { readHandoff, readDefs } from './handoff.js';
 
 const $ = (id) => document.getElementById(id);
 const STORE = 'dsp-handcraft:settings';
-const DEFAULTS = { targetId: 1204, rate: 90, ext: [], recipes: {}, assembler: '2303', smelter: '2302', chemical: '2309', lab: '2901', labstack: 15, belt: '3', sorter: '2013', power: 'tesla', station: '', pile: '1', spray: '0', split: '0', stitch: '1', proslot: '1', warper: '0', maxwidth: '', maxheight: '', aspect: '3', orient: 'h', effort: 'quick', page: 1, chemwide: '0', burn: [], defs: null, supply: '', dist: '0' };
+const DEFAULTS = { targetId: 6005, rate: 60, ext: [], recipes: {}, assembler: '2303', smelter: '2302', chemical: '2309', lab: '2901', labstack: 15, belt: '3', sorter: '2014', power: 'substation', station: 'ils', pile: '1', spray: '0', split: '0', stitch: '1', proslot: '1', warper: '0', maxwidth: '', maxheight: '', aspect: '3', orient: 'h', effort: 'quick', page: 1, chemwide: '0', defs: null, supply: '', dist: '0' };
 const OPTION_NAMES = ['assembler', 'smelter', 'chemical', 'chemwide', 'lab', 'belt', 'sorter', 'station', 'supply', 'dist', 'pile', 'power', 'spray', 'split', 'stitch', 'proslot', 'warper', 'maxwidth', 'maxheight', 'aspect', 'effort']; // 排布方向去掉了，统一横排（用户 2026/10/07）
 // 物品类别色条（游戏物品类型）：原矿、材料、组件、成品、物流、生产设施、防御、黑雾、矩阵
 const CAT_COLOR = { 1: '#9aa5b1', 2: '#6f8fb3', 3: '#5f9b8b', 4: '#b48b52', 5: '#7c80c0', 6: '#4f7cc9', 8: '#b56262', 9: '#b56262', 10: '#707070', 11: '#9a72cf' };
@@ -34,7 +34,11 @@ const presses = new Map(); // 每套输入点过几次「生成蓝图」：第�
 let catId = 0;
 let chainId = 0;
 let chainData = null;
+let forecastData = null; // 后台的预告（forecast）：建筑数、预计用时、用电、当前产线用到的物品
+let forecastId = 0;
+let forecastTimer = null;
 let autoSuggest = false;
+let firstVisit = false; // 第一次打开（没存过设置）：默认目标也先按建议补外部供应，和选目标时一样
 let iconMode = false; // 页面旁边有 icons/ 目录时改用其中的图片
 let pickMode = { add: true }; // 物品面板这次是添加目标还是更换第 i 个目标
 
@@ -102,21 +106,27 @@ function handle(m) {
     takeHandoffExt();
     renderCatalog();
     renderSpec();
+    if (firstVisit && !handoff) {
+      // 第一次打开：默认的引力矩阵要把精炼油设为外部供应才排得了，照选目标时那样先按建议设好，不然第一次点「生成蓝图」就报错
+      firstVisit = false;
+      autoSuggest = true;
+      requestChain();
+    }
+    requestForecast();
     scheduleBench();
   } else if (m.type === 'bench') {
     console.info(`[dsp-handcraft] 测速 ${Math.round(m.ms)} 毫秒（${m.threads} 个线程）`);
+    requestForecast(); // 测完速，预告的用时按这台机器重算一次
   } else if (m.type === 'progress' && m.id === reqId) {
     progress = { ...progress, ...m, est0: progress?.est0 ?? m.est ?? null }; // est0 是开搜前报的第一个预计，之后不改
   } else if (m.type === 'preview' && m.id === reqId) {
     onPreview(m); // 搜索中的快照：观摩退火
   } else if (m.type === 'chain' && m.id === chainId) {
     onChain(m.data);
-
-  } else if (m.type === 'take-failed' && m.id === reqId) {
-    // 「就这个蓝图了」没收成（比如这一张接不上物流站）：说一句，按钮还能再点，搜索照常
-    $('preview-note').textContent = m.reason;
-    $('take').disabled = !preview?.drawnModel;
-    $('take').textContent = '就这个蓝图了';
+  } else if (m.type === 'forecast' && m.id === forecastId) {
+    forecastData = m.data;
+    renderForecast();
+    renderExtChips(); // 只重画外部供应那一栏：renderSpec 会重建目标的产量输入框，正在输入时会丢焦点
   } else if (m.type === 'result' && m.id === reqId) {
     finish(m.data);
   }
@@ -126,7 +136,9 @@ function handle(m) {
 function loadSettings() {
   let s = {};
   try {
-    s = JSON.parse(localStorage.getItem(STORE) || '{}');
+    const stored = localStorage.getItem(STORE);
+    firstVisit = !stored;
+    s = JSON.parse(stored || '{}');
   } catch {
     /* 无痕模式等情况下读不到，使用默认值 */
   }
@@ -135,10 +147,14 @@ function loadSettings() {
   if (state.orient === 'auto' && !s.orientPicked) state.orient = 'h';
   // 化工厂间距 2026/10/19 改成默认只限赤道，换了新键 chemwide：旧键 chemtight（那时默认任何纬度）不认，以前存过的也拿新的默认值
   delete state.chemtight;
+  // 箱子 2026/10/26 改成左侧一列仓组（side-s / side-l），以前存的排进行里那种（box-s / box-l）换过来；「物流方式」的两个子选项记上次选的
+  if (state.supply === 'box-s' || state.supply === 'box-l') state.supply = state.supply.replace('box', 'side');
+  state.stationPick = ['ils', 'ils-side'].includes(s.stationPick) ? s.stationPick : state.station || 'ils';
+  state.boxPick = ['side-s', 'side-l'].includes(s.boxPick) ? s.boxPick : state.supply || 'side-s';
   // 旧版本存的是物品名和逗号分隔的外部供应
   // 新配方：{ 物品 ID: 配方 ID }，只记开了新配方的物品
   state.recipes = s.recipes && typeof s.recipes === 'object' ? Object.fromEntries(Object.entries(s.recipes).filter(([, v]) => Number(v) > 0)) : {};
-  state.burn = Array.isArray(s.burn) ? s.burn.map(Number).filter(Boolean) : []; // 1.8 存的是 '0' / '1'（左栏开关），改到弹窗后按物品记
+  delete state.burn; // 就地烧掉 2026/10/26 从网页上拿掉了（命令行还有），以前存的不认
   state.defs = readDefs(s.defs); // 上次从计算器带过来的新物品、新配方（地址里的方案只用一次，刷新后靠这份）
   state.ext = new Set(Array.isArray(s.ext) ? s.ext : typeof s.raw === 'string' ? s.raw.split(/[,，、\s]+/).filter(Boolean) : []);
   state.legacyTarget = typeof s.target === 'string' ? s.target : null;
@@ -175,13 +191,143 @@ function saveSettings() {
   } catch {
     /* 忽略 */
   }
+  requestForecast(); // 每一处改设置都经过这里
 }
+
+// 图纸上方一排下拉按钮（用户 2026/10/26）：供电、物流方式、传送带、分拣器、熔炉、制造台、化工厂、研究站、喷增产剂。
+// 按钮上只写当前选的（模板里各项 span 的 data-pill），悬停、键盘聚焦或点一下展开；选了就勾上左栏里藏起来的那个单选、发 change，设置还是那一份
+const PILL_NAMES = ['power', 'logistics', 'belt', 'sorter', 'smelter', 'assembler', 'chemical', 'lab', 'spray'];
+// 按钮上字前面的小图标（16 格画、14 像素显示，线条用字色）：一组选项一个，同组的几档共用
+const PILL_ICONS = {
+  power: '<path d="M9.5 1.5L3.5 9h4l-1 5.5 6-7.5h-4z"/>', // 闪电
+  logistics: '<path d="M8 1.5l5.5 3v7L8 14.5l-5.5-3v-7zM2.5 4.5L8 7.5l5.5-3M8 7.5v7"/>', // 箱子
+  belt: '<path d="M1.5 8h13M11 4.5L14.5 8 11 11.5"/>', // 带箭头的横线
+  sorter: '<path d="M2.5 13.5l3-9 4.9 3.8"/><circle cx="12" cy="9.5" r="2"/>', // 折一下的臂，头上一个小圆
+  smelter: '<path d="M8 1.5c.5 2.7 4.5 4.4 4.5 8.5a4.5 4.5 0 0 1-9 0c0-1.8.7-3.2 1.8-4.2.3 1.4.9 2.3 1.9 2.8-.4-2.7-.1-5 .8-7.1z"/>', // 火苗
+  assembler: '<circle cx="8" cy="8" r="3.8"/><path d="M8 4.2V1.6M8 11.8v2.6M11.3 6.1l2.25-1.3M11.3 9.9l2.25 1.3M4.7 6.1L2.45 4.8M4.7 9.9l-2.25 1.3"/>', // 齿轮
+  chemical: '<path d="M5.5 1.5h5M6.5 1.5V6L2.7 12.6a1.2 1.2 0 0 0 1 1.9h8.6a1.2 1.2 0 0 0 1-1.9L9.5 6V1.5M4.2 10h7.6"/>', // 烧瓶
+  lab: '<circle cx="8" cy="8" r="1.6" fill="currentColor" stroke="none"/><ellipse cx="8" cy="8" rx="6.5" ry="2.7" transform="rotate(-30 8 8)"/>', // 原子
+  spray: '<path d="M8 1.5c.6 3.5 3 5.9 6.5 6.5-3.5.6-5.9 3-6.5 6.5-.6-3.5-3-5.9-6.5-6.5 3.5-.6 5.9-3 6.5-6.5z"/>', // 四角星
+};
+const pillIcon = (name) => `<span class="pill-ico" aria-hidden="true"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">${PILL_ICONS[name] ?? ''}</svg></span>`;
+const legendOf = (field) => field.querySelector('legend').firstChild.textContent.trim(); // 图例后面可能跟着 beta 标
+const pillText = (radio) => radio.nextElementSibling.dataset.pill || radio.nextElementSibling.textContent;
+function initPills() {
+  const bar = $('toolbar');
+  for (const name of PILL_NAMES) {
+    const field = document.querySelector(`.seg[data-name="${name}"]`);
+    if (!field) continue;
+    field.hidden = true;
+    const wrap = document.createElement('div');
+    wrap.className = 'pill-wrap';
+    wrap.dataset.option = name;
+    wrap.dataset.label = legendOf(field);
+    wrap.innerHTML = `<button type="button" class="pill" aria-haspopup="menu" aria-expanded="false">${pillIcon(name)}<span class="pill-text"></span></button><div class="pill-menu" role="menu" aria-label="${esc(wrap.dataset.label)}">${[...field.querySelectorAll('input[type="radio"]')].map((el) => `<button type="button" role="menuitemradio" tabindex="-1" data-value="${esc(el.value)}">${esc(pillText(el))}</button>`).join('')}</div>`;
+    // 鼠标、焦点从外面进来：又可以弹出了；焦点离开就收起
+    wrap.addEventListener('pointerenter', () => pillReady(wrap));
+    wrap.addEventListener('focusin', (e) => !wrap.contains(e.relatedTarget) && pillReady(wrap));
+    wrap.addEventListener('focusout', (e) => !wrap.contains(e.relatedTarget) && closePill(wrap, false));
+    bar.append(wrap);
+  }
+  bar.addEventListener('click', (e) => {
+    const wrap = e.target.closest('.pill-wrap');
+    const item = e.target.closest('[data-value]');
+    if (item) pickPill(wrap, item.dataset.value);
+    else if (e.target.closest('.pill')) wrap.classList.contains('open') ? closePill(wrap, true) : openPill(wrap, false);
+  });
+  // 键盘：按钮上回车、空格、上下键展开，左右键换到相邻的按钮；菜单里上下键挪、回车或空格选、Esc 收起
+  bar.addEventListener('keydown', (e) => {
+    const wrap = e.target.closest('.pill-wrap');
+    if (!wrap) return;
+    const items = [...wrap.querySelectorAll('[data-value]')];
+    const i = items.indexOf(e.target);
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closePill(wrap, true);
+    } else if (i < 0 && ['Enter', ' ', 'ArrowDown', 'ArrowUp'].includes(e.key)) {
+      e.preventDefault();
+      openPill(wrap, true);
+    } else if (i < 0 && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      const pills = [...bar.querySelectorAll('.pill')];
+      const k = pills.indexOf(e.target);
+      if (k >= 0) pills[(k + (e.key === 'ArrowLeft' ? pills.length - 1 : 1)) % pills.length].focus();
+    } else if (i >= 0 && (e.key === 'Enter' || e.key === ' ')) {
+      e.preventDefault();
+      pickPill(wrap, e.target.dataset.value);
+    } else if (i >= 0 && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
+      e.preventDefault();
+      const n = items.length;
+      items[e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : (i + (e.key === 'ArrowUp' ? n - 1 : 1)) % n].focus();
+    }
+  });
+  bar.addEventListener('keyup', (e) => e.key === ' ' && e.preventDefault()); // 空格按下时已经处理过，松开时别让浏览器再点一下
+  // 点到别处就收起点开的菜单（触屏上靠这个）
+  document.addEventListener('pointerdown', (e) => bar.querySelectorAll('.pill-wrap.open').forEach((w) => !w.contains(e.target) && closePill(w, false)));
+}
+/** 鼠标、焦点刚进来：去掉「先别弹出」，别的点开的收起；菜单往右放不下就靠右展开 */
+function pillReady(wrap) {
+  wrap.classList.remove('shut');
+  document.querySelectorAll('.pill-wrap.open').forEach((w) => w !== wrap && closePill(w, false));
+  const menu = wrap.querySelector('.pill-menu');
+  menu.style.display = 'block'; // 量一下菜单多宽
+  wrap.classList.toggle('flip', wrap.getBoundingClientRect().left + menu.offsetWidth > document.documentElement.clientWidth - 8);
+  menu.style.display = '';
+}
+/** 点开（触屏、键盘）；focusItem：焦点挪到当前选的那项 */
+function openPill(wrap, focusItem) {
+  pillReady(wrap);
+  wrap.classList.add('open');
+  wrap.querySelector('.pill').setAttribute('aria-expanded', 'true');
+  if (focusItem) (wrap.querySelector('[aria-checked="true"]') || wrap.querySelector('[data-value]')).focus();
+}
+/** 收起；shut：选了一项、按了 Esc、再点一下按钮，鼠标和焦点再进来之前悬停、聚焦都不弹出 */
+function closePill(wrap, shut) {
+  wrap.classList.remove('open');
+  wrap.querySelector('.pill').setAttribute('aria-expanded', 'false');
+  if (!shut) return;
+  if (wrap.contains(document.activeElement)) wrap.querySelector('.pill').focus({ preventScroll: true }); // 焦点在菜单里（键盘）就回到按钮上
+  wrap.classList.add('shut');
+}
+/** 选了一项：勾上藏着的单选、发 change（各处原有的处理照常跑），按钮上的字跟着换 */
+function pickPill(wrap, value) {
+  closePill(wrap, true);
+  const radio = document.querySelector(`input[name="${wrap.dataset.option}"][value="${value}"]`);
+  if (radio && !radio.checked) {
+    radio.checked = true;
+    radio.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  syncOptionSelects();
+}
+/** 物流方式：传送带 / 传送带+箱子 / 物流站，由「物流站位置」「箱子」两个设置推出来；选了就把那两个设置改过去，子选项用上次选的 */
+const logisticsOf = () => (document.querySelector('input[name="station"]:checked')?.value ? 'station' : document.querySelector('input[name="supply"]:checked')?.value ? 'box' : '');
+function setRadio(name, value) {
+  const el = document.querySelector(`input[name="${name}"][value="${value}"]`);
+  if (el) el.checked = true;
+}
+function syncLogistics() {
+  setRadio('logistics', logisticsOf());
+  syncOptionSelects();
+}
+document.querySelectorAll('input[name="logistics"]').forEach((el) => el.addEventListener('change', () => {
+  setRadio('station', el.value === 'station' ? state.stationPick || 'ils' : '');
+  setRadio('supply', el.value === 'box' ? state.boxPick || 'side-s' : '');
+  syncOptionSelects();
+  readOptions();
+  saveSettings();
+  togglePile();
+  renderMore();
+}));
+document.querySelectorAll('input[name="station"], input[name="supply"]').forEach((el) => el.addEventListener('change', () => {
+  if (el.value) state[el.name === 'station' ? 'stationPick' : 'boxPick'] = el.value;
+  syncLogistics();
+  saveSettings();
+}));
 
 // 新版下拉框与旧版单选按钮共用同一组选项及设置。
 function initOptionSelects() {
   document.querySelectorAll('.seg[data-name]').forEach((field) => {
     const name = field.dataset.name;
-    const label = field.querySelector('legend').textContent;
+    const label = legendOf(field);
     const options = [...field.querySelectorAll('input[type="radio"]')];
     field.insertAdjacentHTML('beforeend', `<label class="modern-option"><span>${esc(label)}</span><select data-option-select="${name}" aria-label="${esc(label)}">${options.map((el) => `<option value="${esc(el.value)}">${esc(el.nextElementSibling.textContent)}</option>`).join('')}</select></label>`);
     const select = field.querySelector('select');
@@ -201,6 +347,18 @@ function syncOptionSelects() {
   document.querySelectorAll('[data-option-select]').forEach((select) => {
     select.value = document.querySelector(`input[name="${select.dataset.optionSelect}"]:checked`).value;
   });
+  syncPills();
+}
+/** 图纸上方那排按钮：写当前选的，菜单里勾上当前那项 */
+function syncPills() {
+  document.querySelectorAll('.pill-wrap').forEach((wrap) => {
+    const cur = document.querySelector(`input[name="${wrap.dataset.option}"]:checked`);
+    const pill = wrap.querySelector('.pill');
+    const text = wrap.querySelector('.pill-text');
+    text.textContent = cur ? pillText(cur) : '';
+    pill.setAttribute('aria-label', `${wrap.dataset.label}：${text.textContent}`);
+    wrap.querySelectorAll('[data-value]').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.value === cur?.value)));
+  });
 }
 
 // ---------- 物品面板（弹窗） ----------
@@ -213,6 +371,15 @@ function pic(x) {
   if (src) return `<img class="gl pic" src="${esc(src)}" alt="" onerror="this.remove()">${glyphSvg(x)}`;
   if (iconMode && c.icon) return `<img class="gl pic" src="icons/${esc(c.icon)}.png" alt="" onerror="this.remove()">${glyphSvg(x)}`;
   return glyphSvg(x);
+}
+/** 图纸上原料入口旁边的物品图标（drawing.js 的 icon）：图片和物品面板同一个来源，没有图片就用线条图形；以 (0, 0) 为中心、0.8 格见方 */
+function drawIcon(itemId) {
+  const it = byId.get(Number(itemId));
+  if (!it) return null;
+  const src = window.DSPHC?.icon?.(it) || (iconMode && it.icon ? `icons/${it.icon}.png` : '');
+  if (src) return `<image href="${esc(src)}" x="-0.4" y="-0.4" width="0.8" height="0.8"/>`;
+  const { id, fill } = glyphOf(it);
+  return `<svg x="-0.4" y="-0.4" width="0.8" height="0.8" viewBox="0 0 24 24"><use href="#g-${id}" style="--fill:${fill}" stroke="${FINE}" stroke-width="1.5" fill="none" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
 }
 const tileInner = (it) => `${pic(it)}<span class="nm">${esc(it.name)}</span>`;
 function renderCatalog() {
@@ -380,10 +547,11 @@ function renderExt() {
             : `${u.name}：${u.factory} ${n}，${fmt(u.rate)}/分${usesTxt}。点击设为外部供应`;
     return `<button type="button" class="${cls}" style="--cat:${CAT_COLOR[u.type] || '#9aa5b1'}" data-id="${u.id}" data-name="${esc(u.name)}" title="${esc(tip)}" aria-pressed="${u.state === 'external'}"${u.state === 'dropped' || isGoal ? ' aria-disabled="true"' : ''}>${pic(u)}<span class="nm">${esc(u.name)}</span><span class="sub">${esc(sub)}</span></button>`;
   };
+  // 上游在上、最终目标在最下面（用户 2026/10/26）
   $('tiers').innerHTML =
     '<svg class="links" aria-hidden="true"></svg>' +
     [...tiers.keys()]
-      .sort((a, b) => a - b)
+      .sort((a, b) => b - a)
       .map((k) => `<section class="tier"><h3>${label(k)}</h3><div class="tier-row">${tiers.get(k).map((u) => tile(u, k === 0)).join('')}</div></section>`)
       .join('');
   const raws = d.raws.map((r) => `${esc(r.name)} ${fmt(r.rate)}/分`).join('、');
@@ -392,41 +560,13 @@ function renderExt() {
     ? `<span class="warn">${esc(d.blocking.join('、'))} 需要原油精炼厂等，产线排不了。${
         d.suggested.length ? `建议把 ${esc(d.suggested.join('、'))} 设为外部供应，点「按建议设置」即可。` : '请把它们设为外部供应。'
       }</span>`
-    : `从边缘送入：${ext.length ? `${esc(ext.join('、'))}（外部供应），` : ''}${raws || '无'}。`;
-  if (d.byproducts?.length) $('ext-foot').innerHTML += ` 副产：${d.byproducts.map((b) => `${esc(b.name)} ${fmt(b.rate)}/分（${esc(b.of)}）${state.burn.includes(b.id) ? '就地烧掉' : '单独一条带送出'}`).join('、')}。`;
+    : `由外部供给：${ext.length ? `${esc(ext.join('、'))}（外部供应），` : ''}${raws || '无'}。`;
+  if (d.byproducts?.length) $('ext-foot').innerHTML += ` 副产：${d.byproducts.map((b) => `${esc(b.name)} ${fmt(b.rate)}/分（${esc(b.of)}）单独一条带送出`).join('、')}。`;
   $('ext-foot').dataset.base = $('ext-foot').innerHTML;
   $('ext-suggest').hidden = !d.suggested.some((n) => !state.ext.has(n));
   renderRecipes(d);
-  renderBurn(d);
   requestAnimationFrame(drawLinks);
 }
-
-// 多余副产物（用户 2026/10/07：烧不烧在这个弹窗里选）：每种副产物一个开关，点了就地接到一排火力发电厂烧掉，再点改回送出
-function renderBurn(d) {
-  const box = $('ext-burn');
-  const list = (d.byproducts || []).filter((b) => b.burnable);
-  box.hidden = !list.length;
-  if (!list.length) return (box.innerHTML = '');
-  box.innerHTML =
-    '<h3>多余副产物</h3><div class="rc-row">' +
-    list
-      .map((b) => {
-        const on = state.burn.includes(b.id);
-        const tip = on ? `${b.name}：就地烧掉。点击改回单独一条带送出` : `${b.name}：现在单独一条带送出。点击改成接到一排火力发电厂就地烧掉（火力发电厂按电网要多少电来烧，电网用不完时会少烧，${b.name}会堆起来）`;
-        return `<button type="button" class="rc" data-burn="${b.id}" aria-pressed="${on}" title="${esc(tip)}"><span class="rc-name">${esc(b.name)} ${fmt(b.rate)}/分：就地烧掉</span><span class="rc-line">接到一排火力发电厂（来自${esc(b.of)}），约 ${b.plants} 台</span></button>`;
-      })
-      .join('') +
-    '</div>';
-}
-$('ext-burn').addEventListener('click', (e) => {
-  const b = e.target.closest('button[data-burn]');
-  if (!b) return;
-  const id = Number(b.dataset.burn);
-  state.burn = state.burn.includes(id) ? state.burn.filter((x) => x !== id) : [...state.burn, id];
-  saveSettings();
-  renderSpec();
-  requestChain();
-});
 
 // 新配方：产线里有新配方（高效、原始等）的物品逐个列出，点一下开启、再点一下关掉
 function renderRecipes(d) {
@@ -460,9 +600,9 @@ $('ext-recipes').addEventListener('click', (e) => {
 });
 
 /**
- * 依赖连线：每条边从上游方块的上沿连到消费者方块的下沿（消费者在上面一层或更上面）。
- * 同一个上游有几个消费者时，起点在上沿均匀散开，按消费者的左右顺序排，线就不会在起点交叉；
- * 同一个消费者有几个上游时，终点在下沿同样散开。线宽按流量的平方根。
+ * 依赖连线：每条边从上游方块的下沿连到消费者方块的上沿（上游在上，消费者在下面一层或更下面），直线，两头各一个圆点（用户 2026/10/26）。
+ * 同一个上游有几个消费者时，起点在下沿均匀散开，按消费者的左右顺序排，线就不会在起点交叉；
+ * 同一个消费者有几个上游时，终点在上沿同样散开。线宽按流量的平方根。
  */
 function drawLinks() {
   const d = chainData;
@@ -496,26 +636,40 @@ function drawLinks() {
   for (const [id, list] of ins) spread('i', list, id, (e) => cx(e.from));
   const color = new Map();
   [...outs.keys()].forEach((id, i) => color.set(id, LINK_COLORS[i % LINK_COLORS.length]));
-  const max = Math.max(1, ...edges.map((e) => e.rate));
+  // 每条线在上游那一层底下走自己的一条横道（LANE 像素一条），同一层出来的按起点列从左到右排，彼此不重叠
+  const LANE = 3;
+  const lane = new Map();
+  const byRow = new Map();
+  for (const e of edges) {
+    const key = Math.round(rect.get(e.from).y);
+    (byRow.get(key) || byRow.set(key, []).get(key)).push(e);
+  }
+  for (const list of byRow.values()) {
+    list.sort((p, q) => slot.get(`o|${p.from}>${p.to}`) - slot.get(`o|${q.from}>${q.to}`) || slot.get(`i|${p.from}>${p.to}`) - slot.get(`i|${q.from}>${q.to}`));
+    list.forEach((e, i) => lane.set(e, i));
+  }
   svg.innerHTML = edges
     .map((e) => {
       const a = rect.get(e.from);
       const b = rect.get(e.to);
       const x1 = slot.get(`o|${e.from}>${e.to}`);
       const x2 = slot.get(`i|${e.from}>${e.to}`);
-      const y1 = a.y;
+      const y1 = a.y + a.h;
+      let y2;
       let path;
       if (Math.abs(a.y - b.y) < 4) {
-        // 同一层（一个目标又是另一个目标的原料）：从上沿拱过去
-        const y = a.y - 14;
-        path = `M${x1} ${y1}C${x1} ${y} ${x2} ${y} ${x2} ${b.y}`;
+        // 同一层（一个目标又是另一个目标的原料）：从下沿往下、横过去、再上到对方的下沿
+        y2 = b.y + b.h;
+        const y = Math.max(y1, y2) + 10 + lane.get(e) * LANE;
+        path = `M${x1} ${y1}V${y}H${x2}V${y2}`;
       } else {
-        const y2 = b.y + b.h;
-        const dy = Math.max(16, (y1 - y2) / 2);
-        path = `M${x1} ${y1}C${x1} ${y1 - dy} ${x2} ${y2 + dy} ${x2} ${y2}`;
+        // 直角折线（用户 2026/10/26：要芯片、流程图那种细直线）：先下到上游那一层底下自己的横道，横到消费者的列，再下到它的上沿
+        y2 = b.y;
+        const y = y1 + 8 + lane.get(e) * LANE;
+        path = `M${x1} ${y1}V${y}H${x2}V${y2}`;
       }
-      const w = (1.2 + 3.2 * Math.sqrt(e.rate / max)).toFixed(2);
-      return `<path class="lk st-${e.state}" data-from="${e.from}" data-to="${e.to}" d="${path}" stroke="${color.get(e.from)}" stroke-width="${w}"/>`;
+      const c = color.get(e.from);
+      return `<g class="lk st-${e.state}" data-from="${e.from}" data-to="${e.to}" stroke="${c}" fill="${c}"><path d="${path}" stroke-width="1.4"/><circle cx="${x1}" cy="${y1}" r="2.6"/><circle cx="${x2}" cy="${y2}" r="2.6"/></g>`;
     })
     .join('');
 }
@@ -585,13 +739,31 @@ function renderSpec() {
       </li>`;
     })
     .join('');
-  const ext = [...state.ext];
-  // 开了新配方的物品也列在这里（在弹窗底部开关）
+  renderExtChips();
+  if (!state.splitPicked) {
+    state.split = state.targets.length > 1 ? '1' : '0';
+    const el = document.querySelector(`input[name="split"][value="${state.split}"]`);
+    if (el) el.checked = true;
+    syncOptionSelects();
+  }
+  toggleStitch();
+  renderMore();
+}
+/**
+ * 左栏「外部供应」那一栏：外部供应的物品，开了新配方的物品也列在这里（在弹窗底部开关）。
+ * 以前目标用过的外部供应、新配方只在当前产线用得上时显示（用户 2026/10/26：堆太多），按后台预告的 chainItems 筛；
+ * 看不见的照样记着，目标又用上时再出来。预告算不出产线（chainItems 为空）时全列
+ */
+function renderExtChips() {
+  // 第一份预告回来之前（刚打开页面）先不列，免得先列出一堆、再收掉；目标还没选好（不发预告）时照旧全列
+  if (!forecastData && catalog.length && state.targets.every((t) => byId.get(t.id))) return ($('ext-list').innerHTML = '');
+  const inChain = forecastData?.chainItems ? new Set(forecastData.chainItems) : null;
+  const ext = [...state.ext].filter((n) => !inChain || inChain.has(catalog.find((c) => c.name === n)?.id));
   const alts = Object.keys(state.recipes)
+    .filter((id) => !inChain || inChain.has(Number(id)))
     .map((id) => byId.get(Number(id)))
     .filter(Boolean)
-    .map((x) => `<li class="rc-on">${pic(x)}${esc(x.name)}：新配方<button type="button" data-recipe-off="${x.id}" aria-label="${esc(x.name)} 改回默认配方">×</button></li>`)
-    .concat(state.burn.map((id) => byId.get(id)).filter(Boolean).map((x) => `<li class="rc-on">${pic(x)}${esc(x.name)}：就地烧掉<button type="button" data-burn-off="${x.id}" aria-label="${esc(x.name)} 改回送出">×</button></li>`));
+    .map((x) => `<li class="rc-on">${pic(x)}${esc(x.name)}：新配方<button type="button" data-recipe-off="${x.id}" aria-label="${esc(x.name)} 改回默认配方">×</button></li>`);
   $('ext-list').innerHTML =
     ext.length || alts.length
       ? ext
@@ -602,14 +774,6 @@ function renderSpec() {
           .concat(alts)
           .join('')
       : '<li class="none">无</li>';
-  if (!state.splitPicked) {
-    state.split = state.targets.length > 1 ? '1' : '0';
-    const el = document.querySelector(`input[name="split"][value="${state.split}"]`);
-    if (el) el.checked = true;
-    syncOptionSelects();
-  }
-  toggleStitch();
-  renderMore();
 }
 // 「切分后的蓝图」只在开了自动切分时有意义；自己点过「自动切分」以后就不再跟着目标个数变
 function toggleStitch() {
@@ -621,22 +785,14 @@ document.querySelectorAll('input[name="split"]').forEach((el) => el.addEventList
   saveSettings();
   toggleStitch();
 }));
-// 折叠起来的「布局细节」在标题上显示当前取值
+// 折叠起来的「集装」「物流站格子」在标题上显示当前取值
 function renderMore() {
-  const pick = (name) => document.querySelector(`input[name="${name}"]:checked`)?.nextElementSibling?.textContent ?? '';
-  const aspect = pick('aspect');
-  const mw = pick('maxwidth');
-  const mh = pick('maxheight');
-  $('more-now').textContent = `宽度${mw === '不限' ? '不限' : `≤${mw}`}，长度${mh === '不限' || !mh ? '不限' : `≤${mh}`}，长宽比${aspect === '不限' ? '不限' : ` ${aspect}`}`;
-  const connected = !!document.querySelector('input[name="station"]:checked')?.value;
-  $('stack-now').textContent = connected ? `物流站出货叠 ${pick('pile')} 层` : '';
-  $('slots-now').textContent = `增产剂格${pick('proslot')}，翘曲器格${pick('warper') === '不放' ? '不放' : '整张一格'}`;
-  const a = pick('assembler');
-  $('equip-now').textContent = `${a === '重组式' ? '重组式' : `${a} `}制造台，${pick('smelter')}熔炉，${pick('chemical')}${document.querySelector('input[name="chemwide"]:checked')?.value === '1' ? '（高纬度展开）' : ''}，${pick('lab')}研究站叠 ${labStackOf($('labstack').value)} 层，${pick('belt')}带，${pick('sorter')}分拣器`;
+  // 左栏的分组都不再折叠（用户 2026/10/26），没有摘要要写了；留着这个名字，调用处不动
 }
 // 长宽比上限和宽度、长度上限容易打架：开了长宽比，宽、长回到不限；开了宽或长，长宽比回到不限
-$('more').addEventListener('change', (e) => {
+$('spec').addEventListener('change', (e) => {
   const name = e.target?.name;
+  if (!['aspect', 'maxwidth', 'maxheight'].includes(name)) return;
   const set = (n, v) => {
     const el = document.querySelector(`input[name="${n}"][value="${v}"]`);
     if (el && !el.checked) el.checked = true;
@@ -648,9 +804,6 @@ $('more').addEventListener('change', (e) => {
   saveSettings();
   renderMore();
 });
-$('equip').addEventListener('change', renderMore);
-$('stack').addEventListener('change', renderMore);
-$('station-slots').addEventListener('change', renderMore);
 document.querySelectorAll('input[name="station"]').forEach((el) => el.addEventListener('change', renderMore));
 $('labstack').addEventListener('change', () => {
   $('labstack').value = labStackOf($('labstack').value);
@@ -661,11 +814,13 @@ $('labstack').addEventListener('change', () => {
 // 站输出集装只在接物流站时有意义
 function togglePile() {
   const connected = !!document.querySelector('input[name="station"]:checked')?.value;
+  const boxed = !connected && !!document.querySelector('input[name="supply"]:checked')?.value; // 「物流方式」选了传送带+箱子
+  document.querySelector('.seg[data-name="station"]').hidden = !connected; // 物流站位置只在物流方式选了物流站时有
   $('pile-field').hidden = !connected;
-  $('supply-field').hidden = connected; // 供货（储物仓 / 储液罐）只在不接物流站时有（用户 2026/10/18）
-  $('dist-field').hidden = connected || !document.querySelector('input[name="supply"]:checked')?.value; // 物流配送器：选了储物仓才有
-  $('stack').hidden = !connected; // 「集装」一组只剩物流站出货叠层（产物送走前叠层用户 2026/10/07 说没用、去掉了）
-  $('station-slots').hidden = !connected; // 物流站格子也只在接物流站时有意义
+  $('supply-field').hidden = !boxed; // 箱子（左侧一列仓组）的大小只在传送带+箱子时有
+  $('dist-field').hidden = !boxed; // 物流配送器：同上
+  $('proslot-field').hidden = !connected; // 物流站格子（增产剂格、翘曲器格）只在接物流站时有意义
+  $('warper-field').hidden = !connected;
   const select = $('pile-field').querySelector('select');
   if (select) {
     select.disabled = !connected;
@@ -674,13 +829,6 @@ function togglePile() {
 }
 document.querySelectorAll('input[name="station"], input[name="supply"]').forEach((el) => el.addEventListener('change', togglePile));
 $('ext-list').addEventListener('click', (e) => {
-  const burnOff = e.target.closest('button[data-burn-off]');
-  if (burnOff) {
-    state.burn = state.burn.filter((x) => x !== Number(burnOff.dataset.burnOff));
-    saveSettings();
-    renderSpec();
-    return;
-  }
   const off = e.target.closest('button[data-recipe-off]');
   if (off) {
     delete state.recipes[off.dataset.recipeOff];
@@ -708,6 +856,8 @@ function setBusy(on) {
   $('go').textContent = on ? '正在排布…' : '生成蓝图';
   clearInterval(timer);
   $('progress').hidden = !on;
+  $('cancel').hidden = !on;
+  $('like').disabled = on || likedThis; // 搜索中点不了赞
   $('progress').classList.remove('slow');
   $('progress-bar').style.width = '0';
   resetPreview();
@@ -732,6 +882,14 @@ function setBusy(on) {
     }, 100);
   }
 }
+// 取消本轮生成（用户 2026/10/26，代替原来的「就这个蓝图了」）：后台停掉帮手线程，这一次的结果不再要；编号加一，迟到的进度、结果都不认
+$('cancel').addEventListener('click', () => {
+  if (!busy) return;
+  send({ type: 'cancel', id: reqId });
+  reqId++;
+  setBusy(false);
+  setStatus('已取消本轮生成。');
+});
 
 // ---------- 实时预览（观摩退火） ----------
 // 搜索时后台每半秒报一次各轮的进度，正在看的那一轮每秒最多一份当前排法的绘图模型
@@ -743,17 +901,7 @@ function resetPreview() {
   $('preview').hidden = true;
   $('preview-tabs').innerHTML = '';
   $('preview-note').textContent = '搜索中，看第几轮';
-  $('take').disabled = true;
-  $('take').textContent = '就这个蓝图了';
 }
-// 就这个蓝图了（用户 2026/10/07）：把图纸区正在画的这一张交给后台收尾出图，结束这次搜索
-$('take').addEventListener('click', () => {
-  if (!busy || !preview?.drawnModel) return;
-  $('take').disabled = true;
-  $('take').textContent = '正在收尾…';
-  $('preview-note').textContent = '正在把这一张收尾出图';
-  send({ type: 'take', id: reqId });
-});
 function onPreview(m) {
   if (!busy) return; // 结果已经出了，迟到的快照不要
   if (!preview) preview = { gen: 0, rounds: new Map(), watch: 'auto', model: null, modelRound: null, drawnModel: null, painted: 0, userMoved: false };
@@ -806,7 +954,6 @@ function renderPreview(force) {
     const box = $('drawing');
     box.classList.add('has-svg');
     box.innerHTML = drawingSvg(preview.model, sliceRoutes(preview.model.routes), { level: 'all', id: 'preview', label: `搜索中 · 第 ${sel + 1} 轮的当前排法` });
-    if ($('take').textContent === '就这个蓝图了') $('take').disabled = false;
     // 退火时排法的宽长一直在变（刚开始常是一长条），沿用上一张的取景会跑到图外面去：没拖动、没缩放过就每张都重新适配全图
     viewer.attach(box.querySelector('svg'), !preview.userMoved);
     $('floor-name').textContent = '搜索中';
@@ -823,6 +970,28 @@ $('preview-tabs').addEventListener('click', (e) => {
   renderPreview(true);
 });
 
+/** 页面设置 → 后台的 params（生成和预告共用；生成时另加 again） */
+function buildParams() {
+  const params = { targets: state.targets.map((t) => ({ target: t.id, rate: t.rate })), raw: [...state.ext], recipes: { ...state.recipes } };
+  for (const name of OPTION_NAMES) params[name] = state[name];
+  params.orient = 'h';
+  params.labstack = state.labstack;
+  return params;
+}
+// 选完目标、改了选项就立刻算建筑数、预计用时、用电（用户 2026/10/26），写在「生成蓝图」下面；攒 250 毫秒再问，免得每敲一个数字问一次
+function requestForecast() {
+  if (!catalog.length || !state.targets.every((t) => byId.get(t.id))) return;
+  clearTimeout(forecastTimer);
+  forecastTimer = setTimeout(() => send({ type: 'forecast', id: ++forecastId, params: buildParams() }), 250);
+}
+/** 「生成蓝图」下面那一行：建筑几台（最多列 4 种工厂）、预计用时（分馏塔阵列不用搜，不写）、工厂满负荷用电；只动这一行，不碰目标的输入框 */
+function renderForecast() {
+  const d = forecastData;
+  if (!d || d.error || !d.machines) return ($('forecast').textContent = '');
+  const kinds = d.byFactory.slice(0, 4).map((f) => `${f.name} ${fmt(f.count)}`).join('、') + (d.byFactory.length > 4 ? ' 等' : '');
+  const rest = [d.seconds > 0 ? `预计约 ${Math.ceil(d.seconds)} 秒` : '', `工厂满负荷约 ${d.power.maxText}`].filter(Boolean);
+  $('forecast').textContent = `建筑 ${fmt(d.machines)} 台（${kinds}）· ${rest.join(' · ')}`;
+}
 $('spec').addEventListener('submit', (e) => {
   e.preventDefault();
   if (busy) return;
@@ -839,11 +1008,7 @@ $('spec').addEventListener('submit', (e) => {
     return;
   }
   saveSettings();
-  const params = { targets: state.targets.map((t) => ({ target: t.id, rate: t.rate })), raw: [...state.ext], recipes: { ...state.recipes } };
-  for (const name of OPTION_NAMES) params[name] = state[name];
-  params.orient = 'h';
-  params.labstack = state.labstack;
-  params.burn = state.burn.slice(); // 要就地烧掉的副产物（真实物品编号）
+  const params = buildParams();
   // 同样的输入再点一次换一个种子（用户 2026/10/24：对这个方案不满意，再点就换一个）；改了输入再回来也接着换，不重复
   const key = JSON.stringify(params);
   params.again = presses.get(key) ?? 0;
@@ -873,6 +1038,7 @@ function finish(d) {
     }
     return;
   }
+  resetLike(); // 一次生成点一次赞：切块时换着看哪块不算
   if (d.modules) {
     split = d;
     // 拼接成一张时先看整张，分开生成时先看第 1 块
@@ -885,15 +1051,15 @@ function finish(d) {
   split = null;
   $('module-tabs').hidden = true;
   show(d);
-  goalNote(d.goal, d.picked);
+  goalNote(d.goal);
 }
 
 /**
  * 没达到这一档的利用率（用户 2026/10/07 改：照常显示搜到的最好那张）：状态栏后面补一句。
  * 连续几段没进步就先停了（stalled，同日用户要的「没进展就停」），不然是到了时间上限。不可行、检查没过 show 已经说了
  */
-function goalNote(g, picked = null) {
-  if (picked || !g || g.met || g.space >= g.target) return;
+function goalNote(g) {
+  if (!g || g.met || g.space >= g.target) return;
   if (g.feasible) console.info(`[dsp-handcraft] 利用率 ${Math.round(g.space * 100)}%，没到这一档的 ${Math.round(g.target * 100)}%${g.stalled ? '（连续几段没进步，先停了）' : ''}`);
 }
 
@@ -937,7 +1103,7 @@ function stitchedSvg() {
     const H = m.metrics.height;
     const x = o.x;
     const y = TH - o.y - H;
-    const svg = drawingSvg(m.model, sliceRoutes(m.model.routes), { level: 'all', buildings: view.buildings, sorters: view.sorters, power: view.power, id: `m${k}`, label: m.module.name });
+    const svg = drawingSvg(m.model, sliceRoutes(m.model.routes), { level: 'all', buildings: view.buildings, sorters: view.sorters, power: view.power, id: `m${k}`, label: m.module.name, icon: drawIcon });
     parts.push(svg.replace(/^<svg [^>]*>/, `<svg x="${x - 2}" y="${y - 2.3}" width="${W + 4.3}" height="${H + 4.3}" viewBox="-2 -2.3 ${W + 4.3} ${H + 4.3}">`));
     const label = `${k + 1}. ${m.module.name}`;
     parts.push(`<rect x="${x + 0.3}" y="${y + 0.3}" width="${Math.min(W - 0.6, label.length * 1.25 + 1)}" height="2" rx="0.3" fill="rgba(12,35,64,0.85)"/><text x="${x + 0.8}" y="${y + 1.32}" font-size="1.3" fill="#ffffff" font-weight="700" dominant-baseline="central" font-family="system-ui, sans-serif">${esc(label)}</text>`);
@@ -951,7 +1117,10 @@ function showStitched() {
   last = null;
   floors = [];
   $('layer-controls').hidden = true;
-  $('layer-rail').hidden = true;
+  $('layer-rail').hidden = !st.energy; // 整张没有楼层可看，右侧栏只留「用电」（各块加起来的）
+  $('tab-floors').hidden = true;
+  $('route-info').hidden = true;
+  railTab(true);
   $('result-details').hidden = true;
   $('sheet-tools').querySelectorAll('button').forEach((b) => (b.disabled = false));
   splitStatus();
@@ -975,11 +1144,11 @@ function showStitched() {
   viewer.reset();
   viewer.attach(box.querySelector('svg'));
   const li = ['<li>各块之间靠物流运输机送货，每座物流站里放上运输机。</li>'];
-  if (st.energyText) li.push(`<li>整张${esc(st.energyText)}。</li>`);
   if (st.check.ok) li.push('<li class="ok">检查通过。</li>');
   for (const e of st.check.errors) li.push(`<li class="err">${esc(e)}</li>`);
   for (const w of st.check.warnings) li.push(`<li>${esc(w)}</li>`);
   $('notes').innerHTML = li.join('');
+  fillPowerCard(st.energy);
   $('ports').innerHTML = split.modules
     .map((m, k) => `<li>第 ${k + 1} 块 ${esc(m.module.name)}：产出 ${m.module.makes.map((t) => `${esc(t.name)} ${fmt(t.rate)}/分`).join('、')}；要运来 ${m.module.needs.map(esc).join('、') || '无'}。</li>`)
     .join('');
@@ -1012,6 +1181,7 @@ function show(d) {
   fillTitleBlock(d);
   fillPorts(d);
   fillNotes(d);
+  fillPowerCard(d.energy);
   fillSheetStats(d);
   $('bp').value = d.blueprint;
   $('copy').disabled = false;
@@ -1055,9 +1225,21 @@ function fillSheetStats(d) {
 }
 /** 图纸右下角标题栏的内容：第一行是图名，其余是图纸参数 */
 
+/** 右侧栏两页：楼层、用电（用户 2026/10/26：用电从「检查」挪过来） */
+function railTab(power) {
+  $('tab-floors').setAttribute('aria-selected', String(!power));
+  $('tab-power').setAttribute('aria-selected', String(power));
+  $('floor-list').hidden = power;
+  $('power-pane').hidden = !power;
+}
+$('tab-floors').addEventListener('click', () => railTab(false));
+$('tab-power').addEventListener('click', () => railTab(true));
+
 function renderFloorNav(d) {
   $('layer-controls').hidden = false;
   $('layer-rail').hidden = false;
+  $('tab-floors').hidden = false; // 新的一张先看楼层（整张拼接图那里藏过）
+  railTab(false);
   $('sheet-foot').hidden = false;
   $('result-details').hidden = false;
   $('sheet-tools').querySelectorAll('button').forEach((b) => b.disabled = false);
@@ -1079,7 +1261,7 @@ function drawSheet(d) {
   // 单层图画了别层接着走的那几段淡虚线（drawing.js 的 linkedRuns）时补一句
   $('floor-description').textContent = all ? '实线地面 · 虚线高架' : `${view.level === 0 ? '地面' : '高架'} · z=${view.level}${linkedRuns(floors, view.level).length ? ' · 虚线：别的层' : ''}`;
   $('floor-meta').textContent = `${d.model.rotated ? d.model.height : d.model.width} × ${d.model.rotated ? d.model.width : d.model.height} 格 · ${count} 带格`;
-  box.innerHTML = drawingSvg(d.model, floors, { ...view, label: `${d.title ?? d.target} · ${name} 布线图` });
+  box.innerHTML = drawingSvg(d.model, floors, { ...view, label: `${d.title ?? d.target} · ${name} 布线图`, icon: drawIcon });
   document.querySelectorAll('[data-floor]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.floor === String(view.level))));
   viewer.attach(box.querySelector('svg'));
   showRouteInfo();
@@ -1217,7 +1399,7 @@ function fillTitleBlock(d) {
     }${
       m.power ? `<tr><th>供电</th><td class="wide" colspan="3">${esc(m.power.name)} ${m.power.count} 座</td></tr>` : ''
     }${
-      d.energy ? `<tr><th>用电</th><td class="wide" colspan="3">满负荷约 ${esc(d.energy.totalText)}</td></tr>` : ''
+      d.energy ? `<tr><th>用电</th><td class="wide" colspan="3">待机 ${esc(d.energy.idleText)} · 工作 ${esc(d.energy.workText)}${d.energy.sprayText ? ` · 喷涂另加 ${esc(d.energy.sprayText)}` : ''}</td></tr>` : ''
     }`;
 }
 
@@ -1299,16 +1481,13 @@ function fillNotes(d) {
   else if (d.metrics.stationFallback) li.push('<li class="err">物流站没放进空地，改成了靠左侧站列。可以在「外部供应」里拆出一部分再试。</li>');
   else if (d.metrics.moduleRetries) dev.push(`这一块第一次排时物流站没放进空地，换种子重排了 ${d.metrics.moduleRetries} 次`);
   if (!d.feasible && d.metrics.factories > 120) li.push(`<li class="err">产线太大，排不下。可以在「外部供应」里把电路板、处理器这类中间产物设为外部供应，分开生成。</li>`);
-  if (d.metrics.lifted) li.push('<li>用到垂直传送带，要先解锁「超级磁场发生器」。</li>');
+  if (d.metrics.lifted) li.push('<li>用到直上直下的垂直传送带，前期没解锁「超级磁场发生器」时建不了。</li>');
   if (d.metrics.orient) {
     const o = d.metrics.orient;
     if (o.used === 'v') li.push('<li>竖排：整张已经转好 90°，贴的时候不用再转。</li>');
     if (o.alt) dev.push(`另一个方向 ${o.alt.width}×${o.alt.height}、${o.alt.area} 格、传送带 ${o.alt.belts}${o.alt.feasible ? '' : '（不可行）'}`);
   }
-  if (d.energy) li.push(`<li>${esc(d.energy.text)}。</li>`);
   if (!d.metrics.power) li.push('<li>没放供电，贴好后自己补。</li>');
-  for (const b of d.burn ?? []) li.push(`<li>多余的${esc(b.item)} ${fmt(b.rate)}/分就地烧掉：火力发电厂 ${b.plants} 台，约 ${fmt(b.mw)} MW，要接在用得完这些电的电网上。</li>`);
-  for (const n of d.burnNotes ?? []) li.push(`<li>${esc(n)}</li>`);
   if (d.latitude && !d.latitude.high) li.push(`<li>${esc(d.latitude.factory)}按赤道的紧凑间距排，只能贴在赤道附近。要贴到高纬度，打开「化工厂、精炼厂高纬度间距展开」。</li>`);
   const ad = d.addons;
   if (ad?.spray) {
@@ -1326,6 +1505,23 @@ function fillNotes(d) {
   if (dev.length) console.info('[dsp-handcraft] 规划细节：\n' + dev.map((x) => `- ${x}`).join('\n'));
   $('notes').innerHTML = li.join('');
 }
+/**
+ * 右侧栏「用电」一页（用户 2026/10/26：从「检查」挪过来）：待机、工作、喷涂另加、最大；最大用电按额定功率折成几台发电设施；有物流站时说一句充电另算。
+ * e：结果的 energy（拼接成一张时是各块加起来的），没有就藏起这一页
+ */
+function fillPowerCard(e) {
+  const box = $('power-pane');
+  $('tab-power').hidden = !e;
+  if (!e) {
+    railTab(false);
+    return (box.innerHTML = '');
+  }
+  const row = (k, v) => `<dt>${k}</dt><dd>${esc(v)}</dd>`;
+  box.innerHTML =
+    `<dl>${row('待机', e.idleText)}${row('工作', e.workText)}${e.sprayText ? row('喷涂另加', e.sprayText) : ''}${row('最大约', e.maxText)}</dl>` +
+    `<table><caption>按额定功率要</caption>${e.gens.map((g) => `<tr><th>${esc(g.name)}</th><td>${g.n.toFixed(2)} ${esc(g.unit)}</td></tr>`).join('')}</table>` +
+    (e.stations ? `<p>物流站充电另算（${e.stations} 座最多 ${esc(e.stationChargeText)}，电存满后就很少）</p>` : '');
+}
 
 $('copy').addEventListener('click', async () => {
   const text = $('bp').value;
@@ -1336,11 +1532,59 @@ $('copy').addEventListener('click', async () => {
     document.execCommand('copy');
   }
   for (const b of [$('copy'), $('copy-top')]) b.textContent = '已复制';
+  showLike();
   setTimeout(() => {
     for (const b of [$('copy'), $('copy-top')]) b.textContent = '复制蓝图';
   }, 2000);
 });
 $('copy-top').addEventListener('click', () => $('copy').click());
+
+// ---------- 点赞（用户 2026/10/26）：括号里是全站的总数；一次生成点一次 ----------
+// 点赞总数存在公共计数服务上（全站共享，不记人），换地方改这里
+const LIKES = { base: 'https://abacus.jasoncameron.dev', ns: 'dsp-handcraft', key: 'likes' };
+let likes = null; // 总数，没取到时为空
+let likedThis = false; // 这一次生成的结果点过了
+function renderLike() {
+  $('like-count').textContent = `${likedThis ? '已赞' : '点赞'}${likes == null ? '' : ` (${likes})`}`;
+}
+/** 问计数服务：get 只读总数（还没人点过时是 404，算 0），hit 加一再回总数；连不上就算了，不报错 */
+function askLikes(op) {
+  try {
+    fetch(`${LIKES.base}/${op}/${LIKES.ns}/${LIKES.key}`, { cache: 'no-store', referrerPolicy: 'no-referrer' })
+      .then((r) => (op === 'get' && r.status === 404 ? { value: 0 } : r.json()))
+      .then((j) => {
+        if (!Number.isFinite(j?.value) || (op === 'get' && likes != null)) return; // 点过以后才回来的 get 不认
+        likes = j.value;
+        renderLike();
+      })
+      .catch(() => {});
+  } catch {
+    /* 没有 fetch 的老浏览器 */
+  }
+}
+/** 出了新的一张：重新可点，但先藏着，复制了蓝图才露出来（用户 2026/10/26：点赞放在复制之后） */
+function resetLike() {
+  likedThis = false;
+  $('like').hidden = true;
+  $('like').disabled = false;
+  renderLike();
+}
+/** 复制了蓝图：点赞按钮露出来（这一张还没点过才能点） */
+function showLike() {
+  if ($('bp').value) $('like').hidden = false;
+  $('like').disabled = likedThis;
+  renderLike();
+}
+$('like').addEventListener('click', () => {
+  if (likedThis) return;
+  likedThis = true;
+  $('like').disabled = true;
+  if (likes != null) likes++; // 先当点上了（连不上也一样），服务回了总数再换成它的
+  renderLike();
+  askLikes('hit');
+});
+askLikes('get');
+
 // 标题栏里「需注意」点一下跳到检查
 $('sheet-stats').addEventListener('click', (e) => {
   if (e.target.closest('.warn')) $('notes').scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1352,13 +1596,10 @@ $('sheet-stats').addEventListener('keydown', (e) => {
   }
 });
 
-/** 页面初始状态：图纸参数与物品表在画布下方；布局细节展开（用户 2026/10/06），设备和集装收起（摘要一行） */
+/** 页面初始状态：图纸参数与物品表在画布下方；集装收起（摘要一行） */
 function initView() {
   $('result-body').append($('sheet-foot'));
-  $('more').open = false; // 布局细节不常用，收起放最后；设备常要改，展开（用户 2026/10/07）
-  $('equip').open = true;
-  $('stack').open = false;
-  syncOptionSelects();
+  syncLogistics();
   togglePile();
   toggleStitch();
   renderMore();
@@ -1409,9 +1650,11 @@ window.addEventListener('dsphc-icons', () => {
   renderExt();
 });
 initOptionSelects();
+initPills();
 loadSettings();
 if (handoff) applyHandoff();
 initView();
+syncOptionSelects(); // 单选按读到的设置勾好了，图纸上方那排按钮跟着写
 renderMore();
 togglePile();
 // 页面旁边有 icons/ 目录就用其中的图片（嵌在别的网页里、图标由那边给时不用找）

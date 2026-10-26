@@ -1,6 +1,6 @@
 // 迷你量化计算器：只为基准测试和单元测试生成输入。
 // 正式集成时，输入来自 antian369/dsp-calc 的计算结果（produceUnits），这里的输出结构与之对应。
-import { item, recipe as recipeOf, factory, RAW_ITEM_IDS, defaultRecipe, SPRAY_LEVELS } from '../gamedata.js';
+import { item, recipe as recipeOf, factory, RAW_ITEM_IDS, defaultRecipe, recipeChoices, SPRAY_LEVELS } from '../gamedata.js';
 import { storeUnits } from '../plan/storage.js';
 
 const idOrName = (v) => (typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : v);
@@ -43,10 +43,15 @@ export function calculate({ target, rate, targets, smelter = 2302, assembler = 2
   const rawIds = new Set([...RAW_ITEM_IDS, ...raw.map((n) => item(n).id)]);
   const overrides = new Map(Object.entries(recipes || {}).filter(([, v]) => v != null && v !== '').map(([k, v]) => [item(idOrName(k)).id, recipeOf(idOrName(v))]));
 
+  const goalIds0 = new Set(goals.map((g) => g.item.id));
   const chooseRecipe = (itemId) => {
     if (rawIds.has(itemId)) return null;
     if (overrides.has(itemId)) return overrides.get(itemId);
-    return defaultRecipe(itemId); // 优先单产物配方；只有带副产物的配方能做时（反物质），副产物单独送出
+    const r = defaultRecipe(itemId); // 优先单产物配方；只有带副产物的配方能做时（反物质），副产物单独送出
+    // 目标产物的默认配方原料里有它自己（精炼油的重整精炼）：从头做不出来，改用别的做法（等离子精炼，副产氢；用户 2026/10/26：精炼油要能当目标）。
+    // 中间产物照旧（重整精炼排不了，页面建议设外部供应），现有产线一字不变
+    if (r && goalIds0.has(itemId) && r.inputs.some((x) => x.id === itemId)) return recipeChoices(itemId)[0] ?? r;
+    return r;
   };
   const chooseFactory = (r) => {
     if (r.factories.includes(smelter)) return factory(smelter);

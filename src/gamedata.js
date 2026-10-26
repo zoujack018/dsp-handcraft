@@ -517,7 +517,8 @@ export const plannable = (recipeId, factoryId) => (FACTORY_KIND[factoryId] === '
 /**
  * 计算器默认用哪个配方做这种物品：编号最小的单产物配方（和以前一样，不管工厂排不排得了）；
  * 没有单产物配方时，才用「这种物品是第一个产物、工厂排得了、原料里没有它自己」的带副产物配方（比如反物质只能用质能储存，同时出氢）。
- * 都没有就是原料（从边缘或物流站进）。
+ * 都没有就是原料（从边缘或物流站进）。精炼油的默认是重整精炼（原料里有它自己、精炼厂排不了，中间产物照旧建议外部供应）；
+ * 当目标时计算器改用等离子精炼（calculator.js 的 chooseRecipe，用户 2026/10/26）
  */
 export function defaultRecipe(itemId) {
   const all = recipesProducing(itemId).filter((r) => r.type !== -1 && r.outputs[0].id === itemId).sort((a, b) => a.id - b.id);

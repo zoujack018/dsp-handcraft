@@ -52,6 +52,13 @@ export function line(from, to) {
   return out;
 }
 
+/** 侧边总线排到左边（route.js 的 busSide 'auto'）时最左那一列，就是左边总线口那一列（layout/ports.js）；没有排到左边的总线时 0 */
+export function busMinX(ports) {
+  let m = 0;
+  for (let i = 0; i < ports.length; i++) if (ports[i].bus === true && ports[i].x < m) m = ports[i].x;
+  return m;
+}
+
 /**
  * 边缘出入口往外的那一行（用户 2026/10/24：入口外面还有一层带子、上面再有高架就接不出去）：每个还从边缘进出的口
  * （不接站、仓、不就地烧），所在那一行从口外一格一直往外 RAY_OUT 格（接仓、接发电厂时寻路的地比布局宽，一直留到外面）。这些格子的地面留空：高架落地（plan/ground.js）、

@@ -7,11 +7,14 @@
 //   每半边两条收集带各过一台集装机，在四向分流器汇成一条，喷上增产剂进站。
 //   分馏塔的口：1 号是输入（背面），2 号是直通（正面，没分馏的氢接着往下一座走），0 号是产物（侧面，重氢）。
 //
-// 生成时：按要的重氢产量算塔数 → 挑几个循环（离站最近的先用）→ 每个循环从末尾起把多余的塔换成直带 →
-// 删掉没用的循环、站口、电塔 → 裁掉空出来的边。
+// 生成时：按要的重氢产量算塔数 → 挑几个循环（离站最近的先用）→ 每个循环留最靠近站的塔、多余的换成直带 →
+// 删掉没用的循环、站口、电塔 → 压紧（compact.js：删只剩直带的行、列，站往循环那边剪切，删多余电塔、重放电塔，每步查建造盒碰撞）→
+// 裁掉空出来的边 → 比宽还长就转 90°。有宽、长、长宽比上限时每份从 4 个循环往少了试，取第一个放得下的。
 import { fromStr, toStr } from '../codec/parser.js';
 import { POWER, powerReach } from '../plan/power.js';
+import { rotateBlueprint } from '../emit/rotate.js';
 import { TEMPLATE } from './template.js';
+import { compact, collisions } from './compact.js';
 
 const ST = 2104;
 const FRAC = 2314;
@@ -129,10 +132,10 @@ export function analyzeTemplate(B) {
   return { station, tag, loops, fedBy, preds, untagged };
 }
 
-/** 要 n 座塔：分几份粘贴、每份几座、用哪几个循环、每个循环几座 */
-export function arrayPlan(rate, perTower = PER_TOWER) {
+/** 要 n 座塔：分几份粘贴、每份几座、用哪几个循环、每个循环几座；maxLoops：每份最多几个循环（尺寸上限放不下时往少了试） */
+export function arrayPlan(rate, perTower = PER_TOWER, maxLoops = LOOPS.length) {
   const towers = Math.max(1, Math.ceil(rate / perTower - 1e-9));
-  const copies = Math.ceil(towers / MAX_TOWERS);
+  const copies = Math.ceil(towers / (TOWERS_PER_LOOP * maxLoops));
   const per = Math.ceil(towers / copies);
   const nLoops = Math.ceil(per / TOWERS_PER_LOOP);
   const base = Math.floor(per / nLoops);
@@ -147,10 +150,40 @@ export function arrayPlan(rate, perTower = PER_TOWER) {
  * @param {object} [o]
  * @param {number} [o.spray=3] 氢喷什么增产剂：0 不喷，1~3 Mk.I~Mk.III（决定分馏概率和站里存哪种增产剂）
  * @param {number} [o.perTower] 每座塔每分钟出多少重氢（默认 7200 × 概率）
- * @returns {{str: string, plan: object, buildings: object[], width: number, height: number, tags: Map, notes: string[]}}
+ * @param {'h'|'v'} [o.orient='h'] 'h' 横着出：比宽还长就整张顺时针转 90°（同 emit/rotate.js），站到下边；'v' 照原图竖着
+ * @param {number} [o.maxWidth] [o.maxHeight] [o.maxAspect] 出出来的宽、长、长边比短边的上限：每份从 4 个循环往少了试，取第一个放得下的；
+ *   都放不下就用 1 个循环的那种、notes 里说一声。plan.limits 记着上限、试过哪几种、被哪条卡住
+ * @returns {{str: string, plan: object, buildings: object[], width: number, height: number, tags: Map, notes: string[], rotated: boolean}}
  */
-export function fractionatorArray(rate, { spray = 3, perTower = perTowerOf(spray), title } = {}) {
-  const plan = arrayPlan(rate, perTower);
+export function fractionatorArray(rate, { spray = 3, perTower = perTowerOf(spray), title, orient = 'h', maxWidth = null, maxHeight = null, maxAspect = null } = {}) {
+  const over = (r) => [
+    maxWidth != null && r.width > maxWidth && 'width',
+    maxHeight != null && r.height > maxHeight && 'height',
+    maxAspect != null && Math.max(r.width, r.height) / Math.min(r.width, r.height) > maxAspect + 1e-9 && 'aspect',
+  ].filter(Boolean);
+  const tried = [];
+  let r;
+  for (let k = LOOPS.length; k >= 1; k--) {
+    const plan = arrayPlan(rate, perTower, k);
+    if (tried.some((t) => t.copies === plan.copies)) continue; // 份数一样就是同一种
+    r = buildArray(plan, { spray, perTower, title, orient });
+    tried.push({ loops: plan.loops.length, copies: plan.copies, per: plan.per, width: r.width, height: r.height, over: over(r) });
+    if (!tried.at(-1).over.length) break;
+  }
+  const p = r.plan;
+  const first = tried[0], last = tried.at(-1);
+  const fit = !last.over.length;
+  const say = (names) => [...new Set(names)].map((k) => ({ width: `宽度上限 ${maxWidth} 格`, height: `长度上限 ${maxHeight} 格`, aspect: `长宽比上限 ${maxAspect} ` })[k]).join('、').replace(/ 、/g, '、');
+  const split = `要 ${p.towers} 座，这张图粘贴 ${p.copies} 份（每份 ${p.per} 座）。`;
+  p.limits = maxWidth == null && maxHeight == null && maxAspect == null ? null : { maxWidth, maxHeight, maxAspect, fit, by: [...new Set(tried.flatMap((t) => t.over))], tried };
+  if (!fit) r.notes.unshift(`${say(last.over)}内放不下一个氢循环（最小 ${last.width}×${last.height}）。${p.copies > 1 ? split : ''}`);
+  else if (last !== first) r.notes.unshift(`${say(tried.slice(0, -1).flatMap((t) => t.over))}放不下 ${first.loops} 个循环（${first.width}×${first.height}），每份改用 ${p.loops.length} 个循环。${split}`);
+  else if (p.copies > 1) r.notes.unshift(`一座物流站最多带 ${MAX_TOWERS} 座塔（4 个循环）。${split}`);
+  return r;
+}
+
+/** 按 plan 裁一份 */
+function buildArray(plan, { spray, perTower, title, orient }) {
   const bp = fromStr(TEMPLATE);
   const B = bp.buildings;
   const A = analyzeTemplate(B);
@@ -165,12 +198,14 @@ export function fractionatorArray(rate, { spray = 3, perTower = perTowerOf(spray
   }
   // 不喷增产剂：喷涂机和增产剂带都不要
   if (!spray) for (const b of B) if (b.itemId === COATER || A.tag.get(b.index) === 'P') removed.add(b.index);
-  // 循环末尾多余的塔换成直带
+  // 每个循环留离站最近的塔：氢往外走的那列（8 座）取前一半、往回走的那列（7 座）取后面剩下的，其余换成直带
   const added = [];
   const replaced = [];
   for (const { key, towers } of plan.loops) {
     const lp = A.loops.get(key);
-    for (const f of lp.order.slice(towers).reverse()) {
+    const kL = Math.min(8, Math.ceil(towers / 2));
+    const keepT = new Set([...lp.order.slice(0, kL), ...lp.order.slice(lp.order.length - (towers - kL))].map((f) => f.index));
+    for (const f of lp.order.filter((f) => !keepT.has(f.index)).reverse()) {
       const inB = B.find((b) => isBelt(b) && b.outputObjIdx === f.index);
       const outB = (A.fedBy.get(f.index) ?? []).find((b) => b.inputFromSlot === 2);
       // 侧面 0 号口出来、并进收集带之前的那几节带子一起删掉
@@ -256,6 +291,7 @@ export function fractionatorArray(rate, { spray = 3, perTower = perTowerOf(spray
     useful.add(cand.index);
   }
   for (const t of towers) if (!useful.has(t.index)) removed.add(t.index);
+  compact(all, removed, A.tag);
   // 重新编号、修链接
   const kept = all.filter((b) => !removed.has(b.index));
   const map = new Map(kept.map((b, i) => [b.index, i]));
@@ -275,19 +311,21 @@ export function fractionatorArray(rate, { spray = 3, perTower = perTowerOf(spray
     x1 = Math.max(x1, p.x + h); y1 = Math.max(y1, p.y + h);
   }
   for (const b of kept) for (const o of b.localOffset) { o.x -= x0; o.y -= y0; }
-  const width = x1 - x0 + 1;
-  const height = y1 - y0 + 1;
   bp.buildings = kept;
-  bp.dragBoxSize = { x: width, y: height };
-  bp.cursorOffset = { x: Math.floor(width / 2), y: Math.floor(height / 2) };
-  bp.areas = [{ ...bp.areas[0], size: { x: width, y: height } }];
+  bp.dragBoxSize = { x: x1 - x0 + 1, y: y1 - y0 + 1 };
+  bp.cursorOffset = { x: Math.floor(bp.dragBoxSize.x / 2), y: Math.floor(bp.dragBoxSize.y / 2) };
+  bp.areas = [{ ...bp.areas[0], size: { ...bp.dragBoxSize } }];
+  // 横着出：比宽还长就整张顺时针转 90°（朝向加 90°，站口、连接不变），站到下边
+  const rotated = orient === 'h' && bp.dragBoxSize.y > bp.dragBoxSize.x;
+  if (rotated) rotateBlueprint(bp);
+  const { x: width, y: height } = bp.dragBoxSize;
   const fracs = kept.filter((b) => b.itemId === FRAC).length;
   bp.header = {
     ...bp.header,
     icons: [D, FRAC, 0, 0, 0],
     time: new Date(),
     shortDesc: title ?? `重氢分馏 ${fracs} 塔`,
-    desc: `${width}×${height} 格；分馏塔 ${fracs} 座，${plan.loops.length} 个氢循环；按每座 ${+perTower.toFixed(1)}/分（集装 4 层，${SPRAY[spray].name}）约 ${Math.round(fracs * perTower)}/分。照用户提供的 60 塔阵列裁剪。dsp-handcraft 生成`,
+    desc: `${width}×${height} 格；分馏塔 ${fracs} 座，${plan.loops.length} 个氢循环；按每座 ${+perTower.toFixed(1)}/分（集装 4 层，${SPRAY[spray].name}）约 ${Math.round(fracs * perTower)}/分。dsp-handcraft 生成`,
   };
   const pct = `${+(SPRAY[spray].p * 100).toFixed(2)}%`;
   const notes = [
@@ -296,9 +334,8 @@ export function fractionatorArray(rate, { spray = 3, perTower = perTowerOf(spray
       ? `氢从物流站出来先过喷涂机、再过两台自动集装机叠到 4 层；物流站要供氢和${SPRAY[spray].name}（5 号口送去喷涂机），收重氢。`
       : '氢从物流站出来过两台自动集装机叠到 4 层；物流站要供氢，收重氢。',
   ];
-  if (plan.copies > 1) notes.unshift(`一座物流站最多带 ${MAX_TOWERS} 座塔（4 个循环）。要 ${plan.towers} 座，这张图粘贴 ${plan.copies} 份（每份 ${plan.per} 座）。`);
-  if (replaced.length) notes.push(`有 ${replaced.length} 个塔位换成了直带（氢照样流过），以后要加产量可以把塔补回去。`);
-  return { str: toStr(bp), bp, plan, buildings: kept, tags, width, height, fracs, notes, spray };
+  if (replaced.length) notes.push(`有 ${replaced.length} 个塔位换成了直带（氢照样流过）。`);
+  return { str: toStr(bp), bp, plan, buildings: kept, tags, width, height, fracs, notes, spray, rotated };
 }
 
 /**
@@ -383,10 +420,30 @@ export function checkArray(str) {
   };
 }
 
-/** 网页画图用的模型：分馏塔、物流站、集装机等小设备、电塔，带子按物品分成一段段逐格路径 */
+/**
+ * 建造盒碰撞扫一遍（compact.js 的规则，东西向格宽按 0.85）：转过 90° 的图倒回转之前的坐标、朝向再扫。
+ * 转完原来的南北向成了东西向：塔距 4 格在东西向按 0.85 只有 4.27 m，比分馏塔的 4.5 m 窄，连原图转过来都撞（推断；东西向格宽 0.9 以上的赤道附近才干净）。
+ * 返回撞的对子 [index, index]
+ */
+export function arrayCollisions(result) {
+  const B = !result.rotated
+    ? result.buildings
+    : result.buildings.map((b) => ({ ...b, localOffset: [{ x: result.height - 1 - b.localOffset[0].y, y: b.localOffset[0].x, z: b.localOffset[0].z }], yaw: [b.yaw[0] - 90] }));
+  return collisions(B);
+}
+
+/**
+ * 网页画图用的模型：分馏塔、物流站、集装机等小设备、电塔，带子按物品分成一段段逐格路径。
+ * 转过 90° 的图（result.rotated）：模型照转之前的坐标、朝向给，标 rotated，网页整组顺时针转 90° 显示（同普通产线的竖排；分馏塔只画得出朝左、朝右）
+ */
 export function arrayModel(result) {
   const B = result.buildings;
   const tags = result.tags;
+  const turned = !!result.rotated;
+  // (x, y) → (y, W − 1 − x) 倒回去：W 是转之前的宽，也就是转之后的长
+  const pos = (b) => (turned ? { x: result.height - 1 - b.localOffset[0].y, y: b.localOffset[0].x, z: b.localOffset[0].z } : b.localOffset[0]);
+  const P = (b) => ({ x: Math.round(pos(b).x), y: Math.round(pos(b).y) });
+  const yaw = (b) => (turned ? (((b.yaw[0] - 90) % 360) + 360) % 360 : b.yaw[0]);
   const proId = SPRAY[result.spray ?? 3].item || PRO;
   const itemOf = (b) => (tags.get(b.index) === 'P' ? proId : null);
   // 带子的物品：顺着链子看，接到物流站重氢进站口 / 从分馏塔 0 号口出来的是重氢，增产剂单独，其余是氢
@@ -412,7 +469,7 @@ export function arrayModel(result) {
   const preds = new Map();
   for (const b of B) if (isBelt(b) && b.outputObjIdx >= 0 && isBelt(B[b.outputObjIdx])) preds.set(b.outputObjIdx, (preds.get(b.outputObjIdx) ?? 0) + 1);
   // 楼层：原图的高架有 0.5 和 1 两种高度（同一格上下叠两条），画图时分到 L2、L3
-  const cellOf = (b) => [Math.round(b.localOffset[0].x), Math.round(b.localOffset[0].y), Math.max(0, Math.round(b.localOffset[0].z * 2))];
+  const cellOf = (b) => [P(b).x, P(b).y, Math.max(0, Math.round(b.localOffset[0].z * 2))];
   const routes = [];
   const used = new Set();
   for (const h of B.filter((b) => isBelt(b) && (preds.get(b.index) ?? 0) !== 1)) {
@@ -435,29 +492,30 @@ export function arrayModel(result) {
   const fr = B.filter((b) => b.itemId === FRAC);
   const byY = new Map();
   for (const f of fr) {
-    const p = R(f);
+    const p = P(f);
     if (!byY.has(p.y)) byY.set(p.y, []);
     byY.get(p.y).push(f);
   }
   const rows = [...byY.entries()].map(([cy, fs]) => ({
     cy,
-    groups: fs.map((f) => ({ id: `f${f.index}`, letter: loopLetter(f), item: '重氢', factory: '分馏塔', kind: 'fractionator', count: 1, centers: [R(f).x], below: 1, above: 1, yaw: f.yaw[0] })),
+    groups: fs.map((f) => ({ id: `f${f.index}`, letter: loopLetter(f), item: '重氢', factory: '分馏塔', kind: 'fractionator', count: 1, centers: [P(f).x], below: 1, above: 1, yaw: yaw(f) })),
   }));
-  const devices = B.filter((b) => [PILER, COATER, SPLIT].includes(b.itemId)).map((b) => ({ x: R(b).x, y: R(b).y, kind: { [PILER]: 'piler', [COATER]: 'coater', [SPLIT]: 'splitter' }[b.itemId], yaw: b.yaw[0] }));
+  const devices = B.filter((b) => [PILER, COATER, SPLIT].includes(b.itemId)).map((b) => ({ x: P(b).x, y: P(b).y, kind: { [PILER]: 'piler', [COATER]: 'coater', [SPLIT]: 'splitter' }[b.itemId], yaw: yaw(b) }));
   const reach = powerReach('tesla');
   const st = B.find((b) => b.itemId === ST);
   const n = result.fracs * result.plan.perTower;
   return {
-    width: result.width,
-    height: result.height,
+    width: turned ? result.height : result.width,
+    height: turned ? result.width : result.height,
+    rotated: turned,
     origin: { x: 0, y: 0 },
     rows,
     items: { [H]: { name: '氢', letter: 'h', rate: n }, [D]: { name: '重氢', letter: 'd', rate: n }, ...(result.spray ? { [proId]: { name: SPRAY[result.spray].name, letter: 'p', rate: 0 } } : {}) },
     segments: [],
     legs: [],
     sorters: [],
-    power: { name: POWER.tesla.name, size: 1, cover: reach.cover, nodes: B.filter((b) => b.itemId === TESLA).map((b) => ({ x: R(b).x, y: R(b).y })) },
-    stations: st ? [{ x: R(st).x, y: R(st).y }] : [],
+    power: { name: POWER.tesla.name, size: 1, cover: reach.cover, nodes: B.filter((b) => b.itemId === TESLA).map((b) => P(b)) },
+    stations: st ? [P(st)] : [],
     stubs: [],
     routes,
     devices,

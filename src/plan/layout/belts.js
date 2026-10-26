@@ -162,6 +162,7 @@ export function routeItems(c) {
   // 原料带给最终那几组单开入口，只喷那条。没给时每条进工厂的带都喷（sprayScope 'all'）
   const sprayAll = !!opt.sprayAll;
   const bridges = !!opt.bridges; // 桥：竖直列能穿过熔炉、制造台的块（positions.js 的 bestColumn），桥段记 leg.bridge
+  const leftEnds = side || !!opt.leftPorts; // 原料段要朝右流、成品段要朝左流：靠左侧站列，或出入口都在左边（route.js 的 leftPorts）
   const sprayItems = sprayAll && opt.sprayItems ? new Set(opt.sprayItems) : null;
   const sprayTo = sprayItems ? new Set(opt.sprayTo ?? []) : null;
   const toFinal = (cc) => sprayTo.has(cc.p.gid); // 这个消费者是最终那几组（吃喷过的料）
@@ -288,6 +289,9 @@ export function routeItems(c) {
   const beltCap = BELT_SPEED[opt.belt] * opt.stack * 60;
   // 物流站输出原料时可以集装（科技解锁后 1~4 层），原料带的运力随之翻倍；成品由分拣器放上带，不集装
   const rawCap = beltCap * Math.max(1, opt.station?.stack ?? opt.externalStack ?? 1);
+  // 自动集装机（opt.pilers，用户 2026/10/26）：分拣器放上带的是单个物品，带上每放约 1700/分过一台集装机叠成 4 层，
+  // 产物带一条最多运单条带的 4 倍，不到这个量不拆带（集装机放在哪儿是后处理，plan/addons.js 的 stackPilers）。关掉时和单条带一样
+  const pileCap = opt.pilers ? Math.max(beltCap, BELT_SPEED[opt.belt] * 4 * 60) : beltCap;
   // 排物品的顺序：只能走某一个通道的先排，能二选一的后排（让它们去轨道少的那边）；原料入口随时可以多开，最后排
   const flex = (f) => {
     if (f.producer === 'RAW') return 3;
@@ -312,17 +316,17 @@ export function routeItems(c) {
     return both === 1 ? 0 : both === 0 ? 1 : 2;
   };
   /**
-   * 产物流量超过单条带运力（比如 2070/分 的铁块）：按位置把生产者分成几组，每组一条带，
+   * 产物流量超过一条带的运力（pileCap；比如关掉集装机时 2070/分 的铁块）：按位置把生产者分成几组，每组一条带，
    * 消费者就近挂到还有余量的那一组；成品出口分到有富余的组。
    */
   const splitFlow = (prods, cons, out, per) => {
-    const k = Math.ceil((prods.reduce((a, p) => a + p.n * per, 0) - TOL) / beltCap);
+    const k = Math.ceil((prods.reduce((a, p) => a + p.n * per, 0) - TOL) / pileCap);
     const total = prods.reduce((a, p) => a + p.n * per, 0);
     const bins = [];
     let cur = null;
     for (const p of prods.slice().sort((a, b) => a.row - b.row || a.x0 - b.x0)) {
       const o = p.n * per;
-      if (!cur || (cur.P.length && (cur.prod + o > beltCap + TOL || (cur.prod >= total / k - TOL && bins.length < k)))) bins.push((cur = { P: [], C: [], prod: 0, need: 0, out: 0 }));
+      if (!cur || (cur.P.length && (cur.prod + o > pileCap + TOL || (cur.prod >= total / k - TOL && bins.length < k)))) bins.push((cur = { P: [], C: [], prod: 0, need: 0, out: 0 }));
       cur.P.push(p);
       cur.prod += o;
     }
@@ -388,7 +392,7 @@ export function routeItems(c) {
       const prod = [];
       for (let j = 0; j < k; j++) {
         const v = pre[bounds[j + 1]] - pre[bounds[j]];
-        if (!(v > 0) || v > beltCap + TOL) return;
+        if (!(v > 0) || v > pileCap + TOL) return;
         prod.push(v);
       }
       const rowAt = [];
@@ -844,9 +848,11 @@ export function routeItems(c) {
     }
     // 几条带（几个入口）时都从同一边进（用户 2026/10/24：一种原料不要从几个方向进，要在一处）：左右各试算一遍取便宜的那边。
     // 接物流站（站列、边缘放站）时入口不在左右边缘，不限
-    // 开侧边总线（groupPorts，layout/ports.js）时一律从右边进：总线排在右边布局外，左边没有往外排的余地
-    if ((opt.sameSide || opt.groupPorts) && groups.length > 1 && !side && !opt.freeEnds) {
-      if (opt.groupPorts) rawSide = 1;
+    // 开侧边总线（groupPorts，layout/ports.js）时一律从右边进：总线排在右边布局外，左边没有往外排的余地。
+    // 总线可以排左边（busSide 'auto'，试验开关）时照样左右各试算一遍，总线排到这种原料进的那一边。
+    // 出入口都在左边（leftPorts）时不限：下面的方向约束已经让原料都从左边进
+    if ((opt.sameSide || opt.groupPorts) && groups.length > 1 && !side && !opt.freeEnds && !opt.leftPorts) {
+      if (opt.groupPorts && opt.busSide !== 'auto') rawSide = 1;
       else {
         let best = null;
         for (const sd of [-1, 1]) {
@@ -1121,8 +1127,8 @@ export function routeItems(c) {
       // 高架段长度（竖直部分按跨过的通道数估）
       const c0 = entryCol(mD[0]);
       if (isRaw && !opt.freeEnds && !atPort(mIn[0], c0)) len += Math.abs(mIn[0] - c0) + 2;
-      // 接物流站：原料从左边的主干走廊进来，段要朝右流；成品要朝左流回走廊，否则带子得掉头
-      if (side && isRaw && mD[0] !== 1) bad++;
+      // 接物流站：原料从左边的主干走廊进来，段要朝右流；成品要朝左流回走廊，否则带子得掉头（出入口都在左边时一样，见 leftEnds）
+      if (leftEnds && isRaw && mD[0] !== 1) bad++;
       let shortfall = -worst;
       if (!isRaw && outRate > 0) shortfall += Math.max(0, outRate - acc);
       // 到成品出口那一截和中间的竖直列无关：先算出来给下界用，照原来的先后最后才加进 len
@@ -1134,7 +1140,7 @@ export function routeItems(c) {
         else {
           const c1 = exitCol(dl);
           if (!opt.freeEnds && !atPort(mOut[k - 1], c1)) outLen = Math.abs(c1 - mOut[k - 1]) + 2;
-          if (side && dl !== -1) outBad++;
+          if (leftEnds && dl !== -1) outBad++;
         }
       }
       // 喷涂：最后一个生产访问（gapAt）和紧接着的第一个消费访问在同一个通道、同向，消费的第一个口在最后一个放料口下游
@@ -1511,10 +1517,10 @@ export function routeItems(c) {
           cc.d = c.rate / g.count;
         }
       }
-      if (isRaw || f.rate <= beltCap + TOL) routeFlow(prodAll, CA, nCons, outAll, f.rate);
+      if (isRaw || f.rate <= pileCap + TOL) routeFlow(prodAll, CA, nCons, outAll, f.rate);
       else for (const part of splitFlow(prodAll, CA.slice(0, nCons), outAll, f.perFactory)) routeFlow(part.P, part.C, part.C.length, part.out, part.rate);
     }
   }
 
-  Object.assign(c, { beltCap, chains, legs, rawCap, segments, sides });
+  Object.assign(c, { beltCap, chains, legs, pileCap, rawCap, segments, sides });
 }

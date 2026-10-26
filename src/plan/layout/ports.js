@@ -82,7 +82,7 @@ const CEN_B = [];
 
 /** route() 的一步：读写共享的布局上下文 c */
 export function placePorts(c) {
-  const { P, addPenalty, atPort, corridor, legs, opt, segments, side, stationX, xR } = c;
+  const { P, addPenalty, atPort, corridor, legs, opt, segments, side, stationX, xL, xR } = c;
   let { height } = c; // 物流站靠左侧时，站叠起来比生产区高，要把布局加高
   // ---------- E. 高架段与出入口 ----------
   // 地面上已占用的带子格：按 (x, y) 编成一维下标的 Int32Array（代替数字键的 Set，退火里每次 route() 都要把所有段的格子记一遍）。
@@ -157,7 +157,12 @@ export function placePorts(c) {
     // 沿这一列竖着走到自己那段的行，再往里走到段首落下（layout/elevation.js）。往上走的、往下走的各排一边，离得近的走里面那列、
     // 口挨着中间：同一种原料的几条带互不交叉，第 1 层就够。几种原料的总线往外一组接一组，口都在最外那一列、各占不相交的几行。
     // 别的从右边进出的口不放总线口那几行（往外接的那一行要穿过总线的口）
-    if (opt.groupPorts && !opt.freeEnds) groupPorts();
+    // 总线也可以排左边（route.js 的 busSide 'auto'，试验开关）：从左边缘进的照样分组，镜像排在左边布局外（xL − 1 起往外，口在 x < 0）。
+    // 出入口都在左边（leftPorts，箱子供货的左侧仓列）时左边不排：仓组照旧接各自的口
+    if (opt.groupPorts && !opt.freeEnds) {
+      groupPorts(1);
+      if (opt.busSide === 'auto' && !opt.leftPorts) groupPorts(-1);
+    }
     for (let i = 0; i < legs.length; i++) {
       const leg = legs[i];
       if (leg.kind === 'link' || leg.bus != null) continue;
@@ -194,10 +199,12 @@ export function placePorts(c) {
    * 侧边总线（见上面调用处）。原来按原料建 Map、各组 filter / sort、口的行放在 Set、方案放在 busPlans 里；现在都换成共用的数组和行号戳，
    * 算法、先后不变：组按第一次出现的先后（和 Map 的插入先后一样），组里的带按 legs 的先后；排序都是稳定的插入排序、比较式照抄
    * （值都是整数行号，和 sort 的结果一样）。没有哪种原料有 ≥ 2 条从右边缘进的带时整块不改任何状态（avoid 只经 pick 用、pick 只对
-   * ≥ 2 条的原料调，used、busPlans 都空着），直接返回
+   * ≥ 2 条的原料调，used、busPlans 都空着），直接返回。
+   * sd：1 右边（边缘列 xR，总线的列 xR + 1 起往右），−1 左边（边缘列 xL，xL − 1 起往左，busSide 'auto' 才排）；两边的口各占各的行，互不相干
    */
-  function groupPorts() {
-    // 从右边缘进的原料带按原料（realItem）分组：第 i 条带在第 of[i] 组（别的带 −1），第 j 组的原料是 keys[j]、有 cnt[j] 条
+  function groupPorts(sd) {
+    const xe = sd > 0 ? xR : xL; // 这一边的边缘列
+    // 从这一边边缘进的原料带按原料（realItem）分组：第 i 条带在第 of[i] 组（别的带 −1），第 j 组的原料是 keys[j]、有 cnt[j] 条
     const of = scratch(0, legs.length);
     const keys = list(0);
     const cnt = scratch(1, legs.length);
@@ -206,7 +213,7 @@ export function placePorts(c) {
     for (let i = 0; i < legs.length; i++) {
       const leg = legs[i];
       of[i] = -1;
-      if (leg.kind !== 'in' || leg.edge !== xR) continue;
+      if (leg.kind !== 'in' || leg.edge !== xe) continue;
       const k = realItem(leg.itemId);
       let j = 0;
       while (j < ng && !(keys[j] === k || (k !== k && keys[j] !== keys[j]))) j++; // Map 的键比法（SameValueZero）
@@ -246,10 +253,10 @@ export function placePorts(c) {
       }
       usedRows[nUsed++] = y;
     };
-    // 别的从右边进出的口多半落在自己那段的行（段本来就伸到边缘列时只能在那一行）：总线的口不放这几行，不然正好挡在它外面
+    // 别的从这一边进出的口多半落在自己那段的行（段本来就伸到边缘列时只能在那一行）：总线的口不放这几行，不然正好挡在它外面
     for (let i = 0; i < legs.length; i++) {
       const leg = legs[i];
-      if (leg.kind === 'link' || leg.edge !== xR) continue;
+      if (leg.kind === 'link' || leg.edge !== xe) continue;
       if (leg.kind === 'in' && cnt[of[i]] > 1) continue;
       const y = segments[leg.kind === 'in' ? leg.to : leg.from].y;
       if (isRow(y)) RA0[y] = rst;
@@ -283,7 +290,7 @@ export function placePorts(c) {
     const bPy = list(9);
     const bCol = list(10);
     let nb = 0;
-    let off = xR; // 下一组总线从哪一列往外排
+    let off = xe; // 下一组总线从哪一列往外排（往 sd 那边）
     for (let j = 0; j < ng; j++) {
       if (cnt[j] < 2) continue;
       let n = 0;
@@ -345,23 +352,23 @@ export function placePorts(c) {
       for (let i = 0; i < nd; i++) {
         bLeg[nb] = dn[i];
         bPy[nb] = rd[i];
-        bCol[nb++] = off + 1 + i;
+        bCol[nb++] = off + sd * (1 + i);
       }
       for (let i = 0; i < nu; i++) {
         bLeg[nb] = up[i];
         bPy[nb] = ru[i];
-        bCol[nb++] = off + 1 + i;
+        bCol[nb++] = off + sd * (1 + i);
       }
-      off += Math.max(nu, nd);
+      off += sd * Math.max(nu, nd);
     }
     for (let i = 0; i < nb; i++) {
       const leg = bLeg[i];
-      leg.edge = off + 1;
+      leg.edge = off + sd;
       leg.py = bPy[i];
       leg.bus = bCol[i];
-      ports.push({ kind: 'in', itemId: leg.itemId, x: off + 1, y: bPy[i], rate: leg.rate, leg: leg.id, direct: false, bus: true });
+      ports.push({ kind: 'in', itemId: leg.itemId, x: off + sd, y: bPy[i], rate: leg.rate, leg: leg.id, direct: false, bus: true });
     }
-    for (let i = 0; i < nUsed; i++) putGround(xR, usedRows[i]); // 别的口不放这几行，也不直接接到这几行的边缘
+    for (let i = 0; i < nUsed; i++) putGround(xe, usedRows[i]); // 别的口不放这几行，也不直接接到这几行的边缘
   }
 
   /** E1. 物流站靠左侧（见下面的注释） */

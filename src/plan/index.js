@@ -11,11 +11,14 @@ import { buildGraph } from './graph.js';
 import { optimize, mergeRounds, precompute } from './place.js';
 import { addPower, placePower } from './power.js';
 import { spaceStats } from '../metrics/space.js';
-import { attachStations, linkWarpers } from './stations.js';
+import { attachStations, linkWarpers, cropToContent } from './stations.js';
 import { groundRoutes, groundOptions } from './ground.js';
-import { addAddons } from './addons.js';
-import { addStores, addProStores } from './storage.js';
+import { addAddons, needsStacking } from './addons.js';
+import { stackCapOf } from './route.js';
+import { addStores, addProStores, isColumnSupply } from './storage.js';
 import { addBurners, burnable } from './burn.js';
+import { translateLayout } from './coordinates.js';
+import { busMinX } from './layout/shared.js';
 import { powerCells, realItem } from '../gamedata.js';
 
 export const TARGET_SPACE = 0.8;
@@ -37,15 +40,78 @@ export function stationOption(options = {}) {
 /**
  * 一个搜索候选走完全部后处理；接不上物流站时返回 null。只用到布局本身，可以放到后台线程里做。
  * ctx：{ station, power, powerOptions, maxWidth, maxHeight, noGrounding, ground 高架落地的选项（ground.js 的 groundOptions，变层税没开时 null）, aw, spray, sprayItems, sprayTo, pile, sprayRate, burn,
+ *        stackCap 运的超过一条带的产物带上放集装机（route.js 的 stackCapOf，0 是关着；plan/addons.js 的 stackPilers）,
  *        supply 箱子供货（plan/storage.js 的 SUPPLY，不接物流站时）, sorter 分拣器（箱子组按它的速度算几根）, storeLayers 储物仓最多叠几层 }
  */
+/**
+ * 段两头超出首尾分拣器、又没有任何东西接着的格子裁掉：段的范围按候选口位（tmin/tmax）留，分拣器实际落位可能在里面一格，
+ * 那一格就成了多伸出去的死胡同。有腿（高架、口、仓的接线）接在这头、这一格是出入口、段留了喷涂空当或劈开过的都不动。
+ * 裁到图框边上的那一格时整张重新裁边（stations.js 的 cropToContent，带数、长宽一起重算）
+ */
+function trimSegmentEnds(L) {
+  if (!L.sorterList?.length) return 0;
+  const cols = new Map();
+  for (const s of L.sorterList) {
+    const c = cols.get(s.segId);
+    if (!c) cols.set(s.segId, { lo: s.col, hi: s.col });
+    else { c.lo = Math.min(c.lo, s.col); c.hi = Math.max(c.hi, s.col); }
+  }
+  const endUsed = new Set(); // 腿接着的段端、出入口所在格
+  for (const l of L.legs) {
+    if (l.to != null && l.to >= 0 && L.segments[l.to]) endUsed.add(`${l.to}:${L.segments[l.to].entryX}`);
+    if (l.from != null && l.from >= 0 && L.segments[l.from]) endUsed.add(`${l.from}:${L.segments[l.from].exitX}`);
+  }
+  const portAt = new Set((L.ports || []).map((p) => `${p.x},${p.y}`));
+  let cut = 0;
+  let edge = false;
+  for (const s of L.segments) {
+    const c = cols.get(s.id);
+    if (!c || s.sprayGap || s.split != null) continue;
+    for (;;) {
+      // 左端 a 多出来、没人用：往里收一格；右端同理
+      let moved = false;
+      if (s.a < c.lo && !endUsed.has(`${s.id}:${s.a}`) && !portAt.has(`${s.a},${s.y}`)) {
+        if (s.a === 0) edge = true;
+        if (s.entryX === s.a) s.entryX = s.a + 1;
+        if (s.exitX === s.a) s.exitX = s.a + 1;
+        s.a += 1;
+        cut++;
+        moved = true;
+      }
+      if (s.b > c.hi && !endUsed.has(`${s.id}:${s.b}`) && !portAt.has(`${s.b},${s.y}`)) {
+        if (s.b === L.width - 1) edge = true;
+        if (s.entryX === s.b) s.entryX = s.b - 1;
+        if (s.exitX === s.b) s.exitX = s.b - 1;
+        s.b -= 1;
+        cut++;
+        moved = true;
+      }
+      if (!moved) break;
+    }
+  }
+  if (cut) {
+    if (edge) cropToContent(L);
+    else L.belts -= cut;
+  }
+  return cut;
+}
+
 export function finishOne(cand, ctx) {
-  const { station, power, powerOptions, maxWidth, maxHeight, noGrounding, ground = null, aw = 1, spray = 0, sprayItems = null, sprayTo = null, pile = false, sprayRate = 0, burn = false, supply = null, sorter = 2013, storeLayers = 15 } = ctx;
+  const { station, power, powerOptions, maxWidth, maxHeight, noGrounding, ground = null, busGround = false, aw = 1, spray = 0, sprayItems = null, sprayTo = null, pile = false, sprayRate = 0, burn = false, supply = null, sorter = 2013, storeLayers = 15, stackCap = 0 } = ctx;
   // 后处理改的是自己的一份。接物流站（edge）时 attachStations 自己先复制一份再改，供电预选只读布局，这里不用先复制；
   // 就地烧副产物要先改布局（标 burn、加发电厂），照旧先复制
   let L = burn || station?.place !== 'edge' ? structuredClone(cand.layout) : cand.layout;
+  // 侧边总线排到了左边（route.js 的 busSide 'auto'，只在不接站时有）：口和竖走的列在 x < 0，宽、面积搜索时已经算上（layout/score.js）。
+  // 这里整张往右挪成从 0 起，后面的后处理、校验、出蓝图都照旧按非负坐标
+  const bx = busMinX(L.ports);
+  if (bx < 0) {
+    if (L === cand.layout) L = structuredClone(L);
+    translateLayout(L, -bx, 0);
+  }
   // 搜索代价里除了面积和带数以外的部分（惩罚、分拣器长度、叠层……），后处理不改变它们
   const other = L.cost - (L.area + (L.powerPlan?.extraArea ?? 0)) * aw - L.belts;
+  // 段两头给分拣器口位预留却没用上的那一格裁掉（用户 2026/10/26：带子不要多伸出去一格）：只裁没有腿、没有口、没有喷涂空当的死胡同那头，裁在搜索之后，不进代价
+  trimSegmentEnds(L);
   // 多余副产物就地烧掉（plan/burn.js）：接物流站之前先接到一排火力发电厂上，烧掉的不进站；没接上的照旧送出（进站）
   if (burn) {
     L.burnNotes = [];
@@ -74,12 +140,18 @@ export function finishOne(cand, ctx) {
     L = attachStations(L, { ...opts, reserve, reserveItem }) ?? (reserve.length ? attachStations(L, opts) : null);
     if (!L) return null;
   }
-  if (!noGrounding && L.feasible) groundRoutes(L, ground);
+  if (!noGrounding && L.feasible) groundRoutes(L, ground, busGround);
   // 翘曲器整张一格：一座站存，别的站用传送带接（落地之后、增产剂和供电之前，后面的会让开这些带子）
   if (station?.slots?.warper && L.stations?.length) linkWarpers(L);
-  // 增产剂（所有原料和中间产物进工厂前喷）和自动集装机（产物出线前叠层）：在供电之前加，供电要给喷涂机、集装机通电
-  if (spray || pile) {
-    addAddons(L, { spray, sprayItems, sprayTo, pile, sprayRate, supply: station ? null : supply, sorter, maxLayers: storeLayers });
+  // 增产剂（所有原料和中间产物进工厂前喷）和自动集装机（产物出线前叠层；运的超过一条带的产物带上集装）：在供电之前加，供电要给喷涂机、集装机通电
+  const stack = needsStacking(L, stackCap);
+  if (spray || pile || stack) {
+    addAddons(L, { spray, sprayItems, sprayTo, pile, sprayRate, supply: station ? null : supply, sorter, maxLayers: storeLayers, stackCap: stack ? stackCap : 0 });
+    // 集装机放不下（有一段带上单个物品占的格位超过一条带的运力）：那条带运不过来，按不可行处理
+    if (L.stackShort) {
+      L.feasible = false;
+      L.penalties = [...L.penalties, { kind: 'belt', amount: 0, msg: L.stackShort }];
+    }
     // 有带子没喷上（没地方骑喷涂机或接不上增产剂带）：没喷到的料进工厂就没有增产效果，按不可行处理
     if (spray && L.sprayMissed && !ctx.allowMissed) { // allowMissed：实验开关（考卷量上界用），漏喷不算不可行
       L.feasible = false;
@@ -155,6 +227,8 @@ function* planFrame(calc, options) {
   delete routeOptions.station;
   if (station?.place === 'side') routeOptions.station = { stack: station.stack, slots: station.slots };
   if (station?.place === 'edge') Object.assign(routeOptions, { externalStack: station.stack, stationHoles: options.stationHoles ?? true, freeEnds: options.freeEnds ?? true, stationSlots: station.slots });
+  // 箱子供货的左侧一列仓组（不接物流站时，plan/storage.js 的 isColumnSupply）：出入口都在左边（route.js 的 leftPorts；routeOptions 里写明的为准）
+  if (!station && isColumnSupply(options.supply) && routeOptions.leftPorts == null) routeOptions.leftPorts = true;
   const power = options.power && options.power !== 'none' ? options.power : null;
   if (power) Object.assign(routeOptions, { power, powerOptions: options.powerOptions });
   if (options.powerHoles) routeOptions.powerHoles = true; // 卫星配电站在行里挖空位（route.js，标准档、细档开）
@@ -190,7 +264,7 @@ function* planFrame(calc, options) {
     // 帮手线程按 snapshotMs 开关自己装钩子（web/src/worker.js 的 task 分支）
     return o;
   };
-  const ctx = (aw = routeOptions.areaWeight ?? 1) => ({ station: station && { ...station }, power, powerOptions: options.powerOptions, maxWidth: routeOptions.maxWidth, maxHeight: routeOptions.maxHeight, noGrounding: !!options.noGrounding, ground: groundOptions(routeOptions), aw, spray: calc.spray ? calc.spray.level : 0, sprayItems: calc.spray?.items ?? null, sprayTo: calc.spray?.to ?? null, pile: !!options.pile, sprayRate: calc.spray?.rate ?? 0, burn: options.burn || false, allowMissed: !!routeOptions.allowMissed, supply: options.supply ?? null, sorter: routeOptions.sorter ?? options.sorter ?? 2013, storeLayers: options.storeLayers ?? 15 });
+  const ctx = (aw = routeOptions.areaWeight ?? 1) => ({ station: station && { ...station }, power, powerOptions: options.powerOptions, maxWidth: routeOptions.maxWidth, maxHeight: routeOptions.maxHeight, noGrounding: !!options.noGrounding, ground: groundOptions(routeOptions), busGround: !!routeOptions.busGround, aw, spray: calc.spray ? calc.spray.level : 0, sprayItems: calc.spray?.items ?? null, sprayTo: calc.spray?.to ?? null, pile: !!options.pile, sprayRate: calc.spray?.rate ?? 0, burn: options.burn || false, allowMissed: !!routeOptions.allowMissed, supply: options.supply ?? null, sorter: routeOptions.sorter ?? options.sorter ?? 2013, storeLayers: options.storeLayers ?? 15, stackCap: stackCapOf(routeOptions) });
 
   let result = yield { kind: 'search', graph, options: searchOpts(routeOptions, options.timeLimit ?? null) };
 
@@ -314,7 +388,7 @@ function* planFrame(calc, options) {
 export function finishContext(calc, options) {
   const ro = options.routeOptions || {};
   const station = ro.station ? { place: 'side', stack: ro.station.stack, slots: ro.station.slots } : ro.externalStack != null ? { place: 'edge', stack: ro.externalStack, slots: ro.stationSlots } : null;
-  return { station, power: ro.power ?? null, powerOptions: ro.powerOptions, maxWidth: ro.maxWidth, maxHeight: ro.maxHeight, noGrounding: !!options.noGrounding, ground: groundOptions(ro), aw: ro.areaWeight ?? 1, spray: calc.spray ? calc.spray.level : 0, sprayItems: calc.spray?.items ?? null, sprayTo: calc.spray?.to ?? null, pile: !!options.pile, sprayRate: calc.spray?.rate ?? 0, burn: options.burn || false, allowMissed: !!ro.allowMissed, supply: options.supply ?? null, sorter: ro.sorter ?? options.sorter ?? 2013, storeLayers: options.storeLayers ?? 15 };
+  return { station, power: ro.power ?? null, powerOptions: ro.powerOptions, maxWidth: ro.maxWidth, maxHeight: ro.maxHeight, noGrounding: !!options.noGrounding, ground: groundOptions(ro), busGround: !!ro.busGround, aw: ro.areaWeight ?? 1, spray: calc.spray ? calc.spray.level : 0, sprayItems: calc.spray?.items ?? null, sprayTo: calc.spray?.to ?? null, pile: !!options.pile, sprayRate: calc.spray?.rate ?? 0, burn: options.burn || false, allowMissed: !!ro.allowMissed, supply: options.supply ?? null, sorter: ro.sorter ?? options.sorter ?? 2013, storeLayers: options.storeLayers ?? 15, stackCap: stackCapOf(ro) };
 }
 
 /** 就地执行一个请求 */

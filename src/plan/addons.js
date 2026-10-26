@@ -90,20 +90,120 @@ function alignCoaters(wants, blocked) {
   }
 }
 
+/** 集装（stackPilers）：一条带每分钟占的格位过了单条带运力的这么多（极速带 1700 / 1800）就在下游放一台集装机 */
+const STACK_AT = 17 / 18;
+/** 产物带（原料带头一截是入口的高架段）里运的超过单条带运力 cap 的：开集装机时 layout/belts.js 按 4 倍运力排成一条（pileCap） */
+const stackChain = (L, ch, cap) => {
+  const q0 = ch.parts[0];
+  if (q0?.leg != null && L.legs[q0.leg].kind === 'in') return false; // 原料：站口出来的是叠好的（rawCap），不在这里集装
+  let rate = 0;
+  for (const q of ch.parts) if (q.seg != null) rate = Math.max(rate, L.segments[q.seg].rate);
+  return rate > cap + 1e-6;
+};
+/** 布局里有没有要集装的带（stackCap：单条带运力，route.js 的 stackCapOf；0 是关着） */
+export const needsStacking = (L, stackCap) => stackCap > 0 && L.chains.some((ch) => stackChain(L, ch, stackCap));
+
 /**
- * 在布局上加自动集装机（pile）和喷涂机 + 增产剂带（spray 1~3）。改写 L：
+ * 集装（用户 2026/10/26）：产物带一条运的超过单条带的运力时（layout/belts.js 的 pileCap），分拣器放上带的是单个物品，一个占一个格位；
+ * 沿流向数每分钟占了多少格位，过了 STACK_AT 就在下游第一格能放的直带上放一台自动集装机，带上的物品都叠成 4 层（格位降到物品数的 1/4）。
+ * 取料只减物品，格位按不多于物品数算（保守）。放料按每台工厂满速（取放事件和 layout/belts.js 的一样，同一列先放后取），
+ * 同一台工厂在这一段同一个方向有几根分拣器时平分。能放的格：直带、不在分拣器的取放格和横穿的格上、头顶没有高架、不挨着物流站、
+ * 不占喷涂机的空当（can）。哪儿的格位超过单条带的运力（集装机放不下），记进 L.stackShort（finishOne 判不可行）
+ */
+function stackPilers(L, tiles, cap, can, used, name) {
+  const segChain = new Map();
+  L.chains.forEach((ch, ci) => { if (stackChain(L, ch, cap)) for (const q of ch.parts) if (q.seg != null) segChain.set(q.seg, ci); });
+  const nSame = new Map();
+  const sk = (s) => `${s.segId}|${s.bid}|${s.building}|${s.io}`;
+  for (const s of L.sorterList) nSame.set(sk(s), (nSame.get(sk(s)) ?? 0) + 1);
+  const evOf = new Map(); // 要集装的链 → 格 → [放 +、取 −]
+  for (const s of L.sorterList) {
+    const ci = segChain.get(s.segId);
+    if (ci == null) continue;
+    const seg = L.segments[s.segId];
+    const tap = seg.taps.find((t) => t.bid === s.bid && t.io === s.io);
+    if (!tap) continue;
+    if (!evOf.has(ci)) evOf.set(ci, new Map());
+    const m = evOf.get(ci);
+    const k = key(s.col, seg.y);
+    if (!m.has(k)) m.set(k, []);
+    m.get(k).push(((s.io === 'out' ? 1 : -1) * tap.rate) / nSame.get(sk(s)));
+  }
+  const T = cap * STACK_AT;
+  const short = [];
+  const count = new Map(); // 物品 → 台数
+  tiles.forEach((t, ci) => {
+    const ev = evOf.get(ci);
+    if (!ev) return;
+    const itemId = L.chains[ci].itemId;
+    let peak = 0;
+    // 主链和劈开的死胡同那一半各走一遍（死胡同从劈开处起，料不进主链）
+    for (const m of [t.main, ...t.extra]) {
+      let items = 0;
+      let slots = 0;
+      let want = false;
+      let back = -1; // 上一台集装机之后最近一格能放（没放）的，和到那儿时带上的物品数
+      let backItems = 0;
+      const put = (k) => {
+        const [x, y] = m[k];
+        L.pilers.push({ chain: ci, x, y, dx: m[k + 1][0] - x, dy: m[k + 1][1] - y, itemId });
+        // 集装机沿流向前后各伸进邻格大半格：邻格也不再放别的喷涂机、集装机
+        for (const j of [k - 1, k, k + 1]) used.add(key(m[j][0], m[j][1]));
+        count.set(itemId, (count.get(itemId) ?? 0) + 1);
+        want = false;
+        back = -1;
+      };
+      for (let k = 0; k < m.length; k++) {
+        const [x, y, z] = m[k];
+        if (k >= 1 && k < m.length - 1 && straight(m, k) && can(x, y)) {
+          if (want) {
+            put(k);
+            slots = items / 4;
+          } else {
+            back = k;
+            backItems = items;
+          }
+        }
+        const es = z === 0 ? ev.get(key(x, y)) : undefined;
+        if (es) {
+          for (const e of es) if (e > 0) { items += e; slots += e; }
+          for (const e of es) if (e < 0) { items = Math.max(0, items + e); slots = Math.min(slots, items); }
+        }
+        // 超了运力还没等到能放的格（分拣器一格挨一格）：退回上一台之后最近一格能放的，放在那儿、从那儿重走
+        if (slots > cap + 1e-6 && back >= 0) {
+          k = back;
+          items = backItems;
+          slots = items / 4;
+          put(k);
+          continue;
+        }
+        if (slots > peak) peak = slots;
+        if (slots > T + 1e-6) want = true;
+      }
+    }
+    if (peak > cap + 1e-6) short.push(`${name(itemId)}（有一段单个物品 ${Math.round(peak)}/分）`);
+  });
+  for (const [id, n] of count) L.addonNotes.push(`${name(id)}带上放了 ${n} 台自动集装机（带运力不够一条带时集装）`);
+  if (short.length) {
+    L.stackShort = `${short.join('、')}带上放不下够用的自动集装机，超过一条带的运力 ${cap}/分`;
+    L.addonNotes.push(L.stackShort);
+  }
+}
+
+/**
+ * 在布局上加自动集装机（pile：产物出线前；stackCap：运的超过一条带的产物带上集装，见 stackPilers）和喷涂机 + 增产剂带（spray 1~3）。改写 L：
  *   L.pilers   [{chain, x, y, dx, dy, itemId}]   集装机所在格和流向
  *   L.coaters  [{chain, x, y, ix, iy, itemId}]   喷涂机所在格、取料格
  *   L.proLines [{cells, station: {k, slot} | null, edge, itemId, rate}]  增产剂带（逐格，从源头起），可能有几条
- *   L.addonNotes 放不下的说明；L.sprayMissed 没喷上的带数（应为 0，finishOne 据此判不可行）
+ *   L.addonNotes 放不下的说明；L.sprayMissed 没喷上的带数（应为 0，finishOne 据此判不可行）；L.stackShort 集装机放不下时的说明（有才写，finishOne 据此判不可行）
  */
-export function addAddons(L, { spray = 0, sprayItems = null, sprayTo = null, pile = false, sprayRate = 0, supply = null, sorter = 2013, maxLayers = 15 } = {}) {
+export function addAddons(L, { spray = 0, sprayItems = null, sprayTo = null, pile = false, sprayRate = 0, supply = null, sorter = 2013, maxLayers = 15, stackCap = 0 } = {}) {
   L.pilers = [];
   L.coaters = [];
   L.proLines = [];
   L.addonNotes = [];
   L.sprayMissed = 0;
-  if (!spray && !pile) return L;
+  if (!spray && !pile && !stackCap) return L;
   const eff = SPRAY_LEVELS[spray] ?? null;
   if (eff) {
     // 四周各留两格给增产剂带绕路、给边缘入口往外接（最后裁掉没用到的）。
@@ -142,6 +242,18 @@ export function addAddons(L, { spray = 0, sprayItems = null, sprayTo = null, pil
   const MAX_COATER_Z = PRO_MAX_Z - 1;
   const free = (x, y) => !sorterCells.has(key(x, y)) && !overhead.has(key(x, y)) && !nearStation(x, y) && !used.has(key(x, y)) && !gapGuard.has(key(x, y));
   const name = (id) => ITEMS.get(realItem(id))?.name ?? String(id);
+
+  // 运的超过一条带的产物带上集装（先放：出线前的集装机、喷涂机都让开这几格）。分拣器横穿的格也不放（和喷涂机一样保守）
+  if (needsStacking(L, stackCap)) {
+    const span = new Set();
+    for (const s of L.sorterList) {
+      const p = L.pos.get(s.bid);
+      const y0 = L.rowCy[p.row] + (s.side === 'top' ? p.g.edgeAbove : -p.g.edgeBelow);
+      const y1 = L.segments[s.segId].y;
+      for (let y = Math.min(y0, y1); y <= Math.max(y0, y1); y++) span.add(key(s.col, y));
+    }
+    stackPilers(L, tiles, stackCap, (x, y) => free(x, y) && !span.has(key(x, y)), used, name);
+  }
 
   if (pile) {
     const missed = [];

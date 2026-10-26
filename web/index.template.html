@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>手搓产线蓝图</title>
+<title>产线蓝图生成器</title>
 <link rel="icon" href="favicon.ico">
 <style>
 :root {
@@ -36,7 +36,7 @@ body { margin: 0; color: var(--ink); font: 14px/1.6 var(--ui); background: var(-
 /* 左侧规格栏 */
 .spec { background: var(--paper); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 14px 16px; display: grid; gap: 12px; }
 .field { display: grid; gap: 4px; }
-.field > label, .field-label, .seg legend, .more summary { font-size: 13px; font-weight: 500; color: var(--ink-2); padding: 0; }
+.field > label, .field-label, .seg legend { font-size: 13px; font-weight: 500; color: var(--ink-2); padding: 0; }
 .field input { font: 15px/1.4 var(--ui); color: var(--ink); background: #fff; border: 1px solid var(--rule); border-radius: 4px; padding: 7px 9px; width: 100%; }
 .field input[type="number"] { font-family: var(--num); font-size: 17px; }
 .field input:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; border-color: var(--sheet); }
@@ -57,14 +57,6 @@ body { margin: 0; color: var(--ink); font: 14px/1.6 var(--ui); background: var(-
 .seg input:checked + span { background: var(--sheet); color: var(--line); }
 .seg input:focus-visible + span { outline: 2px solid var(--sheet); outline-offset: -3px; }
 .seg input:checked:focus-visible + span { outline-color: var(--line); }
-.more { border-top: 1px solid var(--rule); padding-top: 10px; }
-.more summary { cursor: pointer; list-style: none; display: flex; justify-content: space-between; gap: 8px; }
-.more summary::-webkit-details-marker { display: none; }
-.more summary::after { content: "展开"; color: var(--sheet); font-weight: 400; }
-.more[open] summary::after { content: "收起"; }
-.more summary .now { flex: 1 1 auto; font-weight: 400; color: var(--ink); text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.more summary:focus-visible { outline: 2px solid var(--sheet); outline-offset: 2px; }
-.more .inner { display: grid; gap: 12px; margin-top: 10px; }
 .go { margin-top: 2px; font: 600 15px/1 var(--ui); color: var(--line); background: var(--sheet); border: 0; border-radius: 4px; padding: 12px 14px; cursor: pointer; }
 .go:hover { background: var(--sheet-deep); }
 .go:focus-visible { outline: 3px solid #7fb0e8; outline-offset: 2px; }
@@ -154,7 +146,9 @@ dialog::backdrop { background: rgba(17, 47, 82, 0.45); }
 /* 依赖连线：铺在方块后面；悬停某个产物时只亮相连的线 */
 .tiers .links { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 0; overflow: visible; }
 .tiers .tier { position: relative; z-index: 1; }
-.lk { fill: none; opacity: 0.42; transition: opacity 120ms; }
+.lk { opacity: 0.42; transition: opacity 120ms; }
+.lk path { fill: none; }
+.lk circle { stroke: none; }
 .lk.st-external { stroke-dasharray: 5 4; }
 .lk.st-dropped { opacity: 0.12; stroke-dasharray: 2 4; }
 .tiers.has-focus .lk { opacity: 0.08; }
@@ -195,7 +189,7 @@ dialog::backdrop { background: rgba(17, 47, 82, 0.45); }
 .dlg-foot .go { margin: 0; padding: 10px 18px; }
 
 /* 新版：紧凑工具栏与可平移缩放的大画布。 */
-.sheet { --ink: #e6f0ff; --ink-2: #acc2da; --rule: #416384; background: #112f52; color: var(--ink); border: 1px solid #25486c; min-width: 0; height: calc(100dvh - 80px); min-height: 580px; display: flex; flex-direction: column; }
+.sheet { --ink: #e6f0ff; --ink-2: #acc2da; --rule: #416384; background: #112f52; color: var(--ink); border: 1px solid #25486c; min-width: 0; height: calc(100dvh - 120px); min-height: 580px; display: flex; flex-direction: column; }
 .sheet-bar { display: flex; align-items: center; gap: 14px; padding: 9px 12px; border-bottom: 1px solid var(--rule); background: #163a63; flex: none; min-height: 48px; }
 .sheet-bar .name { font-size: 15px; font-weight: 600; margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .layer-controls, .overlays { display: flex; gap: 10px; align-items: center; flex: none; }
@@ -222,7 +216,6 @@ dialog::backdrop { background: rgba(17, 47, 82, 0.45); }
 .empty strong { color: #e6f0ff; font-size: 19px; font-weight: 500; }
 .empty p { margin: 10px 0 0; }
 .layer-rail { width: 100px; flex: 0 0 100px; border-left: 1px solid var(--rule); padding: 8px; overflow-y: auto; background: #163a63; }
-.rail-title { font-size: 12px; font-weight: 600; margin: 2px 0 9px; }
 .floor-list { display: grid; gap: 6px; }
 .floor-card { background: transparent; color: #e6f0ff; border: 1px solid #3d6084; padding: 6px; cursor: pointer; text-align: left; min-width: 0; }
 .floor-card:hover { background: #244d76; }
@@ -278,9 +271,8 @@ body.viewer-expanded { overflow: hidden; }
 
 /* 规格面板：下拉单选，全部布局选项直接可见。 */
 .page { max-width: none; padding: 10px 14px 24px; }
-.masthead { display: flex; align-items: center; gap: 12px; min-height: 42px; margin: 0 0 8px; padding: 0; flex-wrap: nowrap; }
-.masthead h1 { font-size: 18px; margin: 0; font-weight: 600; }
-.brand-mark, .brand .eyebrow, .masthead > p, .header-code, .spec-heading { display: none; }
+.spec-heading { display: none; }
+.page { padding-top: 14px; } /* 标题去掉了（用户 2026/10/26），上方留一点白 */
 .desk { grid-template-columns: 280px minmax(0, 1fr); gap: 12px; align-items: start; }
 .spec { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 8px; padding: 12px; background: #f5f7fa; max-height: calc(100dvh - 80px); overflow-y: auto; border-radius: 3px; }
 .spec > * { min-width: 0; }
@@ -299,10 +291,6 @@ body.viewer-expanded { overflow: hidden; }
 .goal .pick-name { font-size: 13px; }
 .goal .tb-hint { font-size: 10px; }
 .goal input { font-size: 15px; }
-.more { margin-top: 3px; padding-top: 8px; }
-.more > summary { font-size: 12px; font-weight: 600; cursor: default; pointer-events: none; }
-.more > summary::after, .more .now { display: none; }
-.more .inner { gap: 8px; margin-top: 9px; }
 .go { padding: 11px; font-size: 14px; border-radius: 3px; }
 .hint, .status { font-size: 11px; }
 .status { min-height: 0; }
@@ -322,15 +310,13 @@ body.viewer-expanded { overflow: hidden; }
 @media (max-width: 850px) {
   .desk, .output { grid-template-columns: 1fr; }
   .spec { max-height: none; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .spec > .field, .spec > .more, .spec > .status, .spec > .go { grid-column: 1 / -1; }
-  .more .inner { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .spec > .field, .spec > .status, .spec > .go { grid-column: 1 / -1; }
   .sheet { height: 78dvh; min-height: 460px; }
   .sheet-foot { grid-template-columns: 1fr; }
   .viewer-hint { font-size: 10px; }
 }
 @media (max-width: 500px) {
   .page { padding: 8px; }
-  .masthead h1 { font-size: 17px; }
   .spec { padding: 10px; gap: 8px; }
   .modern-option { grid-template-columns: 1fr; gap: 3px; }
   .modern-option select { font-size: 12px; }
@@ -366,23 +352,23 @@ body.viewer-expanded { overflow: hidden; }
 .spec .seg label:hover input:not(:checked) + span { background: #eaf0f7; }
 .spec .seg span[data-short] { font-size: 0; }
 .spec .seg span[data-short]::before { content: attr(data-short); font-size: 12px; }
+/* 试验中的功能（用户 2026/10/26）：图例后面一个小 beta 标，不要上面 .seg span 那套格子样式 */
+.spec .seg .beta { display: inline-block; margin-left: 5px; padding: 0 4px; font: 500 10px/1.5 var(--ui); color: var(--sheet); border: 1px solid var(--sheet); border-radius: 3px; vertical-align: 1px; overflow: visible; cursor: default; }
 .modern-option { display: none; }
 #pile-field[hidden], #stitch-field[hidden] { display: none !important; }
 .spec > .field { order: 0; }
-#equip { order: 5; }
-#more { order: 0; }
 .spec > .go { order: 7; }
 .spec > .status { order: 8; }
 .spec > .suggest { order: 9; }
-.group, .more { border-top: 1px solid var(--rule); padding-top: 8px; margin: 0; }
-.group > summary, .more > summary { list-style: none; cursor: pointer; pointer-events: auto; display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-size: 12px; font-weight: 600; color: var(--ink-2); }
-.group > summary::-webkit-details-marker, .more > summary::-webkit-details-marker { display: none; }
-.group > summary::after, .more > summary::after { content: "修改"; display: block; grid-column: 2; grid-row: 1; color: var(--sheet); font-weight: 400; }
-.group[open] > summary::after, .more[open] > summary::after { content: "收起"; }
-.group > summary .now, .more > summary .now { display: block; grid-column: 1 / -1; font-weight: 400; color: var(--ink); white-space: normal; line-height: 1.45; }
-.group[open] > summary .now, .more[open] > summary .now { display: none; }
-.group > summary:focus-visible, .more > summary:focus-visible { outline: 2px solid var(--sheet); outline-offset: 2px; }
-.group .inner, .more .inner { display: grid; gap: 8px; margin-top: 8px; }
+.group { border-top: 1px solid var(--rule); padding-top: 8px; margin: 0; }
+.group > summary { list-style: none; cursor: pointer; pointer-events: auto; display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-size: 12px; font-weight: 600; color: var(--ink-2); }
+.group > summary::-webkit-details-marker { display: none; }
+.group > summary::after { content: "修改"; display: block; grid-column: 2; grid-row: 1; color: var(--sheet); font-weight: 400; }
+.group[open] > summary::after { content: "收起"; }
+.group > summary .now { display: block; grid-column: 1 / -1; font-weight: 400; color: var(--ink); white-space: normal; line-height: 1.45; }
+.group[open] > summary .now { display: none; }
+.group > summary:focus-visible { outline: 2px solid var(--sheet); outline-offset: 2px; }
+.group .inner { display: grid; gap: 8px; margin-top: 8px; }
 /* 切成几块时图纸上方的标签：一块一个，和标题栏同一个深蓝底 */
 .module-tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px 0; background: #0c2340; }
 .module-tabs button { display: flex; align-items: baseline; gap: 6px; font: 13px/1.2 var(--ui); color: #acc2da; background: #163a63; border: 1px solid #2a5480; border-bottom: 0; border-radius: 3px 3px 0 0; padding: 7px 10px; cursor: pointer; max-width: 100%; }
@@ -401,9 +387,6 @@ body.viewer-expanded { overflow: hidden; }
 .preview-tabs button { font: 12px/1.2 var(--ui); color: #acc2da; background: #163a63; border: 1px solid #2a5480; border-radius: 3px; padding: 3px 9px; cursor: pointer; }
 .preview-tabs button[aria-pressed="true"] { color: #10294a; background: #e6f0ff; border-color: #e6f0ff; }
 .preview-tabs button:focus-visible { outline: 2px solid #a8cee9; outline-offset: 2px; }
-.preview .take { margin-left: auto; font: 600 12px/1.2 var(--ui); color: #10294a; background: #ffd666; border: 1px solid #ffd666; border-radius: 3px; padding: 4px 12px; cursor: pointer; }
-.preview .take[disabled] { opacity: 0.45; cursor: default; }
-.preview .take:focus-visible { outline: 2px solid #a8cee9; outline-offset: 2px; }
 @media (max-width: 500px) { .preview { padding: 6px 8px; } .preview-note { font-size: 11px; } }
 /* 画布标题栏：生成后直接看到尺寸、利用率、带数、检查结果，最右边复制 */
 .sheet-bar .name { margin-right: 0; flex: 0 1 auto; }
@@ -417,7 +400,6 @@ body.viewer-expanded { overflow: hidden; }
 .copy-top:focus-visible { outline: 2px solid #a8cee9; outline-offset: 2px; }
 /* 右侧栏：加宽，楼层缩略图能看清；选中线路时简介放在楼层上面，不再盖住图纸 */
 .layer-rail { width: 196px; flex: 0 0 196px; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
-.rail-title { margin: 0; }
 .floor-card { padding: 7px 8px; }
 .floor-info small { font-size: 11px; }
 .floor-thumb svg { height: auto; max-height: 92px; }
@@ -448,11 +430,16 @@ body.viewer-expanded { overflow: hidden; }
   .copy-top { padding: 7px 10px; }
 }
 
-/* 2026-10-07 规格栏顺序（用户）：目标、外部供应 → 搜索力度、生成 → 物流站、供电、原料喷增产剂、自动切分 → 设备 → 集装 → 布局细节（不常用，收起，放最后） */
+/* 规格栏顺序（用户 2026/10/26）：目标、外部供应 → 搜索力度、生成 → 物流站位置或箱子 → 自动切分 → 集装、物流站格子 → 高纬度间距、研究站叠层 → 宽、长、长宽比上限；设备、供电、喷增产剂在图纸上方那排 */
 .spec > .field { order: 0; }
 .spec > [data-name="effort"] { order: 1; }
 .spec > .go { order: 2; }
 .spec > .progress { order: 3; }
+/* 「生成蓝图」下面：预告一行（建筑数、预计用时、用电），生成时进度条下面是「取消本轮生成」 */
+.spec > .forecast { order: 3; margin: 0; font-size: 12px; color: var(--ink-2); }
+#forecast:empty { display: none; }
+.spec > .cancel { order: 3; justify-self: start; }
+.spec > .cancel[hidden] { display: none !important; }
 .spec > .status { order: 4; }
 .spec > .suggest { order: 5; }
 .spec > [data-name="station"] { order: 6; }
@@ -460,14 +447,12 @@ body.viewer-expanded { overflow: hidden; }
 .spec > [data-name="supply"][hidden], .spec > [data-name="dist"][hidden] { display: none !important; }
 .spec > [data-name="power"] { order: 7; }
 .spec > [data-name="spray"] { order: 8; }
-.spec > [data-name="split"] { order: 9; }
-.spec > [data-name="stitch"] { order: 10; }
-#equip { order: 11; }
-#stack { order: 12; }
-#station-slots { order: 12; }
-#station-slots[hidden] { display: none !important; }
-#stack[hidden] { display: none !important; }
-#more { order: 13; }
+.spec > [data-name="split"] { order: 20; } /* beta 的两项放最底下（用户 2026/10/26） */
+.spec > [data-name="stitch"] { order: 21; }
+.spec > [data-name="chemwide"], .spec > .field.labstack { order: 13; }
+.spec > [data-name="pile"], .spec > [data-name="proslot"], .spec > [data-name="warper"] { order: 12; } /* 物流站的三项（不再折叠，用户 2026/10/26） */
+.spec > [data-name="proslot"][hidden], .spec > [data-name="warper"][hidden] { display: none !important; }
+.spec > [data-name="maxwidth"], .spec > [data-name="maxheight"], .spec > [data-name="aspect"] { order: 14; }
 .spec .seg .hint { margin: 4px 0 0; }
 .progress { height: 6px; border-radius: 3px; background: #d6dfea; overflow: hidden; }
 .progress[hidden] { display: none; }
@@ -475,26 +460,54 @@ body.viewer-expanded { overflow: hidden; }
 .progress.slow .progress-bar { background: repeating-linear-gradient(45deg, var(--sheet) 0 8px, #3d6084 8px 16px); }
 </style>
 <style>
-.header-actions { margin-left: auto; display: flex; align-items: center; gap: 20px; }
-@media (max-width: 600px) {
-  .masthead { align-items: center; gap: 12px; }
-  .masthead .brand { order: 0; }
-  .masthead .header-actions { order: 1; gap: 0; }
-  .masthead > p { order: 2; flex-basis: 100%; }
+/* 图纸上方一排下拉（用户 2026/10/26）：供电、物流方式、传送带、分拣器、熔炉、制造台、化工厂、研究站、喷增产剂；
+   按钮上只写当前选的，悬停、键盘聚焦或点一下展开（.open 是点开的，.shut 是刚选完、按了 Esc，鼠标和焦点再进来之前不弹出） */
+.stage { min-width: 0; display: grid; gap: 8px; align-content: start; }
+.toolbar { position: relative; z-index: 20; display: flex; flex-wrap: wrap; gap: 6px; }
+.pill-wrap { position: relative; }
+.pill { display: flex; align-items: center; gap: 6px; font: 13px/1.4 var(--ui); color: var(--ink); background: #fff; border: 1px solid #c8d1de; border-radius: 8px; padding: 6px 10px; cursor: pointer; white-space: nowrap; }
+.pill::after { content: "▾"; color: var(--ink-2); }
+.pill .pill-ico { display: inline-flex; flex: none; width: 14px; height: 14px; color: var(--ink-2); } /* 和字隔开靠 .pill 的 gap；14 像素比行高矮，按钮不变高 */
+.pill-wrap:hover > .pill, .pill-wrap.open > .pill { border-color: #9fb1c6; }
+.pill-menu { display: none; position: absolute; top: 100%; left: 0; margin-top: 4px; min-width: 100%; padding: 4px 0; background: #fff; border-radius: 8px; box-shadow: 0 6px 20px rgba(17, 47, 82, 0.22); }
+.pill-menu::before { content: ""; position: absolute; left: 0; right: 0; top: -6px; height: 6px; } /* 鼠标从按钮挪到菜单，中间那几像素也算悬停 */
+.pill-wrap.flip > .pill-menu { left: auto; right: 0; } /* 右边放不下就靠右展开 */
+.pill-wrap.open > .pill-menu, .pill-wrap:not(.shut):hover > .pill-menu { display: block; }
+.pill-wrap:not(.shut):has(:focus-visible) > .pill-menu { display: block; }
+.pill-menu button { display: flex; align-items: center; justify-content: space-between; width: 100%; font: 13px/1.4 var(--ui); color: var(--ink); background: transparent; border: 0; padding: 7px 12px; text-align: left; white-space: nowrap; cursor: pointer; }
+.pill-menu button::after { content: "✓"; margin-left: 14px; color: var(--sheet); visibility: hidden; }
+.pill-menu button[aria-checked="true"] { font-weight: 600; }
+.pill-menu button[aria-checked="true"]::after { visibility: visible; }
+.pill-menu button:hover, .pill-menu button:focus-visible { background: #eef3f9; }
+.pill-menu button:focus-visible { outline: 2px solid #6398ca; outline-offset: -2px; }
+/* 右侧栏两页：楼层、用电（用户 2026/10/26：用电从「检查」挪过来）；选中的那页同选中的楼层卡片 */
+.rail-tabs { display: flex; gap: 4px; }
+.rail-tabs button { flex: 1 1 0; min-width: 0; font: 600 12px/1.2 var(--ui); color: #e6f0ff; background: transparent; border: 1px solid #3d6084; padding: 6px 4px; cursor: pointer; }
+.rail-tabs button:hover { background: #244d76; }
+.rail-tabs button[aria-selected="true"] { background: #315c86; border-color: #bdd8f1; box-shadow: inset 2px 0 #e6f0ff; }
+.power-pane { display: grid; gap: 10px; color: #e6f0ff; font-size: 12px; }
+.power-pane dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 8px; margin: 0; }
+.power-pane dt { color: #acc2da; }
+.power-pane dd { margin: 0; text-align: right; font: 600 13px/1.4 var(--num); }
+.power-pane table { width: 100%; border-collapse: collapse; }
+.power-pane caption { text-align: left; color: #acc2da; padding-bottom: 4px; }
+.power-pane th, .power-pane td { border: 1px solid #3d6084; padding: 4px 6px; }
+.power-pane th { font-weight: 400; text-align: left; }
+.power-pane td { text-align: right; white-space: nowrap; font-family: var(--num); }
+.power-pane p { margin: 0; color: #acc2da; }
+/* 点赞（用户 2026/10/26）：和「复制蓝图」一样大，描边；一次生成点一次，点过就灰掉 */
+.like { flex: none; font: 600 13px/1 var(--ui); color: #e6f0ff; background: transparent; border: 1px solid #5c7c9d; border-radius: 3px; padding: 7px 13px; cursor: pointer; white-space: nowrap; }
+.like:hover:not(:disabled) { background: #244b73; }
+.like:disabled { opacity: 0.55; cursor: default; }
+.like:focus-visible { outline: 2px solid #a8cee9; outline-offset: 2px; }
+@media (max-width: 500px) {
+  .like { padding: 6px 9px; }
 }
 </style>
 </head>
 <body>
 <!--__SPRITE__-->
 <div class="page">
-  <header class="masthead">
-    <div class="brand">
-      <svg class="brand-mark" viewBox="0 0 40 40" fill="none" stroke="currentColor" aria-hidden="true"><path d="M1 1H39V39H1Z"/><path d="M8 8H24V15H32V32H16V25H8Z" stroke-width="1.5"/><path d="M1 14H8M1 25H8M16 32V39M27 32V39M24 8V1M32 20H39"/><path d="M14 14H20V20H26V26H20V20H14Z"/></svg>
-      <div><div class="eyebrow">DYSON SPHERE PROGRAM</div><h1>手搓产线蓝图</h1></div>
-    </div>
-    <div class="header-actions">
-    </div>
-  </header>
   <main class="desk">
     <form class="spec" id="spec" novalidate>
       <div class="spec-heading"><strong>产线规格</strong><span class="eyebrow">01 / INPUT</span></div>
@@ -513,14 +526,11 @@ body.viewer-expanded { overflow: hidden; }
       <fieldset class="seg" data-name="effort">
         <legend>搜索力度</legend>
         <div class="opts">
-          <label><input type="radio" name="effort" value="quick"><span>快 ≥50%</span></label>
-          <label><input type="radio" name="effort" value="normal"><span>标准 ≥66%</span></label>
-          <label><input type="radio" name="effort" value="fine"><span>细 ≥80%</span></label>
+          <label><input type="radio" name="effort" value="quick"><span>快速</span></label>
+          <label><input type="radio" name="effort" value="normal"><span>标准</span></label>
+          <label><input type="radio" name="effort" value="fine"><span>美观</span></label>
         </div>
       </fieldset>
-      <details class="more" id="more" open>
-      <summary>布局细节 <span class="now" id="more-now"></span></summary>
-      <div class="inner">
       <fieldset class="seg" data-name="maxwidth">
         <legend>宽度上限</legend>
         <div class="opts">
@@ -547,33 +557,28 @@ body.viewer-expanded { overflow: hidden; }
           <label><input type="radio" name="aspect" value="2"><span>2 : 1</span></label>
         </div>
       </fieldset>
-      </div>
-      </details>
-      <details class="group" id="equip">
-      <summary>设备 <span class="now" id="equip-now"></span></summary>
-      <div class="inner">
       <fieldset class="seg" data-name="assembler">
         <legend>制造台</legend>
         <div class="opts">
-          <label><input type="radio" name="assembler" value="2303"><span>Mk.I</span></label>
-          <label><input type="radio" name="assembler" value="2304"><span>Mk.II</span></label>
-          <label><input type="radio" name="assembler" value="2305"><span>Mk.III</span></label>
-          <label><input type="radio" name="assembler" value="2318"><span>重组式</span></label>
+          <label><input type="radio" name="assembler" value="2303"><span data-pill="Mk.I 制造台">Mk.I</span></label>
+          <label><input type="radio" name="assembler" value="2304"><span data-pill="Mk.II 制造台">Mk.II</span></label>
+          <label><input type="radio" name="assembler" value="2305"><span data-pill="Mk.III 制造台">Mk.III</span></label>
+          <label><input type="radio" name="assembler" value="2318"><span data-pill="重组式制造台">重组式</span></label>
         </div>
       </fieldset>
       <fieldset class="seg" data-name="smelter">
         <legend>熔炉</legend>
         <div class="opts">
-          <label><input type="radio" name="smelter" value="2302"><span>电弧</span></label>
-          <label><input type="radio" name="smelter" value="2315"><span>位面</span></label>
-          <label><input type="radio" name="smelter" value="2319"><span>负熵</span></label>
+          <label><input type="radio" name="smelter" value="2302"><span data-pill="电弧熔炉">电弧</span></label>
+          <label><input type="radio" name="smelter" value="2315"><span data-pill="位面熔炉">位面</span></label>
+          <label><input type="radio" name="smelter" value="2319"><span data-pill="负熵熔炉">负熵</span></label>
         </div>
       </fieldset>
       <fieldset class="seg" data-name="chemical">
         <legend>化工厂</legend>
         <div class="opts">
-          <label><input type="radio" name="chemical" value="2309"><span>化工厂</span></label>
-          <label><input type="radio" name="chemical" value="2317"><span>量子化工厂</span></label>
+          <label><input type="radio" name="chemical" value="2309"><span data-pill="化工厂">化工厂</span></label>
+          <label><input type="radio" name="chemical" value="2317"><span data-pill="量子化工厂">量子化工厂</span></label>
         </div>
       </fieldset>
       <fieldset class="seg" data-name="chemwide">
@@ -584,10 +589,10 @@ body.viewer-expanded { overflow: hidden; }
         </div>
       </fieldset>
       <fieldset class="seg" data-name="lab">
-        <legend>研究站（做矩阵）</legend>
+        <legend>研究站</legend>
         <div class="opts">
-          <label><input type="radio" name="lab" value="2901"><span>矩阵</span></label>
-          <label><input type="radio" name="lab" value="2902"><span>自演化</span></label>
+          <label><input type="radio" name="lab" value="2901"><span data-pill="矩阵研究站">矩阵</span></label>
+          <label><input type="radio" name="lab" value="2902"><span data-pill="自演化研究站">自演化</span></label>
         </div>
       </fieldset>
       <div class="field labstack">
@@ -598,38 +603,44 @@ body.viewer-expanded { overflow: hidden; }
       <fieldset class="seg" data-name="belt">
         <legend>传送带</legend>
         <div class="opts">
-          <label><input type="radio" name="belt" value="1"><span>普通</span></label>
-          <label><input type="radio" name="belt" value="2"><span>高速</span></label>
-          <label><input type="radio" name="belt" value="3"><span>极速</span></label>
+          <label><input type="radio" name="belt" value="1"><span data-pill="普通传送带">普通</span></label>
+          <label><input type="radio" name="belt" value="2"><span data-pill="高速传送带">高速</span></label>
+          <label><input type="radio" name="belt" value="3"><span data-pill="极速传送带">极速</span></label>
         </div>
-        <p class="hint">高架用垂直传送带，要先解锁「超级磁场发生器」。</p>
       </fieldset>
       <fieldset class="seg" data-name="sorter">
         <legend>分拣器</legend>
         <div class="opts">
-          <label><input type="radio" name="sorter" value="2011"><span>普通</span></label>
-          <label><input type="radio" name="sorter" value="2012"><span>高速</span></label>
-          <label><input type="radio" name="sorter" value="2013"><span>极速</span></label>
-          <label><input type="radio" name="sorter" value="2014"><span>集装</span></label>
+          <label><input type="radio" name="sorter" value="2011"><span data-pill="普通分拣器">普通</span></label>
+          <label><input type="radio" name="sorter" value="2012"><span data-pill="高速分拣器">高速</span></label>
+          <label><input type="radio" name="sorter" value="2013"><span data-pill="极速分拣器">极速</span></label>
+          <label><input type="radio" name="sorter" value="2014"><span data-pill="集装分拣器">集装</span></label>
         </div>
       </fieldset>
-      </div>
-      </details>
-      <fieldset class="seg" data-name="station">
-        <legend>物流站</legend>
+      <fieldset class="seg" data-name="logistics" hidden>
+        <legend>物流方式</legend>
         <div class="opts">
-          <label><input type="radio" name="station" value=""><span data-short="不接">不接（边缘进出）</span></label>
+          <label><input type="radio" name="logistics" value=""><span data-pill="普通物流">传送带</span></label>
+          <label><input type="radio" name="logistics" value="box"><span data-pill="箱子存储">传送带+箱子</span></label>
+          <label><input type="radio" name="logistics" value="station"><span data-pill="物流站">物流站</span></label>
+        </div>
+      </fieldset>
+      <fieldset class="seg" data-name="station">
+        <legend>物流站位置</legend>
+        <div class="opts">
+          <label hidden><input type="radio" name="station" value=""><span>不接</span></label>
           <label><input type="radio" name="station" value="ils"><span data-short="放进空地">星际物流站（放进空地）</span></label>
           <label><input type="radio" name="station" value="ils-side"><span data-short="靠左侧站列">星际物流站（靠左侧站列）</span></label>
         </div>
       </fieldset>
       <fieldset class="seg" data-name="supply" id="supply-field">
-        <legend>供货</legend>
+        <legend>箱子</legend>
         <div class="opts">
-          <label><input type="radio" name="supply" value=""><span data-short="边缘">只从边缘送入</span></label>
-          <label><input type="radio" name="supply" value="box-s"><span data-short="小型仓">小型储物仓</span></label>
-          <label><input type="radio" name="supply" value="box-l"><span data-short="大型仓">大型储物仓</span></label>
+          <label hidden><input type="radio" name="supply" value=""><span>不用</span></label>
+          <label><input type="radio" name="supply" value="side-s"><span data-short="小型仓">小型储物仓</span></label>
+          <label><input type="radio" name="supply" value="side-l"><span data-short="大型仓">大型储物仓</span></label>
         </div>
+        <p class="hint">仓都排在产线左侧一列：原料从仓出、成品进仓，矿照旧从左边送入。</p>
       </fieldset>
       <fieldset class="seg" data-name="dist" id="dist-field">
         <legend>物流配送器</legend>
@@ -641,37 +652,34 @@ body.viewer-expanded { overflow: hidden; }
       <fieldset class="seg" data-name="power">
         <legend>供电</legend>
         <div class="opts">
-          <label><input type="radio" name="power" value=""><span>不放</span></label>
-          <label><input type="radio" name="power" value="tesla"><span>电力感应塔</span></label>
-          <label><input type="radio" name="power" value="substation"><span>卫星配电站</span></label>
+          <label><input type="radio" name="power" value=""><span data-pill="不配电">不放</span></label>
+          <label><input type="radio" name="power" value="tesla"><span data-pill="电力塔">电力感应塔</span></label>
+          <label><input type="radio" name="power" value="substation"><span data-pill="卫星站">卫星配电站</span></label>
         </div>
       </fieldset>
       <fieldset class="seg" data-name="spray">
         <legend>喷增产剂</legend>
         <div class="opts">
-          <label><input type="radio" name="spray" value="0"><span>不喷</span></label>
-          <label><input type="radio" name="spray" value="1"><span>Mk.I</span></label>
-          <label><input type="radio" name="spray" value="2"><span>Mk.II</span></label>
-          <label><input type="radio" name="spray" value="3"><span>Mk.III</span></label>
+          <label><input type="radio" name="spray" value="0"><span data-pill="不增产">不喷</span></label>
+          <label><input type="radio" name="spray" value="1"><span data-pill="Mk.I 增产">Mk.I</span></label>
+          <label><input type="radio" name="spray" value="2"><span data-pill="Mk.II 增产">Mk.II</span></label>
+          <label><input type="radio" name="spray" value="3"><span data-pill="Mk.III 增产">Mk.III</span></label>
         </div>
       </fieldset>
       <fieldset class="seg" data-name="split">
-        <legend>自动切分</legend>
+        <legend>自动切分<span class="beta">beta</span></legend>
         <div class="opts">
           <label><input type="radio" name="split" value="1"><span>开（太大就切）</span></label>
           <label><input type="radio" name="split" value="0"><span>关</span></label>
         </div>
       </fieldset>
       <fieldset class="seg" data-name="stitch" id="stitch-field">
-        <legend>切分后的蓝图</legend>
+        <legend>切分后的蓝图<span class="beta">beta</span></legend>
         <div class="opts">
           <label><input type="radio" name="stitch" value="1"><span>拼接成一张</span></label>
           <label><input type="radio" name="stitch" value="0"><span>分开生成</span></label>
         </div>
       </fieldset>
-      <details class="group" id="stack">
-      <summary>集装 <span class="now" id="stack-now"></span></summary>
-      <div class="inner">
       <fieldset class="seg" data-name="pile" id="pile-field">
         <legend>物流站出货叠几层</legend>
         <div class="opts">
@@ -680,14 +688,9 @@ body.viewer-expanded { overflow: hidden; }
           <label><input type="radio" name="pile" value="3"><span>3</span></label>
           <label><input type="radio" name="pile" value="4"><span>4</span></label>
         </div>
-        <p class="hint">没研究「运输站集装物流」就选 1。</p>
+        <p class="hint">没研究「运输站集装物流」就选 1。带上的自动集装机不看这个。</p>
       </fieldset>
-      </div>
-      </details>
-      <details class="group" id="station-slots">
-      <summary>物流站格子 <span class="now" id="slots-now"></span></summary>
-      <div class="inner">
-      <fieldset class="seg" data-name="proslot">
+      <fieldset class="seg" data-name="proslot" id="proslot-field">
         <legend>增产剂格（喷增产剂时）</legend>
         <div class="opts">
           <label><input type="radio" name="proslot" value="1"><span>留一格</span></label>
@@ -695,7 +698,7 @@ body.viewer-expanded { overflow: hidden; }
         </div>
         
       </fieldset>
-      <fieldset class="seg" data-name="warper">
+      <fieldset class="seg" data-name="warper" id="warper-field">
         <legend>翘曲器格（星际需求）</legend>
         <div class="opts">
           <label><input type="radio" name="warper" value="1"><span>整张一格</span></label>
@@ -703,14 +706,16 @@ body.viewer-expanded { overflow: hidden; }
         </div>
         
       </fieldset>
-      </div>
-      </details>
       <button class="go" type="submit" id="go">生成蓝图</button>
+      <p class="forecast" id="forecast"></p>
       <div class="progress" id="progress" hidden><div class="progress-bar" id="progress-bar"></div></div>
+      <button type="button" class="linkish cancel" id="cancel" hidden>取消本轮生成</button>
       <p class="status" id="status" role="status" aria-live="polite"></p>
       <button class="suggest" type="button" id="suggest" hidden></button>
     </form>
 
+    <div class="stage">
+    <div class="toolbar" id="toolbar" role="toolbar" aria-label="设备与物流"></div>
     <section class="sheet" id="sheet" aria-label="布局图">
       <nav class="module-tabs" id="module-tabs" role="tablist" aria-label="模块" hidden></nav>
       <div class="sheet-bar">
@@ -731,12 +736,12 @@ body.viewer-expanded { overflow: hidden; }
           <button type="button" class="viewer-only" id="expand-view" aria-pressed="false">大图</button>
         </div>
         <button type="button" class="copy-top viewer-only" id="copy-top" hidden>复制蓝图</button>
+        <button type="button" class="like" id="like" hidden>👍 <span id="like-count"></span></button>
       </div>
       <p class="sheet-alert" id="sheet-alert" role="alert" hidden></p>
       <div class="preview" id="preview" hidden>
         <span class="preview-note" id="preview-note">搜索中，看第几轮</span>
         <div class="preview-tabs" id="preview-tabs" role="group" aria-label="观摩第几轮退火"></div>
-        <button type="button" class="take" id="take" disabled title="不等搜完，用正在画的这张出蓝图">就这个蓝图了</button>
       </div>
       <div class="sheet-workspace">
         <div class="viewer-stage">
@@ -744,13 +749,17 @@ body.viewer-expanded { overflow: hidden; }
             <div class="empty"><strong>生成蓝图后在这里查看</strong></div>
           </div>
         </div>
-        <aside class="layer-rail" id="layer-rail" aria-label="楼层导航" hidden>
+        <aside class="layer-rail" id="layer-rail" aria-label="楼层与用电" hidden>
           <section class="route-info viewer-only" id="route-info" aria-labelledby="route-title" hidden>
             <header><span class="sw" aria-hidden="true"></span><h2 id="route-title"></h2><button type="button" id="close-route" aria-label="关闭线路简介">×</button></header>
             <div id="route-body" aria-live="polite"></div>
           </section>
-          <div class="rail-title">楼层</div>
-          <div class="floor-list" id="floor-list" role="group" aria-label="选择预览楼层"></div>
+          <div class="rail-tabs" role="tablist">
+            <button type="button" role="tab" id="tab-floors" aria-selected="true" aria-controls="floor-list">楼层</button>
+            <button type="button" role="tab" id="tab-power" aria-selected="false" aria-controls="power-pane">用电</button>
+          </div>
+          <div class="floor-list" id="floor-list" role="tabpanel" aria-label="选择预览楼层"></div>
+          <div class="power-pane" id="power-pane" role="tabpanel" aria-labelledby="tab-power" hidden></div>
         </aside>
       </div>
       <div class="viewer-status viewer-only"><strong id="floor-name">—</strong><span id="floor-description">等待生成</span><span id="floor-meta"></span></div>
@@ -759,6 +768,7 @@ body.viewer-expanded { overflow: hidden; }
         <table class="titleblock" id="titleblock" hidden></table>
       </div>
     </section>
+    </div>
   </main>
   <details class="result-details" id="result-details" open hidden><summary>图纸数据与物品表</summary><div id="result-body"></div></details>
 
@@ -788,11 +798,10 @@ body.viewer-expanded { overflow: hidden; }
       <div class="dlg-head">
         <h2 id="ext-title">外部供应</h2>
         <button type="button" class="close" data-close>关闭</button>
-        <p>点中间产物设为外部供应（从边缘送进来），再点一下取消。</p>
+        <p>点中间产物设为外部供应（不在这条产线里做，由外部供给），再点一下取消。</p>
       </div>
       <div class="tiers" id="tiers"></div>
       <div class="recipes" id="ext-recipes" hidden></div>
-      <div class="recipes" id="ext-burn" hidden></div>
       <div class="dlg-foot">
         <span class="grow" id="ext-foot"></span>
         <button type="button" class="linkish" id="ext-suggest">按建议设置</button>

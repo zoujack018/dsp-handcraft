@@ -2,7 +2,7 @@
 import { assignSorters, sideCap } from '../sorters.js';
 import { powerBands } from '../power.js';
 import { stationHoles } from '../holes.js';
-import { STATION_COLS, TOL, gk } from './shared.js';
+import { STATION_COLS, TOL, busMinX, gk } from './shared.js';
 import { sprayGapCells } from './elevation.js';
 import { OVERPASS_Z } from '../../gamedata.js';
 
@@ -170,8 +170,9 @@ function tracksMsg(t) {
 // 为什么 floor_pre 不超过最终代价（最终代价见本文件末尾 result.cost）：
 //   最终代价 = (area+extraArea)*areaWeight + groundBelts + airBelts + penalty + sorterLenCost + levelCost
 //            + shape.cost + holes项 + taste.cost。这里把它拆成「算得出的下限」加「一律按 0 的非负项」：
-//   - 面积：width_lb = max(xR−1, 各 segments[i].b, 各 ports[i].x) + 1，和 scoreLayout 算 maxX 的前三项一样，只少了
-//     高架格子那一项（maxX 还会并上各 leg 的格子 x，只会更大，所以 width_lb ≤ 最终 width）；height 在 tracks/ports
+//   - 面积：width_lb = max(xR−1, 各 segments[i].b, 各 ports[i].x) + 1 − minX，和 scoreLayout 算 maxX 的前三项一样，只少了
+//     高架格子那一项（maxX 还会并上各 leg 的格子 x，只会更大，所以 width_lb ≤ 最终 width；minX 是左边总线口那一列、没有时 0，
+//     两处一样，口 elevation 不改）；height 在 tracks/ports
 //     之后已定、elevation 不再改（ports.js 可能抬高 height，那也在这一步之前）；extraArea ≥ 0、areaWeight ≥ 0。
 //   - groundBelts = segCells + portCells + stubCells，照 scoreLayout 里 segments[i].b−a+1 求和、!ports[i].direct 计数、
 //     legs[i].stub?.length 求和。这三样（segments 的 a/b、ports 的 direct、legs 的 stub）elevation 都不改，和最终相等。
@@ -225,7 +226,8 @@ function preLegBase(c) {
   let maxX = xR - 1;
   for (let i = 0; i < segments.length; i++) maxX = Math.max(maxX, segments[i].b);
   for (let i = 0; i < ports.length; i++) maxX = Math.max(maxX, ports[i].x);
-  const areaLb = (maxX + 1) * height;
+  const minX = opt.busSide === 'auto' ? busMinX(ports) : 0; // 左边的总线（和 scoreLayout 一样）
+  const areaLb = (maxX - minX + 1) * height;
   // 地面带（和 scoreLayout 第 210~214 行同一个算法）
   let segCells = 0;
   for (let i = 0; i < segments.length; i++) segCells += segments[i].b - segments[i].a + 1;
@@ -303,7 +305,7 @@ export function preLegSorterFloor(c, plan) {
 // 退火里每一步都要打一次分：下面的循环都按下标走（不用 for…of、不解构、不拼临时数组），
 // 函数还没被优化编译时也不会每一步都造迭代结果和小数组；算出的数和以前逐项按同样的先后相加，一字不差
 export function scoreLayout(c) {
-  const { P, R, addPenalty, beltCap, blocks, blocksOf, chains, channels, corridor, graph, height, itemBids, legs, opt, pads, penalties, ports, pos, powerHoles, rawCap, roads, rowAbove, rowBelow, rowCy, rows, segments, side, sides, stations, streetX, xR } = c;
+  const { P, R, addPenalty, beltCap, blocks, blocksOf, chains, channels, corridor, graph, height, itemBids, legs, opt, pads, penalties, pileCap, ports, pos, powerHoles, rawCap, roads, rowAbove, rowBelow, rowCy, rows, segments, side, sides, stations, streetX, xR } = c;
   // ---------- F. 约束检查与计数 ----------
   // 每块上下两侧要接的物品种数不能超过分拣器位（Map.forEach：不造 [键, 值] 数组）
   sides.forEach((sd, bid) => {
@@ -317,7 +319,7 @@ export function scoreLayout(c) {
   });
   // 不依赖分拣器的部分先算（流量、尺寸、带数、结构、叠层、口味）；这几项的惩罚先存在 late 里，等分拣器的惩罚记完再按原来的次序记
   const late = [];
-  // 每条带（原料每个入口一条，产物一种一条）的流量不能超过单条带运力
+  // 每条带（原料每个入口一条，产物一种一条）的流量不能超过单条带运力（产物带开集装机时是集装后的运力 pileCap，layout/belts.js）
   for (let i = 0; i < chains.length; i++) {
     const ch = chains[i];
     const parts = ch.parts;
@@ -327,13 +329,16 @@ export function scoreLayout(c) {
       if (p.seg != null) rate = Math.max(rate, segments[p.seg].rate);
     }
     const it = graph.items.get(ch.itemId);
-    const cap = it.producer === 'RAW' ? rawCap : beltCap;
-    if (rate > cap + TOL) late.push(['belt', P.belt, `${it.name} 流量 ${rate.toFixed(0)}/分 超过单条带运力 ${cap}/分`, itemBids(ch.itemId)]);
+    const cap = it.producer === 'RAW' ? rawCap : pileCap;
+    if (rate > cap + TOL) late.push(['belt', P.belt, `${it.name} 流量 ${rate.toFixed(0)}/分 超过${cap > beltCap && it.producer !== 'RAW' ? '一条带叠 4 层的' : '单条带'}运力 ${cap}/分`, itemBids(ch.itemId)]);
   }
 
   let maxX = xR - 1;
   for (let i = 0; i < segments.length; i++) maxX = Math.max(maxX, segments[i].b);
   for (let i = 0; i < ports.length; i++) maxX = Math.max(maxX, ports[i].x);
+  // 总线排到左边（busSide 'auto'）：口和竖走的列在 x < 0，宽从左边总线口那一列算起（和右边的总线一样算进面积），
+  // 坐标到收尾才挪成从 0 起（plan/index.js 的 finishOne）；总线的格子都在口的右边，最左就是口
+  const minX = opt.busSide === 'auto' ? busMinX(ports) : 0;
   // 高架段扫一遍：最右的格子、高架格数、地面插头格数、超长部分（结构代价）、叠层（第 2 层起每层每段），
   // 以及口味里逐格数的两项（金字塔：在本段所在层的格数；拐弯：连着三格同层、方向变了），每段的格子只走一遍
   // 线性超高税（route.js 的 heightTax，细档开）：开着时代替金字塔，关着时不读它的参数
@@ -406,7 +411,7 @@ export function scoreLayout(c) {
       tTurns += turns;
     }
   }
-  const width = maxX + 1;
+  const width = maxX - minX + 1;
   if (opt.maxWidth && width > opt.maxWidth) late.push(['width', P.width * (width - opt.maxWidth) * height, `宽 ${width} 格，超过上限 ${opt.maxWidth} 格`]);
   if (opt.maxHeight && height > opt.maxHeight) late.push(['height', P.height * (height - opt.maxHeight) * width, `长 ${height} 格，超过上限 ${opt.maxHeight} 格`]);
   if (opt.maxAspect) {
@@ -675,7 +680,7 @@ export function scoreLayout(c) {
   // 供电可行性：附近没有空地插塔的工厂/分拣器只能靠外沿加地，加地面积计入成本
   let powerPlan = null;
   if (opt.power) {
-    powerPlan = powerBands({ pos, rowCy, chains, legs, segments, ports, stations, sorterList: sorterPlan.sorters, width, height }, opt.power, { ...opt.powerOptions, maxWidth: opt.maxWidth, maxHeight: opt.maxHeight });
+    powerPlan = powerBands({ pos, rowCy, chains, legs, segments, ports, stations, sorterList: sorterPlan.sorters, width, height, x0: minX }, opt.power, { ...opt.powerOptions, maxWidth: opt.maxWidth, maxHeight: opt.maxHeight });
     if (powerPlan.unreachable) addPenalty('power', P.power * powerPlan.unreachable, `${powerPlan.unreachable} 个工厂/分拣器离任何能放供电设施的地方都太远`, [...new Set((powerPlan.lonely || []).map((t) => t.bid).filter(Boolean))]);
   }
   // 边缘放站：估算把站放进空地（或贴在边上）要多占的面积和接线长度，退火会主动留出空地
