@@ -725,17 +725,18 @@ function stationFits(L, cells, W, H) {
 
 function stationGroups(L, slots = null) {
   const cap = stationItemCap(slots); // 每座最多 5 种；增产剂、翘曲器的空格整张留够（keepFreeSlot）
-  // 按真实物品分：副产物送出去的带和产线自己要用的同种物品共用一个存储格；送出的多就设为供应，否则设为需求
+  // 按真实物品和进出分：送出去的（成品、副产物）设为供应，产线要用的设为需求。副产物和产线自己要用的同种物品（比如氢）
+  // 各占一格、放在两座站（下面装站时同种物品不进同一座）：用户 2026/10/27——放在同一座站的同一格里，需求从别处运来把格子装满以后，
+  // 副产物送不进去，出它的那组工厂就停了
   const byItem = new Map();
   for (const p of L.ports) {
     if (p.burn) continue; // 就地烧掉的副产物不进站（plan/burn.js）
-    const k = realItem(p.itemId);
-    if (!byItem.has(k)) byItem.set(k, []);
-    byItem.get(k).push(p);
+    const k = `${realItem(p.itemId)}${p.kind === 'in' ? '<' : '>'}`;
+    if (!byItem.has(k)) byItem.set(k, { itemId: realItem(p.itemId), ports: [] });
+    byItem.get(k).ports.push(p);
   }
-  const items = [...byItem.entries()].flatMap(([itemId, ports]) => {
-    const net = ports.reduce((a, p) => a + (p.kind === 'out' ? 1 : -1) * (p.rate ?? 0), 0);
-    const role = net >= 0 && ports.some((p) => p.kind === 'out') ? 'supply' : 'demand';
+  const items = [...byItem.values()].flatMap(({ itemId, ports }) => {
+    const role = ports[0].kind === 'in' ? 'demand' : 'supply';
     const out = [];
     for (let i = 0; i < ports.length; i += 12) out.push({ itemId, role, ports: ports.slice(i, i + 12) });
     return out;
@@ -1008,7 +1009,10 @@ function attachStations0(source, { stack = 1, maxWidth = null, maxHeight = null,
 
 /**
  * 裁到实际占用的格子（接线时四周留的边、没用到的去掉），重数带子：搜索边界用于绕线，只有最终确实占用的格子才进入蓝图边界。
- * 算工厂、物流站、各条线路，还有翘曲器带（linkWarpers）。
+ * 算工厂、物流站、各条线路，还有翘曲器带（linkWarpers）；增产剂带、喷涂机、自动集装机（plan/addons.js 加的）也算进去，带数照出图的数
+ * （增产剂带逐格算、集装机那一格拆成两节多算一节，同 addons.js）。
+ * 主干里调这个的几处（index.js 的 trimSegmentEnds、burn.js、storage.js 的 addStores、attachStations、linkWarpers）都在 finishOne 里
+ * addAddons 之前，那时 L.proLines、L.coaters、L.pilers 还没建，这几行什么都不做；只有供电之前的后处理重走（plan/reroute.js）在 addAddons 之后再裁
  */
 export function cropToContent(L) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -1025,6 +1029,9 @@ export function cropToContent(L) {
   for (const w of L.warperLinks || []) for (const [x, y] of w.cells) include(x, y);
   for (const b of L.burners || []) { include(b.rect[0], b.rect[1]); include(b.rect[2], b.rect[3]); } // 火力发电厂那一块（plan/burn.js）
   for (const b of L.stores || []) { include(b.rect[0], b.rect[1]); include(b.rect[2], b.rect[3]); } // 箱子供货的储物仓、储液罐（plan/storage.js）
+  for (const pl of L.proLines || []) for (const [x, y] of pl.cells) include(x, y); // 增产剂带
+  for (const c of L.coaters || []) { include(c.x, c.y); include(c.ix, c.iy); } // 喷涂机和它取料的那格
+  for (const p of L.pilers || []) include(p.x, p.y); // 自动集装机
   translateLayout(L, -x0, -y0);
   L.width = x1 - x0 + 1;
   L.height = y1 - y0 + 1;
@@ -1045,6 +1052,11 @@ export function cropToContent(L) {
     L.belts += w.cells.length;
     L.airBelts += w.cells.filter((c) => c[2] > 0).length;
   }
+  for (const pl of L.proLines || []) {
+    L.belts += pl.cells.length;
+    L.airBelts += pl.cells.filter((c) => c[2] > 0).length;
+  }
+  L.belts += (L.pilers || []).length; // 集装机那一格拆成两节带子
   return L;
 }
 

@@ -13,7 +13,7 @@
 //     antian 原来的写法落下时往去路方向错开，一叠里的节点会先往前再往回，游戏里画出来是折返的。
 import buildingsData from '../../data/Buildings.json' with { type: 'json' };
 import { toStr } from '../codec/parser.js';
-import { BELT_IDS, realItem, slotPoint, THERMAL_PLANT, THERMAL_BANK, STORE_BODY, DISTRIBUTOR_LIFT, TANK_STUB } from '../gamedata.js';
+import { BELT_IDS, realItem, slotPoint, THERMAL_PLANT, THERMAL_BANK, STORE_BODY, DISTRIBUTOR_LIFT, TANK_STUB, LEVEL_M, BELT_LINK_M } from '../gamedata.js';
 import { coaterYaw } from '../plan/addons.js';
 import { bankSorters } from '../plan/burn.js';
 import { rotateBlueprint } from './rotate.js';
@@ -115,6 +115,23 @@ export function chainTiles(layout, chain) {
  * @param layout route() 的结果
  * @param {{belt?: 1|2|3, sorter?: number, title?: string, targetId?: number}} opt
  */
+/**
+ * 物流站整站的设置（游戏里「物流站设置」那几项，蓝图里都有）：只留认识的、在游戏范围里的。单位同 codec 解出来的：
+ * 最大充能功率 MW（星际站 30~300）、运输机最远路程 °（20~180）、运输船最远路程 光年（1~60，10000 是无限）、曲速启用路程 AU（0.5~60）、
+ * 运输机 / 运输船起送量 %（1~100）、轨道采集器、翘曲器必备
+ */
+const STATION_RANGES = { workEnergyPerTick: [30, 300], tripRangeOfDrones: [20, 180], tripRangeOfShips: [1, 60], warpEnableDistance: [0.5, 60], deliveryAmountOfDrones: [1, 100], deliveryAmountOfShips: [1, 100] };
+export function stationSettings(x) {
+  const out = {};
+  for (const [k, [lo, hi]] of Object.entries(STATION_RANGES)) {
+    const v = Number(x?.[k]);
+    if (k === 'tripRangeOfShips' && v === 10000) out[k] = v;
+    else if (Number.isFinite(v) && v >= lo && v <= hi) out[k] = v;
+  }
+  for (const k of ['includeOrbitCollector', 'warperNecessary']) if (typeof x?.[k] === 'boolean') out[k] = x[k];
+  return out;
+}
+
 export function emitBlueprint(graph, layout, opt = {}) {
   const beltId = BELT_IDS[opt.belt ?? 3];
   const sorterId = opt.sorter ?? 2013;
@@ -191,25 +208,33 @@ export function emitBlueprint(graph, layout, opt = {}) {
 
   // ---------- 物流站 ----------
   // 存储：原料设为需求（本地、星际都需求），成品设为供应；站口：出站 dir 1、进站 dir 2，storageIdx 从 1 起
+  // opt.stationPrefs：玩家在页面上改过、记住的设置（用户 2026/10/27 要下次套用）：翘曲器格、增产剂格（{ warper, spray: { localRole, remoteRole, max } }）
+  // 和整站设置（station，见 stationSettings）
   const SPRAY_ITEMS = new Set([1141, 1142, 1143]); // 增产剂 Mk.I~III
+  const pref = (k) => {
+    const x = opt.stationPrefs?.[k];
+    const role = (r) => ([0, 1, 2].includes(r) ? r : null);
+    return x ? { ...(role(x.localRole) != null ? { localRole: x.localRole } : null), ...(role(x.remoteRole) != null ? { remoteRole: x.remoteRole } : null), ...(x.max >= 0 && x.max <= 100000 ? { max: Math.round(x.max) } : null) } : null;
+  };
   const stationB = [];
   for (const st of layout.stations || []) {
     const b = fresh(2104);
     b.localOffset = at(st.x, st.y);
     b.yaw = [0, 0];
     const tpl = TEMPLATE.get(2104).parameters;
-    const params = structuredClone(tpl);
+    const params = Object.assign(structuredClone(tpl), stationSettings(opt.stationPrefs?.station)); // 整站设置：玩家改过、记住的
     params.storage = params.storage.map(() => ({ itemId: 0, localRole: 0, remoteRole: 0, max: 0, lockAmount: 0 }));
     st.items.forEach((it, i) => {
       // 翘曲器格（左栏「物流站格子」）：本地仓储、星际需求，站自己的运输船用；上限 1000（用户 2026/10/07）
       if (it.role === 'warper') {
-        params.storage[i] = { itemId: it.itemId, localRole: 0, remoteRole: 2, max: 1000, lockAmount: 0 };
+        params.storage[i] = { itemId: it.itemId, localRole: 0, remoteRole: 2, max: 1000, ...pref('warper'), lockAmount: 0 };
         return;
       }
       const role = it.role === 'supply' ? 1 : 2;
       // 喷涂用的增产剂（需求）上限 1000（用户 2026/10/07），别的物品 5000
-      const max = role === 2 && SPRAY_ITEMS.has(realItem(it.itemId)) ? 1000 : 5000;
-      params.storage[i] = { itemId: realItem(it.itemId), localRole: role, remoteRole: role, max, lockAmount: 0 };
+      const spray = role === 2 && SPRAY_ITEMS.has(realItem(it.itemId));
+      const max = spray ? 1000 : 5000;
+      params.storage[i] = { itemId: realItem(it.itemId), localRole: role, remoteRole: role, max, ...(spray ? pref('spray') : null), lockAmount: 0 };
     });
     params.slots = params.slots.map(() => ({ dir: 0, storageIdx: 0 }));
     for (const p of st.ports) params.slots[p.slot] = { dir: p.dir === 'out' ? 1 : 2, storageIdx: st.items.findIndex((it) => realItem(it.itemId) === realItem(p.itemId)) + 1 };
@@ -229,9 +254,11 @@ export function emitBlueprint(graph, layout, opt = {}) {
   const dirOf = (dx, dy) => (dx > 0 ? 'E' : dx < 0 ? 'W' : dy > 0 ? 'N' : 'S');
   // 出蓝图不抛错：重叠或不相邻的地方把带子断开，记一条问题，照常出图（独立检查会把问题列出来）
   const issues = [];
+  // 相邻：水平走一格（坡：高度可以变，半层的坡就是 z 差 0.5，docs/game-rules.md 第 38 条；坡陡不陡由独立检查查），
+  // 或同一格里竖直叠放，一节最多升降到两节相距 √5.3 m（游戏报「太远」：原地一步升 2 层不行；官方垂直传送带每节 1 层，半层一步也行）
   const adjacent = ([x, y, z], [x1, y1, z1]) => {
     const flat = Math.abs(x1 - x) + Math.abs(y1 - y);
-    return flat === 1 || (flat === 0 && Math.abs(z1 - z) === 1);
+    return flat === 1 || (flat === 0 && z1 !== z && Math.abs(z1 - z) * LEVEL_M <= BELT_LINK_M + 1e-9);
   };
   /** 按顺序建一串带子并首尾相连；遇到已占用的格子或断开的地方分成几段 */
   const build = (tiles) => {

@@ -4,18 +4,18 @@ import { calculate } from '../../src/calc/calculator.js';
 import { planLine, planLineAsync, planSteps } from '../../src/plan/index.js';
 import { SORTER_SPEED } from '../../src/plan/sorters.js';
 import { buildGraph } from '../../src/plan/graph.js';
-import { splitLine, planModule } from '../../src/plan/modules.js';
-import { stitchBlueprints } from '../../src/emit/stitch.js';
-import { powerDemand, powerText, sumPower, fmtWatts, generatorsFor, IDLE_W, PILER_W, PILER_IDLE_W, COATER_W, COATER_IDLE_W, STATION_IDLE_W, STATION_CHARGE_W } from '../../src/metrics/energy.js';
+import { powerDemand, powerText, fmtWatts, generatorsFor, IDLE_W, PILER_W, PILER_IDLE_W, COATER_W, COATER_IDLE_W, STATION_IDLE_W, STATION_CHARGE_W } from '../../src/metrics/energy.js';
 import { runTask } from '../../src/plan/tasks.js';
 import { validate } from '../../src/plan/validate.js';
-import { emitBlueprint } from '../../src/emit/blueprint.js';
+import { emitBlueprint, stationSettings, chainTiles } from '../../src/emit/blueprint.js';
+import { beltStats } from '../../src/plan/reroute.js';
 import { checkBlueprint } from '../../src/emit/check.js';
-import { ITEMS, RAW_ITEM_IDS, factory, hasHighLatitude, recipeChoices, defaultRecipe, addGameData, plannable, recipe as recipeOf } from '../../src/gamedata.js';
-import { renderModel } from './model.js';
+import { ITEMS, RAW_ITEM_IDS, BELT_IDS, factory, hasHighLatitude, recipeChoices, defaultRecipe, addGameData, plannable, recipe as recipeOf } from '../../src/gamedata.js';
+import { renderModel, groupLabels } from './model.js';
 import { autoWatcher, previewShapeOk } from './autowatch.js';
 import vanilla from '../../data/Vanilla.json' with { type: 'json' };
 import { fractionatorArray, checkArray, arrayModel, arrayPlan } from '../../src/fractionate/array.js';
+import { fromStr, toStr } from '../../src/codec/parser.js';
 
 // 重氢的「分馏塔阵列」：不是普通配方（分馏塔不接分拣器、带子从塔里穿过），选了它就单独生成一张分馏阵列蓝图
 const DEUTERIUM = 1121;
@@ -41,10 +41,12 @@ function splitFraction(targets, raw, recipes) {
 // 细档的 heightTax：搜索打分里线性超高税代替金字塔，第 5 层起另加（src/plan/layout/score.js，分支 explore/bridges 的试验）
 // 细档的 bundleFee：开路费，高架竖直那截挑列时旁边没有别的竖直段就多计 8 格，带子挨着走成束（src/plan/layout/positions.js，分支 explore/bridges 的试验）
 // 细档的 openFee：走空地费，高架竖直那截穿过的行里既不压着也不挨着建筑的，每行多计 2 格，带子贴着建筑走（src/plan/layout/positions.js，分支 explore/bridges 的试验）
+// core：用哪个内核（src/plan/index.js 的 planCore；routeOptions.core 写明的为准），不写是主干内核。标准、美观档 'auto'：先排版内核，
+// 第 2 段搜完还不可行换主干内核从头排（考卷 2 的数在 docs/history.md「内核分档」）；快速档不用：考卷 2 上面积不省、线程时间 1.4 倍
 const EFFORT = {
   quick: { iterations: 3000, restarts: 2, timeLimit: 20000, targetSpace: 0.5, retries: 1, untilTarget: { maxMs: 15 * 60000 } },
-  normal: { iterations: 3000, restarts: 4, timeLimit: 30000, targetSpace: 0.66, retries: 2, untilTarget: { maxMs: 60 * 60000 }, powerHoles: true },
-  fine: { iterations: 8000, restarts: 6, timeLimit: null, targetSpace: 0.8, retries: 4, untilTarget: { maxMs: 200 * 60000 }, powerHoles: true, groundTax: true },
+  normal: { iterations: 3000, restarts: 4, timeLimit: 30000, targetSpace: 0.66, retries: 2, untilTarget: { maxMs: 60 * 60000 }, powerHoles: true, core: 'auto' },
+  fine: { iterations: 8000, restarts: 6, timeLimit: null, targetSpace: 0.8, retries: 4, untilTarget: { maxMs: 200 * 60000 }, powerHoles: true, groundTax: true, core: 'auto' },
 };
 
 // 别的网页带来的物品和配方（嵌在量产量化计算器里时，那边新出的物品随方案带过来，见 web/src/handoff.js 的 defs）。
@@ -118,12 +120,26 @@ function minimalExternal(targets, base, recipes = {}) {
  *   goals：最终目标（第 0 层）。
  *   units：完整产线（不设外部供应）里除目标外的每种中间产物，带层级（离最近的目标最远几步）、所需工厂、
  *          当前是否仍在产线里（上游被设为外部供应后，它可能已经不需要了）、是否被设为外部供应。
+ *          设成外部供应、可现在产线里已经没人用它（比如只有硫酸用精炼油，硫酸也设成了外部供应）的算 dropped：不画、不算进外部供应。
  *   edges：谁被谁消耗：from 物品 → to 物品（消费者），rate 为当前流量（不在产线里时为完整产线的流量），
- *          state = line（还在产线里）/ external（来源改为外部供应）/ dropped（消费者已不需要）。
+ *          state = line（还在产线里）/ external（来源改为外部供应）/ dropped（消费者已不需要）/ raw（原料：原矿、黑雾掉落这类没有配方的）。
+ *   raws：当前产线从外面进的原料（不含设成外部供应的中间产物），带物品编号、类别。
+ *   byproducts：当前产线的副产物，ofId 是出它的那组工厂的产物。
+ *   recipes：有新配方的物品，每个新配方带 ore（原料里的珍奇矿物，没有为 null）和 key（弹窗里给它配图标的物品）。
  *   suggested：让整条线可排的最少外部供应（基于当前选择补齐）。
  */
 /** 配方写成一行：可燃冰×2 → 石墨烯×2 + 氢×1 */
 const recipeLine = (r) => `${r.inputs.map((x) => `${ITEMS.get(x.id).name}×${x.count}`).join(' + ')} → ${r.outputs.map((x) => `${ITEMS.get(x.id).name}×${x.count}`).join(' + ')}`;
+
+/**
+ * 计算结果的配方组，外加「和主产物同一组工厂出、也供产线的」那几种（calculator.js 的 unit.shared：石墨烯、氢都选了石墨烯（高效）时只开一组）
+ * 各当一种物品：编号、名字换成它的，outputRate 是这组出它多少，coOf 是主产物。弹窗里它们照常画卡、连到用它的物品
+ */
+const withShared = (calc) =>
+  calc.units.flatMap((u) => [
+    u,
+    ...(u.shared ?? []).map((id) => ({ ...u, itemId: id, item: ITEMS.get(id).name, outputRate: calc.flows.filter((f) => f.itemId === id && f.from === u.id).reduce((a, f) => a + f.rate, 0), coOf: u.itemId })),
+  ]);
 
 function chain({ targets, raw: raw0 = [], recipes: recipes0 = {}, lab = 2901, labStack = 15 }) {
   const frac = splitFraction(targets, raw0, recipes0);
@@ -132,9 +148,9 @@ function chain({ targets, raw: raw0 = [], recipes: recipes0 = {}, lab = 2901, la
   const full = calculate({ targets, raw: [], recipes, lab: Number(lab), labStack: Number(labStack) });
   const cur = calculate({ targets, raw, recipes, lab: Number(lab), labStack: Number(labStack) });
   const goalIds = new Set(full.targets.map((t) => t.itemId));
-  const curUnits = new Map(cur.units.map((u) => [u.itemId, u]));
+  const curUnits = new Map(withShared(cur).map((u) => [u.itemId, u]));
   const curRaw = new Map(cur.raw.map((r) => [r.itemId, r.rate]));
-  const unitByItem = new Map(full.units.map((u) => [u.itemId, u]));
+  const unitByItem = new Map(withShared(full).map((u) => [u.itemId, u]));
   const itemOfUnit = (calc) => new Map(calc.units.map((u) => [u.id, u.itemId]));
   const fullOwner = itemOfUnit(full);
   const curOwner = itemOfUnit(cur);
@@ -158,7 +174,7 @@ function chain({ targets, raw: raw0 = [], recipes: recipes0 = {}, lab = 2901, la
   const describe = (u) => {
     const f = factory(u.factoryId);
     const now = curUnits.get(u.itemId);
-    const external = raw.includes(u.item);
+    const external = raw.includes(u.item) && curRaw.has(u.itemId); // 设成外部供应、现在还有人用
     return {
       id: u.itemId,
       name: u.item,
@@ -170,12 +186,15 @@ function chain({ targets, raw: raw0 = [], recipes: recipes0 = {}, lab = 2901, la
       levels: (now ?? u).levels ?? null, // 研究站：count 是叠数，每叠几层
       rate: now ? now.outputRate : curRaw.get(u.itemId) ?? u.outputRate,
       state: external ? 'external' : now ? 'line' : 'dropped',
+      co: (now ?? u).coOf ?? null, // 和哪种物品同一组工厂出（withShared）
     };
   };
+  // 目标重氢选了分馏阵列：单独一张分馏阵列蓝图，只吃外面来的氢（1 个氢出 1 个重氢），完整产线里做氢的那些都不画
+  const fracGoal = frac.on && frac.isGoal && targets.length === 1;
   const goals = full.targets.map((t) => ({ ...describe(unitByItem.get(t.itemId)), out: t.rate }));
   // 目标重氢选了分馏阵列：塔数、耗氢按分馏算（1 个氢分出 1 个重氢）
   if (frac.on && frac.isGoal) for (const g of goals) if (g.id === DEUTERIUM) Object.assign(g, { factory: '分馏塔', count: arrayPlan(g.out).towers });
-  const units = full.units.filter((u) => !goalIds.has(u.itemId)).map(describe);
+  const units = fracGoal ? [] : withShared(full).filter((u) => !goalIds.has(u.itemId)).map(describe);
   // 依赖边：只连中间产物和目标之间（原矿不在弹窗里）
   const curRate = new Map();
   for (const fl of cur.flows) if (fl.to !== 'OUT') curRate.set(`${fl.itemId}>${curOwner.get(fl.to)}`, fl.rate);
@@ -187,42 +206,69 @@ function chain({ targets, raw: raw0 = [], recipes: recipes0 = {}, lab = 2901, la
     const key = `${fl.itemId}>${to}`;
     const live = curRate.get(key);
     const state = live != null ? (raw.includes(unitByItem.get(fl.itemId).item) ? 'external' : 'line') : 'dropped';
-    edges.push({ from: fl.itemId, to, rate: live ?? fl.rate, state });
+    if (!fracGoal) edges.push({ from: fl.itemId, to, rate: live ?? fl.rate, state });
   }
+  // 原料（原矿、黑雾掉落、临界光子这类没有配方的）→ 当前产线里用它的产物，同一对合成一条
+  const raws = fracGoal
+    ? [{ itemId: 1120, item: ITEMS.get(1120).name, rate: Number(targets[0].rate) }]
+    : cur.raw.filter((r) => !raw.includes(r.item));
+  const rawIds = new Set(raws.map((r) => r.itemId));
+  const rawEdges = new Map();
+  if (fracGoal) rawEdges.set('1120>1121', { from: 1120, to: DEUTERIUM, rate: Number(targets[0].rate), state: 'raw' });
+  else
+    for (const fl of cur.flows) {
+      if (fl.to === 'OUT' || fl.byproduct || !rawIds.has(fl.itemId)) continue;
+      const to = curOwner.get(fl.to);
+      const key = `${fl.itemId}>${to}`;
+      if (rawEdges.has(key)) rawEdges.get(key).rate += fl.rate;
+      else rawEdges.set(key, { from: fl.itemId, to, rate: fl.rate, state: 'raw' });
+    }
+  edges.push(...rawEdges.values());
+  // 同一组工厂一起出的：主产物 → 这种物品，画成副产物那样的点线
+  for (const u of withShared(cur)) if (u.coOf != null && !fracGoal) edges.push({ from: u.coOf, to: u.itemId, rate: u.outputRate, state: 'by' });
   return {
     title: full.targets.map((t) => `${t.name} ${t.rate}/分`).join(' + '),
     goals,
     units,
     edges,
-    raws: frac.on && frac.isGoal && targets.length === 1 ? [{ name: '氢', rate: Number(targets[0].rate) }] : cur.raw.filter((r) => !raw.includes(r.item)).map((r) => ({ name: r.item, rate: r.rate })),
-    blocking: cur.units.filter((u) => !goalIds.has(u.itemId) && !plannable(u.recipeId, u.factoryId)).map((u) => u.item),
+    raws: raws.map((r) => ({ id: r.itemId, name: r.item, rate: r.rate, type: ITEMS.get(r.itemId).type })),
+    blocking: fracGoal ? [] : cur.units.filter((u) => !goalIds.has(u.itemId) && !plannable(u.recipeId, u.factoryId)).map((u) => u.item),
     suggested: minimalExternal(targets, raw, recipes),
     // 有新配方的物品（目标和还在产线里的中间产物）：弹窗底部逐个开关
-    recipes: onceEach([...full.targets.map((t) => t.itemId), ...full.units.map((u) => u.itemId)]
-      .filter((id, i, a) => a.indexOf(id) === i && ((id === DEUTERIUM && frac.on) || (!raw.includes(ITEMS.get(id).name) && (cur.units.some((u) => u.itemId === id) || full.targets.some((t) => t.itemId === id)))))
-      .map((id) => ({ id, name: ITEMS.get(id).name, choices: id === DEUTERIUM ? [...recipeChoices(id), FRAC_CHOICE] : recipeChoices(id) }))
+    recipes: [...full.targets.map((t) => t.itemId), ...withShared(full).map((u) => u.itemId)]
+      .filter((id, i, a) => a.indexOf(id) === i && ((id === DEUTERIUM && frac.on) || (!fracGoal && !raw.includes(ITEMS.get(id).name) && (curUnits.has(id) || full.targets.some((t) => t.itemId === id)))))
+      .map((id) => ({ id, name: ITEMS.get(id).name, choices: (id === DEUTERIUM ? [...recipeChoices(id), FRAC_CHOICE] : recipeChoices(id)).filter((r) => !UNLISTED_ALTS.has(r.id)) }))
       .filter((x) => x.choices.length > 1)
       .map((x) => ({
         id: x.id,
         name: x.name,
         def: { id: x.choices[0].id, name: x.choices[0].name, line: recipeLine(x.choices[0]) },
-        alts: x.choices.slice(1).map((r) => ({ id: r.id, name: r.name, line: r.line ?? recipeLine(r) })),
+        alts: x.choices.slice(1).map((r) => ({ id: r.id, name: r.name, line: r.line ?? recipeLine(r), ...altKey(r, x.choices[0]) })),
         chosen: x.id === DEUTERIUM && frac.on ? FRAC_RECIPE : Number(recipes[x.id]) || null,
-      }))),
-    // 副产物：弹窗底部说一句（单独一条带送出）
-    byproducts: cur.byproducts.map((b) => ({ id: b.itemId, name: b.item, rate: b.rate, of: ITEMS.get(b.of).name })),
+      })),
+    // 几种物品选了同一道配方、合成一组时，用不完的那部分（calculator.js 的 flow.extra，跟着那条带送出）
+    surplus: fracGoal ? [] : cur.flows.filter((f) => f.extra).map((f) => ({ id: f.itemId, name: ITEMS.get(f.itemId).name, rate: f.rate })),
+    // 副产物：弹窗里画在出它的那组工厂下面，底部也说一句（单独一条带送出）
+    byproducts: fracGoal ? [] : cur.byproducts.map((b) => ({ id: b.itemId, name: b.item, type: ITEMS.get(b.itemId).type, rate: b.rate, of: ITEMS.get(b.of).name, ofId: b.of })),
   };
 }
 
+// 弹窗里不列的新配方（用户 2026/10/27：不常用）：有机晶体（原始）。有机晶体在弹窗右栏当珍奇（有矿脉）直接设外部供应
+const UNLISTED_ALTS = new Set([54]);
+// 珍奇矿物（游戏里的稀有资源）：新配方那一栏按它们归拢，一种矿只列一次（用户 2026/10/27）
+const RARE_ORES = new Set([1011, 1012, 1013, 1014, 1015, 1016]); // 可燃冰、金伯利矿石、分形硅石、光栅石、刺笋结晶、单极磁石
 /**
- * 同一道带副产物的配方只在主产物那一项列一次（用户 2026/10/26：石墨烯和氢都在产线里时「石墨烯（高效）」显示了两次）：
- * 主产物是清单里另一项的新配方从这一项拿掉，正在用着的除外（留着好关掉）；拿完没有新配方的项不列
+ * 新配方的「关键原料」：ore 是原料里的珍奇矿物；key 是弹窗里给它配图标的物品——有珍奇就是珍奇，没有就是默认配方不用的第一种原料
+ * （有机晶体（原始）的木材、空间翘曲器（高级）的引力矩阵），重氢分馏是分馏塔
  */
-function onceEach(list) {
-  const listed = new Set(list.map((x) => x.id));
-  const main = (id) => recipeOf(id).outputs[0].id;
-  return list.map((x) => ({ ...x, alts: x.alts.filter((a) => x.chosen === a.id || main(a.id) === x.id || !listed.has(main(a.id))) })).filter((x) => x.alts.length);
+function altKey(r, def) {
+  if (r.id === FRAC_RECIPE) return { ore: null, key: { id: 2314, name: ITEMS.get(2314).name } };
+  const ore = r.inputs.find((x) => RARE_ORES.has(x.id));
+  const key = ore ?? r.inputs.find((x) => !def.inputs.some((y) => y.id === x.id)) ?? r.inputs[0];
+  const it = (x) => (x ? { id: x.id, name: ITEMS.get(x.id).name } : null);
+  return { ore: it(ore), key: it(key) };
 }
+
 
 /** 箱子供货的各组（plan/storage.js）：在哪几行（排进行里的储物仓）或哪边哪一行（外面的储液罐、增产剂仓）、什么仓、几个、叠几层、装满够几分钟 */
 function stores(graph, L) {
@@ -392,6 +438,7 @@ function makeBenchTask() {
     orient: 'h',
   };
   delete options.untilTarget;
+  delete options.core; // 测速一直量主干内核（TIME_MODEL.ref 按它定的），档位的内核改了也不跟着变
   const req = planSteps(calc, options).next().value;
   benchTask = { kind: 'bench', calc, options: { ...req.options, iterations: BENCH_STEPS, timeLimit: null } };
   return benchTask;
@@ -463,8 +510,8 @@ function bottleneck(graph, p) {
   let sorterLoad = 0;
   let beltLoad = 0;
   for (const it of graph.items.values()) {
-    // 物流站出的原料能叠；产物带默认用自动集装机叠到 4 层（route.js 的 pilers），运力按 4 条带算
-    const cap = it.producer === 'RAW' ? (p.station ? cap0 * Number(p.pile || 1) : cap0) : cap0 * 4;
+    // 物流站出的原料能叠；产物带默认用自动集装机叠到 4 层（route.js 的 pilers），运力按 4 条带算（最低配置不放集装机，earlyGame）
+    const cap = it.producer === 'RAW' ? (p.station ? cap0 * Number(p.pile || 1) : cap0) : earlyGame(p) ? cap0 : cap0 * 4;
     const toGroup = new Map();
     for (const c of it.consumers) {
       beltLoad = Math.max(beltLoad, c.rate / cap);
@@ -621,6 +668,12 @@ let activeId = 0;
 const cancelled = new Set(); // 页面取消了的请求（取消本轮生成）：搜索那边后来再出结果就不发了
 const PREVIEW_EVERY = 25000; // 预览的图多久换一张
 
+/**
+ * 全部选最低配置（用户 2026/10/28）：不放供电或电力感应塔、传送带或传送带 + 箱子（不接物流站）、普通传送带、电弧熔炉、制造台 Mk.I、不喷增产剂。
+ * 当作还没解锁「超级磁场发生器」：高架不用原地竖直升降（route.js 的 noLift），检查按没解锁的存档查（check.js 的 noTech）；
+ * 自动集装机多半也没解锁：带上不叠（route.js 的 pilers）
+ */
+const earlyGame = (p) => !p.station && (!p.power || p.power === 'tesla') && String(p.belt) === '1' && String(p.smelter) === '2302' && String(p.assembler) === '2303' && !Number(p.spray || 0);
 /** 页面的「箱子」+「物流配送器」→ plan/storage.js 的 SUPPLY 键：side-s / side-l 是左侧一列仓组（2026/10/26），放配送器就是 sdist-s / sdist-l；以前的 box-s / box-l 照旧认 */
 const supplyOf = (p) => (!p.station && p.supply ? (p.dist === '1' ? p.supply.replace(/^box/, 'dist').replace(/^side/, 'sdist') : p.supply) : null);
 /** 页面参数 → calculate() 的参数。chemwide：左栏「化工厂、精炼厂高纬度间距展开」，默认化工厂、量子化工厂、原油精炼厂按赤道的紧凑间距排（只在赤道附近放得下），开了才加宽（任何纬度都能放） */
@@ -636,7 +689,7 @@ async function run(p, id = 0) {
   const frac = splitFraction(targets, (p.raw || []).filter(Boolean), p.recipes || {});
   if (frac.on && frac.isGoal) {
     if (targets.length > 1) return { error: '重氢选了分馏塔阵列时，目标只能是重氢一种（分馏阵列单独一张蓝图）。可以把别的目标另外生成，重氢设为外部供应。' };
-    return fractionRun(targets[0].rate, Number(p.spray || 0), arrayLimits(p));
+    return fractionRun(targets[0].rate, Number(p.spray || 0), arrayLimits(p), p.stationPrefs);
   }
   const input = lineInput(p, targets, frac);
   const pool = await poolReady();
@@ -644,49 +697,17 @@ async function run(p, id = 0) {
   const effort = EFFORT[p.effort || 'normal'];
   // 各轮退火分给各线程：轮数补成线程数的整数倍，墙上时间不变，搜得更广（4 线程时细档 6 轮补成 8 轮）
   const restarts = pool ? Math.ceil(effort.restarts / pool.size) * pool.size : effort.restarts;
-  // 开了「自动切分」时：物品种类太多、一块排不下的产线切成几块（src/plan/modules.js），每块单独排，一起交给线程池
-  const mods = p.split === '1' ? splitLine(input) : null;
+  // 网页不切块（用户 2026/10/27 去掉了「自动切分」）：大产线切块只在命令行、考卷里（src/plan/modules.js）
   const est = estimateSeconds(calculate(input), effort, p, pool ? pool.size : 1);
   activeId = id;
-  // 实时预览 + 实测估时：切块时几块同时搜，轮号对不上块，先不开（估时也照旧用公式）
-  const preview = mods ? null : previewer(id, est, restarts, pool ? pool.size : 1, effort.untilTarget?.maxMs ?? null);
+  // 实时预览 + 实测估时
+  const preview = previewer(id, est, restarts, pool ? pool.size : 1, effort.untilTarget?.maxMs ?? null);
   curPreview = preview;
   if (pool && preview) pool.onProgress = (task, snap) => preview.take(task, snap);
-  // 进度：切了块时几块一起排，按整条线估一段搜索的时间，一段 = 各块的轮数加起来
-  const helpers = tracked(pool, id, est, mods ? effort.restarts * mods.length : restarts, preview);
+  const helpers = tracked(pool, id, est, restarts, preview);
   // 每搜完一轮（含没达标接着搜的）报一次：第几轮、目前最好的利用率、可不可行
   const onRound = (r) => self.postMessage({ type: 'progress', id, round: r.round, best: r.space, feasible: r.feasible, target: r.target });
-  if (mods) {
-    const t0 = performance.now();
-    const results = await Promise.all(mods.map((m) => planOne(calculate(m.input), p, helpers, effort, effort.restarts, true)));
-    const bad = results.find((r) => r.error);
-    if (bad) return bad; // 比如某块里有还不支持的工厂：照旧提示改成外部供应
-    const whole = calculate(input);
-    const title = whole.targets.map((t) => `${t.name} ${t.rate}/分`).join(' + ');
-    // 拼接成一张：按物流站间距、供电设施间距等规则摆开（src/emit/stitch.js）
-    const stitched = p.stitch === '1'
-      ? (() => {
-          const r = stitchBlueprints(results.map((x) => ({ str: x.blueprint })), {
-            maxWidth: p.maxwidth ? Number(p.maxwidth) : null,
-            title: `${whole.targets.map((t) => t.name).join('+')}（${mods.length} 块拼接）`,
-            desc: `dsp-handcraft：${title}，切成 ${mods.length} 块拼成一张：${mods.map((m, k) => `${k + 1}. ${m.name}`).join('；')}`,
-          });
-          const e = sumPower(results.map((x) => x.energy)); // 整张的用电：各块加起来
-          return { blueprint: r.str, width: r.width, height: r.height, offsets: r.offsets, gap: r.gap, check: { ok: r.check.ok, errors: r.check.errors.slice(0, 12), warnings: r.check.warnings }, stations: r.check.stats.stations, power: r.check.stats.power, energy: energyTexts(e), energyText: powerText(e) };
-        })()
-      : null;
-    return {
-      // 切了块：每块都达标才算达标（利用率取最低的那块）
-      goal: { met: results.every((r) => r.goal?.met), space: Math.min(...results.map((r) => r.goal?.space ?? 1)), target: effort.targetSpace, feasible: results.every((r) => r.goal?.feasible), rounds: Math.max(...results.map((r) => r.goal?.rounds ?? 1)), stalled: results.some((r) => r.goal?.stalled) },
-      stitched,
-      modules: results.map((r, k) => ({ ...r, module: { k, name: mods[k].name, smelt: mods[k].smelt, machines: mods[k].machines, items: mods[k].items, makes: mods[k].targets.map((t) => ({ name: ITEMS.get(t.itemId).name, rate: t.rate })), needs: mods[k].inputs.map((id) => ITEMS.get(id).name) } })),
-      split: { items: new Set(whole.flows.map((f) => f.itemId)).size, machines: whole.units.reduce((n, u) => n + u.count, 0) },
-      title,
-      ms: performance.now() - t0,
-      threads: helpers ? helpers.size : 1,
-    };
-  }
-  return planOne(calculate(input), p, helpers, effort, restarts, false, onRound, preview);
+  return planOne(calculate(input), p, helpers, effort, restarts, onRound, preview);
 }
 
 /**
@@ -695,27 +716,31 @@ async function run(p, id = 0) {
  *   seconds：预计用时，同开搜前的 estimateSeconds（帮手线程还没开时照 makePool 的条件猜几个）；分馏塔阵列不用搜，为 0；
  *   power：工厂满负荷用电（还没排，分拣器、喷涂机、物流站不算）；
  *   chainItems：不设外部供应时这条线用到的物品（目标、中间产物、原料），页面左栏只列当前产线用得上的外部供应、新配方；算不出来为 null
+ *   supplied：按现在的外部供应，产线从外面要的物品名（设了外部供应、可现在没人用的不在里面，左栏不列）；算不出来为 null
  */
 function forecast(p) {
   const targets = (p.targets || [{ target: p.target, rate: p.rate }]).map((t) => ({ target: Number(t.target), rate: Number(t.rate) }));
   const frac = splitFraction(targets, (p.raw || []).filter(Boolean), p.recipes || {});
   let chainItems = null;
+  let supplied = null;
   try {
     // 产线里有哪些物品和产量无关：产量还没填好时按 60 算
-    const c = calculate({ targets: targets.map((t) => ({ ...t, rate: t.rate > 0 ? t.rate : 60 })), raw: [], recipes: frac.recipes, lab: Number(p.lab || 2901), labStack: Number(p.labstack || 15) });
-    chainItems = [...new Set([...c.targets.map((t) => t.itemId), ...c.units.map((u) => u.itemId), ...c.raw.map((r) => r.itemId)])];
+    const input = { targets: targets.map((t) => ({ ...t, rate: t.rate > 0 ? t.rate : 60 })), recipes: frac.recipes, lab: Number(p.lab || 2901), labStack: Number(p.labstack || 15) };
+    const c = calculate({ ...input, raw: [] });
+    chainItems = [...new Set([...c.targets.map((t) => t.itemId), ...withShared(c).map((u) => u.itemId), ...c.raw.map((r) => r.itemId)])];
+    supplied = frac.on && frac.isGoal ? ['氢'] : calculate({ ...input, raw: frac.raw }).raw.map((r) => r.item);
   } catch {
     chainItems = null;
   }
   try {
-    if (!targets.every((t) => t.rate > 0)) return { error: '每分钟产量需要是正数。', chainItems };
+    if (!targets.every((t) => t.rate > 0)) return { error: '每分钟产量需要是正数。', chainItems, supplied };
     if (frac.on && frac.isGoal) {
-      if (targets.length > 1) return { error: '重氢选了分馏塔阵列时，目标只能是重氢一种。', chainItems };
+      if (targets.length > 1) return { error: '重氢选了分馏塔阵列时，目标只能是重氢一种。', chainItems, supplied };
       // 分馏塔阵列：照 fractionRun 生成一遍数塔（几毫秒）；一座站带不动时这张图要贴几份，塔数、用电都乘上
       const r = fractionatorArray(targets[0].rate, { spray: Number(p.spray || 0), ...arrayLimits(p) });
       const k = r.plan.copies;
       const e = fracEnergy(r);
-      return { machines: r.fracs * k, byFactory: [{ name: '分馏塔', count: r.fracs * k }], seconds: 0, power: forecastPower(e.idle * k, e.work * k, e.sprayExtra * k), chainItems: [DEUTERIUM] };
+      return { machines: r.fracs * k, byFactory: [{ name: '分馏塔', count: r.fracs * k }], seconds: 0, power: forecastPower(e.idle * k, e.work * k, e.sprayExtra * k), chainItems: [DEUTERIUM], supplied };
     }
     const calc = calculate(lineInput(p, targets, frac));
     const by = new Map();
@@ -728,9 +753,10 @@ function forecast(p) {
       seconds: (est.search + est.finish) * est.segs,
       power: forecastPower(e.idle, e.work, e.sprayExtra),
       chainItems,
+      supplied,
     };
   } catch (e) {
-    return { error: e.message, chainItems };
+    return { error: e.message, chainItems, supplied };
   }
 }
 const forecastPower = (idle, work, sprayExtra) => ({ idle, work, sprayExtra, idleText: fmtWatts(idle), workText: fmtWatts(work), maxText: fmtWatts(work + sprayExtra) });
@@ -740,8 +766,8 @@ const helperCount = () => (pool ? (pool.checked && !pool.ok ? 1 : pool.size) : p
 /** 再点一次「生成蓝图」时种子每次加多少：取个大质数，和规划器里各处的种子偏移（每轮 1013、没进展 7919、重排 4099、切块 1000）错开 */
 const AGAIN_SEED = 1000003;
 
-/** 排一块：搜索、出蓝图、检查，整理成页面要的结果。module：切出来的一块（物流站退回站列时换种子再排） */
-async function planOne(calc, p, helpers, effort, restarts, module = false, onRound = null, preview = null) {
+/** 排一张：搜索、出蓝图、检查，整理成页面要的结果 */
+async function planOne(calc, p, helpers, effort, restarts, onRound = null, preview = null) {
   let plan;
   let options;
   let once;
@@ -755,7 +781,10 @@ async function planOne(calc, p, helpers, effort, restarts, module = false, onRou
         maxAspect: p.aspect ? Number(p.aspect) : null,
         maxWidth: p.maxwidth ? Number(p.maxwidth) : null,
         maxHeight: p.maxheight ? Number(p.maxheight) : null,
-        ...(p.core ? { core: p.core } : {}), // 排版内核（分支 explore/typeset，src/plan/typeset.js），页面上还没有开关
+        ...(p.core ? { core: p.core } : {}), // 内核 master / typeset / auto（src/plan/index.js 的 planCore），页面上没有开关；不写按档位（EFFORT 的 core）
+        // 传送带重走（src/plan/reroute.js）：各档都开，只重走挑中的那张、哪一项都不比原来差才换上（用户 2026/10/29 要在网页上审）
+        reroute: true,
+        ...(earlyGame(p) ? { noLift: true, pilers: false } : {}), // 全部选最低配置：当作没解锁超级磁场、自动集装机
       },
       station: p.station ? { place: p.station === 'ils-side' ? 'side' : 'edge', stack: Number(p.pile || 1), slots: { warper: p.warper === '1', keepFree: p.proslot !== '0' && Number(p.spray || 0) > 0 } } : null,
       power: p.power || null,
@@ -784,15 +813,15 @@ async function planOne(calc, p, helpers, effort, restarts, module = false, onRou
         return planLine(calc, o); // 帮手线程中途出错：单线程重来
       }
     };
-    plan = module && options.station?.place === 'edge' ? await planModule(once, options) : await once(options);
+    plan = await once(options);
   } catch (e) {
     return { error: e.message, suggestRaw: e.item ?? null };
   }
   // 规划器觉得达标了、出蓝图后检查却没过，总时限内换种子重排（最多 3 次），留过了的那张
-  if (effort.untilTarget && !module) {
+  if (effort.untilTarget) {
     const blueprintOk = (pl) => {
       const r = emitBlueprint(pl.graph, pl.layout, { belt: Number(p.belt), sorter: Number(p.sorter) });
-      return !r.issues.length && checkBlueprint(r.str).ok;
+      return !r.issues.length && checkBlueprint(r.str, { noTech: earlyGame(p) }).ok;
     };
     const stopAt = Date.now() + effort.untilTarget.maxMs - (plan.ms ?? 0);
     for (let k = 1; k <= 3 && plan.targetMet && !blueprintOk(plan) && stopAt - Date.now() > 5000; k++) {
@@ -808,13 +837,80 @@ async function planOne(calc, p, helpers, effort, restarts, module = false, onRou
   return describePlan(plan, calc, p, effort, helpers ? helpers.size : 1);
 }
 
+/**
+ * 蓝图里各座物流站的设置（页面点站看简介、在简介里改，用户 2026/10/27）：存储格（物品、本地 / 星际 0 仓储 1 供应 2 需求、上限）、
+ * 12 个站口（dir 1 出站 2 进站、接第几格）、出货叠几层；顺序和图上 T1、T2… 一样（出蓝图时按 layout.stations 的顺序放）
+ */
+const isStation = (b) => b.itemId === 2104 || b.itemId === 2103;
+function stationCfg(str) {
+  try {
+    return fromStr(str).buildings.filter(isStation).map((b) => ({
+      type: b.itemId,
+      storage: b.parameters.storage.map((x) => ({ itemId: x.itemId, localRole: x.localRole, remoteRole: x.remoteRole, max: x.max })),
+      slots: b.parameters.slots.map((x) => ({ dir: x.dir, storageIdx: x.storageIdx })),
+      pilerCount: b.parameters.pilerCount,
+      set: stationSettings(b.parameters), // 整站设置：充能功率、路程、起送量…
+    }));
+  } catch {
+    return [];
+  }
+}
+/** 分馏阵列自带的站（照用户的图，不经 emitBlueprint）：翘曲器格、增产剂格也按存过的设置改 */
+function withPrefs(str, prefs) {
+  if (!prefs?.warper && !prefs?.spray && !prefs?.station) return str;
+  const bp = fromStr(str);
+  for (const st of bp.buildings.filter(isStation))
+    for (const x of Object.assign(st.parameters, stationSettings(prefs.station)).storage) {
+      const k = x.itemId === 1210 ? 'warper' : [1141, 1142, 1143].includes(x.itemId) && (x.localRole === 2 || x.remoteRole === 2) ? 'spray' : null;
+      if (k && prefs[k]) Object.assign(x, prefs[k]);
+    }
+  return toStr(bp);
+}
+/** 在简介里改了第 k 座站的存储格（storage[i] 为空的那格不动）、整站设置（set，整张图的站都改）：改这张蓝图里的参数，重出字符串 */
+function patchStation({ str, k, storage = [], set = null }) {
+  const bp = fromStr(str);
+  const all = bp.buildings.filter(isStation);
+  const st = all[k];
+  if (!st) throw new Error('找不到这座物流站');
+  if (set) for (const b of all) Object.assign(b.parameters, stationSettings(set));
+  storage.forEach((x, i) => {
+    if (!x || !st.parameters.storage[i]?.itemId) return;
+    Object.assign(st.parameters.storage[i], { localRole: x.localRole, remoteRole: x.remoteRole, max: x.max });
+  });
+  const out = toStr(bp);
+  return { blueprint: out, stationCfg: stationCfg(out) };
+}
+
+/**
+ * 陡坡的步数：相邻两节不在同一格、一格升降超过半层（要超级磁场，docs/game-rules.md 第 34、38 条）。
+ * 带子和 beltStats（src/plan/reroute.js）一样：每条链的主链和劈开的那半、翘曲器带、增产剂带
+ */
+function steepSteps(L) {
+  const runs = [];
+  for (const ch of L.chains) {
+    const t = chainTiles(L, ch);
+    runs.push(t.main, ...t.extra);
+  }
+  for (const w of L.warperLinks || []) runs.push(w.cells);
+  for (const pl of L.proLines || []) runs.push(pl.cells);
+  let n = 0;
+  for (const t of runs)
+    for (let k = 1; k < t.length; k++) {
+      const [a, b] = [t[k - 1], t[k]];
+      if ((a[0] !== b[0] || a[1] !== b[1]) && Math.abs((b[2] ?? 0) - (a[2] ?? 0)) > 0.5 + 1e-6) n++;
+    }
+  return n;
+}
+
 /** 规划结果 → 页面要的结果：出蓝图、独立检查、各种数字和说明 */
 function describePlan(plan, calc, p, effort, threadCount) {
   const L = plan.layout;
   const v = validate(plan.graph, L);
   const text = blueprintText(L, calc.label);
-  const { str, issues } = emitBlueprint(plan.graph, L, { belt: Number(p.belt), sorter: Number(p.sorter), ...text, targetId: calc.targetId, icons: calc.targets.map((t) => t.itemId) });
-  const check = checkBlueprint(str);
+  const { str, issues } = emitBlueprint(plan.graph, L, { belt: Number(p.belt), sorter: Number(p.sorter), ...text, targetId: calc.targetId, icons: calc.targets.map((t) => t.itemId), stationPrefs: p.stationPrefs });
+  const check = checkBlueprint(str, { noTech: earlyGame(p) }); // 最低配置按没解锁超级磁场的存档查（原地竖直升降、太陡的坡都报错）
+  const labels = groupLabels(plan.graph.groups); // 图例的字母和图上一样（熔炉用小写字母）
+  const bs = beltStats(L); // 带子量，和重走守门同一个口径（src/plan/reroute.js）
   return {
     target: calc.target,
     rate: calc.rate,
@@ -831,8 +927,11 @@ function describePlan(plan, calc, p, effort, threadCount) {
       sorters: L.sorters,
       factories: L.factories,
       airBelts: L.airBelts,
-      lifted: L.legs.filter((l) => l.cells.length).length,
-      maxLevel: Math.max(0, ...L.legs.map((l) => (l.cells.length ? l.level : 0))),
+      lifted: bs.lifts, // 原地竖直升降的节数（垂直传送带）
+      steep: steepSteps(L), // 一格升一层的陡坡几步；这两样都要超级磁场
+      noLift: !!L.noLift, // 按没解锁超级磁场出的图（earlyGame）：升降都是坡，页面不提垂直传送带
+      maxLevel: bs.top,
+      reroute: L.rerouteGuard ?? null, // 传送带重走的守门：试了几次、第几次换上、没换上的原因、用时（控制台的规划细节写一行）
       roads: L.roads,
       fill: L.fill,
       space: L.space,
@@ -841,7 +940,9 @@ function describePlan(plan, calc, p, effort, threadCount) {
       target: plan.targetSpace,
       searchRounds: plan.searchRounds,
       stationFallback: !!plan.stationFallback,
-      moduleRetries: plan.moduleRetries ?? 0,
+      // 出图的是哪个内核（p.core 写明的为准，不写按档位）；auto 换过的 coreSwitch 记着排版内核搜了几段
+      core: plan.coreSwitch ? 'master' : (p.core || effort.core) === 'auto' ? 'typeset' : p.core || effort.core || 'master',
+      coreSwitch: plan.coreSwitch ?? null,
       power: L.power
         ? {
             name: L.power.name,
@@ -850,7 +951,7 @@ function describePlan(plan, calc, p, effort, threadCount) {
           }
         : null,
     },
-    groups: plan.graph.groups.map((g) => ({ letter: g.letter, item: g.item, factory: g.factory, count: g.count, levels: g.levels ?? 1 })),
+    groups: plan.graph.groups.map((g) => ({ letter: labels.get(g.id) ?? g.letter, item: g.item, factory: g.factory, count: g.count, levels: g.levels ?? 1 })),
     // 就地烧掉的副产物（plan/burn.js）：烧什么、每分钟多少、几台火力发电厂、满负荷发多少电；没烧成的原因
     burn: (L.burners || []).map((b) => ({ item: ITEMS.get(b.itemId).name, rate: b.rate, plants: b.plants.length, mw: b.mw, cols: b.cols, depth: b.depth })),
     burnNotes: L.burnNotes ?? [],
@@ -885,6 +986,8 @@ function describePlan(plan, calc, p, effort, threadCount) {
     validate: { ok: v.ok, errors: v.errors.slice(0, 10) },
     check: { ok: check.ok && !issues.length, errors: [...issues, ...check.errors].slice(0, 12), warnings: check.warnings },
     blueprint: str,
+    stationCfg: stationCfg(str),
+    parts: { belt: ITEMS.get(BELT_IDS[Number(p.belt)] ?? 2003)?.name, sorter: ITEMS.get(Number(p.sorter))?.name }, // 工厂小窗写传送带、分拣器是哪一级
     energy: energyOf(calc, L, p),
   };
 }
@@ -919,7 +1022,7 @@ function energyTexts(e) {
  */
 const arrayLimits = (p) => ({ maxWidth: p.maxwidth ? Number(p.maxwidth) : null, maxHeight: p.maxheight ? Number(p.maxheight) : null, maxAspect: p.aspect ? Number(p.aspect) : null, orient: p.chemwide === '1' ? 'v' : 'h' });
 /** 分馏塔阵列：结果的字段和普通产线一样，页面照常画图、出检查和说明 */
-function fractionRun(rate, spray = 0, limits = {}) {
+function fractionRun(rate, spray = 0, limits = {}, prefs = null) {
   const t0 = performance.now();
   const r = fractionatorArray(rate, { spray, ...limits });
   const check = checkArray(r.str);
@@ -956,6 +1059,7 @@ function fractionRun(rate, spray = 0, limits = {}) {
       factories: r.fracs,
       airBelts: belts.filter((b) => b.localOffset[0].z > 0.25).length,
       lifted: 0,
+      steep: 0,
       maxLevel: 2,
       roads: null,
       fill: 1,
@@ -979,7 +1083,8 @@ function fractionRun(rate, spray = 0, limits = {}) {
     feasible: true,
     validate: { ok: true, errors: [] },
     check: { ok: check.ok, errors: check.errors.slice(0, 12), warnings: check.warnings },
-    blueprint: r.str,
+    blueprint: withPrefs(r.str, prefs),
+    stationCfg: stationCfg(withPrefs(r.str, prefs)),
     array: { notes: r.rotated ? [...r.notes, '横着放的阵列在几条纬度带贴不上（东西向格子变窄，分馏塔会撞：约 26.5°~28.8°、44°~47°、63°~65° 等）。贴不上就打开「化工厂、精炼厂高纬度间距展开」，阵列会照原图竖着出。'] : r.notes, plan: r.plan, fracs: r.fracs },
     energy: fracEnergy(r),
   };
@@ -1096,6 +1201,7 @@ self.onmessage = async (ev) => {
     if (msg.type === 'catalog') self.postMessage({ type: 'catalog', id: msg.id, list: catalog(msg.raw || []) });
     else if (msg.type === 'chain') self.postMessage({ type: 'chain', id: msg.id, data: chain(msg.params) });
     else if (msg.type === 'forecast') self.postMessage({ type: 'forecast', id: msg.id, data: forecast(msg.params) });
+    else if (msg.type === 'patch') self.postMessage({ type: 'patched', id: msg.id, data: patchStation(msg) });
     else if (msg.type === 'plan') {
       planning++;
       let data;

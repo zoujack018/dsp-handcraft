@@ -309,32 +309,33 @@ export const BAY = 8;
  * 排版：seq 依次铺开（第 k 组 count 台、每台占 pitch 列，每段末尾多 trailing 列），每行宽不超过它的目标宽度，
  * 动态规划挑断行的位置：每行空出来的列数平方和 + 每断开一个组 SPLIT_COST，合计最小（只有一台都放不下时那一行照放）。
  * 目标宽度一般是 W；bays（站位，[{ r, left }]）盖到的行少 BAY 列，左端的站位再给那行最左一块加 BAY 列空列。
- * 返回 { rows, blocks, pads }：奇数行反过来铺（蛇形），奇数行最左那块右移半个工厂（上下两行的分拣器一开始就错开，同 master 的折行）
+ * 返回 { rows, blocks, pads }：奇数行反过来铺（蛇形），奇数行最左那块右移半个工厂（上下两行的分拣器一开始就错开，同 master 的折行）。
+ * prevDp：上一次断行的 dp（typeset 返回的，它记着自己是哪条队、行宽、站位、供电缝算的），有就给增量断行当缓存（dpCache）
  */
-export function typeset(graph, seq, W, caps = null, bays = null, gaps = null, prev = null) {
+export function typeset(graph, seq, W, caps = null, bays = null, gaps = null, prevDp = null) {
   const I = seqInfo(graph, seq, caps, gaps);
-  const cache = dpCache(I, W, bays, gaps, seq, prev);
+  const cache = dpCache(I, W, bays, gaps, seq, prevDp);
   const { cuts, cost, prev: back, S } = breakRows(I, W, bays, cache);
   // dp：断行动态规划的数组（cost / prev）和它的规格，给下一步增量断行当缓存（dpCache / breakRows）。
   // cost / prev / N / S 可枚举：排版等价时（同一 seq、W、站位、供电缝）它们逐字一样，deepEqual 照样成立
-  // （test/typeset.test.js 比 gaps=[] 和没 gaps）。缓存校验用的 W / bays / gaps 设成不可枚举：deepEqual 不看、
+  // （test/typeset.test.js 比 gaps=[] 和没 gaps）。缓存校验用的 W / bays / gaps 和算它的队 seq 设成不可枚举：deepEqual 不看、
   // keep() 不抄、stateMemo.key() 不读；可枚举才能跟着邻域里的 `...typeset(...)` 展开传下去
   const dp = { cost, prev: back, N: I.N, S };
-  Object.defineProperties(dp, { W: { value: W }, bays: { value: bays }, gaps: { value: gaps } });
+  Object.defineProperties(dp, { W: { value: W }, bays: { value: bays }, gaps: { value: gaps }, seq: { value: seq } });
   return { ...buildRows(graph, I, cuts, bays, gaps), cuts, dp };
 }
 
 /**
  * 增量断行能不能抄前缀：全局动作（换两组、挪一组、反转一段、相邻对调）只改队 seq，改动点之前的单元一字不变，
- * 所以机器序 grp[0..P0) 不变（P0 = 第一个变了的单元 m 的起始台号 start[m]）。prev = { seq, dp }（上一次的队和 dp）。
+ * 所以机器序 grp[0..P0) 不变（P0 = 第一个变了的单元 m 的起始台号 start[m]）。dp：上一次断行的 dp，拿它记着的队 dp.seq 比
+ * （局部重排出来的状态带的是祖先的 dp，比的就是祖先的队；队都不原地改，见 typesetNeighbor）。
  * 只有行宽 W、站位 bays、供电缝 gaps 都没变（dp 记的和这次同引用——全局动作传的就是 st.bays / st.gaps 原引用，
  * 站位、供电缝动作新建了数组自然不同引用）、台数一致时才抄；返回 { cost, prev, P0 } 或 null（不满足从头算）。
  * 宽度动作改了 W → 不同引用 → null，照旧从头算
  */
-function dpCache(I, W, bays, gaps, seq, prev) {
-  const dp = prev?.dp;
-  if (!dp || !prev.seq || dp.W !== W || dp.bays !== bays || dp.gaps !== gaps || dp.N !== I.N) return null;
-  const a = prev.seq;
+function dpCache(I, W, bays, gaps, seq, dp) {
+  if (!dp || dp.W !== W || dp.bays !== bays || dp.gaps !== gaps || dp.N !== I.N) return null;
+  const a = dp.seq;
   const L = Math.min(a.length, seq.length);
   let m = 0;
   while (m < L && a[m] === seq[m]) m++;
@@ -761,7 +762,8 @@ function verticalPartner(graph, st, bid, rand) {
 /**
  * 局部重排：挑一行（一半挑惩罚记下的块所在的行），连上下各一行共 2~3 行当窗口，只重新排列整个落在窗口里的单元
  * （对调两个、挪一个、反转一段），再只在窗口里断行、行数不变——窗口外的行一字不动。全局的动作每一步都会让后面整张重新断行，
- * 大线上低温细修时几乎每步都把图搅乱；这个动作是真正的「局部」。窗口里排不下（总宽变了）或没有可动的单元时返回 null
+ * 大线上低温细修时几乎每步都把图搅乱；这个动作是真正的「局部」。窗口里排不下（总宽变了）或没有可动的单元时返回 null。
+ * 排出来的不是这条队的全局断行，没有它自己的 dp；带上 st 的 dp（记着算它的那条祖先的队），下一个全局动作拿它抄前缀，不用整张重算
  */
 function localMove(graph, st, rand, hot, caps) {
   const cuts = st.cuts;
@@ -813,7 +815,7 @@ function localMove(graph, st, rand, hot, caps) {
   const win = breakWindow(I2, st.W, st.bays, P0, P1, ra, rb - ra + 1);
   if (!win) return null;
   const cuts2 = [...cuts.slice(0, ra), ...win, ...cuts.slice(rb + 1)];
-  return { seq, W: st.W, ...(st.bays ? { bays: st.bays } : {}), ...(st.gaps ? { gaps: st.gaps } : {}), ...buildRows(graph, I2, cuts2, st.bays, st.gaps), cuts: cuts2 };
+  return { seq, W: st.W, ...(st.bays ? { bays: st.bays } : {}), ...(st.gaps ? { gaps: st.gaps } : {}), ...buildRows(graph, I2, cuts2, st.bays, st.gaps), cuts: cuts2, ...(st.dp ? { dp: st.dp } : {}) };
 }
 
 /**
@@ -880,11 +882,10 @@ export function typesetNeighbor(graph, st, rand, hot = null, usable = null, caps
     const { lo, hi } = widthRange(graph, usable, aspect);
     W = Math.min(hi, Math.max(lo, W + (rand() < 0.5 ? -1 : 1) * (1 + Math.floor(rand() * 6))));
   }
-  // 增量断行：改动点之前的机器序不变，断行 DP 的前缀照抄（dpCache / breakRows）。prev 带上一次的队和 dp；
-  // 宽度动作改了 W、站位 / 供电缝动作换了引用时，dpCache 自己会判出不能用、从头算
-  const prev = { seq: st.seq, dp: st.dp };
-  if (st.bays || st.gaps) return { seq, W, ...(st.bays ? { bays: st.bays } : {}), ...(st.gaps ? { gaps: st.gaps } : {}), ...typeset(graph, seq, W, caps, st.bays, st.gaps, prev) };
-  return { seq, W, ...typeset(graph, seq, W, caps, null, null, prev) };
+  // 增量断行：改动点之前的机器序不变，断行 DP 的前缀照抄（dpCache / breakRows）。st.dp 是上一次断行的 dp（局部重排出来的状态带的是祖先的，
+  // dp 记着自己的队；队在这里、局部重排、精修里都是先 slice 再改，不原地改）；宽度动作改了 W、站位 / 供电缝动作换了引用时，dpCache 自己会判出不能用、从头算
+  if (st.bays || st.gaps) return { seq, W, ...(st.bays ? { bays: st.bays } : {}), ...(st.gaps ? { gaps: st.gaps } : {}), ...typeset(graph, seq, W, caps, st.bays, st.gaps, st.dp) };
+  return { seq, W, ...typeset(graph, seq, W, caps, null, null, st.dp) };
 }
 
 /**
@@ -898,8 +899,7 @@ export function* polishCandidates(graph, st, hot, caps, usable = null, gapsOn = 
   // 候选大多是对同一条队 seq 的小扰动、行宽和供电缝不变：先算一份基准 dp（st 是 keep() 过的、没带 dp），各候选抄前缀。
   // 行宽变了（W2 ≠ st.W）、供电缝换了数组时，dpCache 自己判出不能用、从头算，结果逐字不变
   const base = typeset(graph, seq, st.W, caps, st.bays, st.gaps);
-  const prev = { seq, dp: base.dp };
-  const make = (s2, W2, gaps2 = st.gaps) => ({ seq: s2, W: W2, ...(st.bays ? { bays: st.bays } : {}), ...(gaps2 ? { gaps: gaps2 } : {}), ...typeset(graph, s2, W2, caps, st.bays, gaps2, prev) });
+  const make = (s2, W2, gaps2 = st.gaps) => ({ seq: s2, W: W2, ...(st.bays ? { bays: st.bays } : {}), ...(gaps2 ? { gaps: gaps2 } : {}), ...typeset(graph, s2, W2, caps, st.bays, gaps2, base.dp) });
   const { lo, hi } = widthRange(graph, usable, aspect);
   for (const d of [-1, 1, -2, 2, -4, 4]) {
     const W2 = Math.min(hi, Math.max(lo, st.W + d));

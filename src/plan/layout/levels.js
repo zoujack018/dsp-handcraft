@@ -104,7 +104,7 @@ function csrOf(n, rows) {
  * @param {number[]|null} [o.maxLevels] 每段不罚的最高层（代替 maxLevel，和 minLevel 一起给）；null 时都按 maxLevel
  * @returns {number[]} 每段的层，0 表示断开
  */
-export function solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel, top, minLevel = null, maxLevels = null }) {
+export function solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel, top, minLevel = null, maxLevels = null, onGreedy = null, hookCtx = null }) {
   // 每段最低层、不罚的最高层（都没给时和原来一样：1 和 maxLevel）；fit 的层号表按各段里最高的那个开
   const lowOf = (i) => (minLevel ? minLevel[i] : 1);
   const capOf = (i) => (maxLevels ? maxLevels[i] : maxLevel);
@@ -345,6 +345,14 @@ export function solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel, top, m
     while (L <= top && !ok(i, L)) L++;
     if (L > top) dead[i] = 1;
     else level[i] = L;
+  }
+  // 局部搜索之前问一次（elevation.js 的 liftLegs 传的，route.js 退火提前拒绝的第六处）：到这里判死的段（自己走回头路、两叠同格、
+  // 成环里最短的、贪心放不下的）后面只会更多、不会再放回去，最后各记一条「无处可放」。回调说注定被拒就不往下算（返回 null）；
+  // 回调只读，不拒时照常算完，结果一字不差（fit 的随机数每次调用按段数现开，跳过它不影响别的评估）
+  if (onGreedy) {
+    let nd = 0;
+    for (let i = 0; i < n; i++) if (dead[i]) nd++;
+    if (onGreedy(hookCtx, nd)) return null;
   }
   if (order.some((i) => level[i] > capOf(i))) fit(order.filter((i) => !dead[i]));
   // 改进：落低、长短换层。每次改动都让「格子数 × 层」的某种凸代价下降，不会循环；轮数也设了上限

@@ -1,18 +1,39 @@
 // 给页面的精简绘图模型（不带 Map 和循环引用）。从 worker.js 拆出来单独一个文件：
 // 除了最终结果，实时预览的快照（搜索中的布局，还没接物流站、供电）也用它转成同一种模型，页面同一套 drawingSvg 来画。
-import { ITEMS, slotPoint, THERMAL_BANK, baseItem } from '../../src/gamedata.js';
+import { ITEMS, slotPoint, THERMAL_BANK, baseItem, recipe as recipeOf } from '../../src/gamedata.js';
 import { chainTiles } from '../../src/emit/blueprint.js';
 import { bankSorters } from '../../src/plan/burn.js';
 
 const realOf = (id) => (id >= 100000 ? id - 100000 : id);
+const LATIN = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const SMALL = 'abcdefghijkmnpqrstuvwxyz'; // 不用 l、o，和数字 1、0 分不清
+/**
+ * 图上每组工厂的标号（用户 2026/10/27~28）：熔炉按组的顺序用小写字母 a、b、c…（试过希腊字母、天干），别的工厂用 A、B、C…（熔炉不占字母）；
+ * 箱子供货的储物仓、储液罐和图上一样写「仓」「罐」「配」。图例（worker.js）和图（drawing.js 再按看图的顺序给每台加下标）用同一份
+ */
+export function groupLabels(groups) {
+  const out = new Map();
+  let latin = 0;
+  let small = 0;
+  for (const g of groups) {
+    if (g.store) out.set(g.id, g.store.tank ? '罐' : g.store.dist ? '配' : '仓');
+    else if (g.kind === 'smelter') out.set(g.id, SMALL[small++] ?? g.letter);
+    else out.set(g.id, LATIN[latin++] ?? g.letter);
+  }
+  return out;
+}
 /** route() 的布局 → 页面画图用的精简模型（rows、segments、legs、sorters…） */
 export function renderModel(graph, L) {
+  const labels = groupLabels(graph.groups);
   const rows = L.rows.map((row, r) => ({
     cy: L.rowCy[r],
     groups: row.map((bid) => {
       const p = L.pos.get(bid);
       const g = p.g;
-      return { id: bid, letter: g.letter, item: g.item, factory: g.factory, kind: g.kind, count: p.n, levels: g.levels ?? 1, centers: p.centers, w: g.collider?.[0], h: g.collider?.[1], below: g.bodyBelow, above: g.bodyAbove, ...(g.kind === 'refinery' ? { shift: g.colliderShift } : null), ...(g.store ? { store: { kind: g.store.kind, dist: g.store.dist, tank: !!g.store.tank }, levelZ: g.levelZ } : null) };
+      // recipe：页面单击工厂开的小窗用（配方的原料、产物，每台每分钟跑几次）
+      const r = g.store || g.recipeId == null ? null : recipeOf(g.recipeId);
+      const recipe = r ? { name: r.name, time: r.time, crafts: g.crafts, inputs: r.inputs.map((x) => ({ id: x.id, count: x.count })), outputs: r.outputs.map((x) => ({ id: x.id, count: x.count, rate: g.outputs?.find((o) => baseItem(o.itemId) === x.id)?.perFactory ?? null })) } : null;
+      return { id: bid, letter: labels.get(g.id) ?? g.letter, item: g.item, factoryId: g.factoryId, recipe, groupCount: g.count, factory: g.factory, kind: g.kind, count: p.n, levels: g.levels ?? 1, centers: p.centers, w: g.collider?.[0], h: g.collider?.[1], below: g.bodyBelow, above: g.bodyAbove, ...(g.kind === 'refinery' ? { shift: g.colliderShift } : null), ...(g.store ? { store: { kind: g.store.kind, dist: g.store.dist, tank: !!g.store.tank }, levelZ: g.levelZ } : null) };
     }),
   }));
   // 箱子供货时同一种原料分给几组工厂的几组仓（编号见 gamedata.js 的 STORE_COPY）：页面上当同一种物品画、同一个颜色
@@ -30,7 +51,7 @@ export function renderModel(graph, L) {
     const seg = L.segments[s.segId];
     const g = L.pos.get(s.bid).g;
     const pt = slotPoint(g, s.side, s.col - s.cx); // 研究站、对撞机的分拣器对齐槽位（x 带小数）
-    return { x: s.cx + pt.dx, y0: cy + pt.dy, y1: seg.y, io: s.io, itemId: baseItem(s.itemId), factoryItem: g.item };
+    return { x: s.cx + pt.dx, y0: cy + pt.dy, y1: seg.y, io: s.io, itemId: baseItem(s.itemId), factoryItem: g.item, len: s.length };
   });
   const power = L.power ? { name: L.power.name, size: L.power.size, cover: L.power.cover, nodes: L.power.nodes } : null;
   const stations = (L.stations || []).map((st) => ({ x: st.x, y: st.y }));

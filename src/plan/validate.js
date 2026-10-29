@@ -2,7 +2,7 @@
 // errors 表示布局一定有问题；warnings 表示需要留意的风险。
 import { chainTiles } from '../emit/blueprint.js';
 import { occupancy } from './power.js';
-import { RAMP_MAX_DZ, OVERPASS_Z, OVERPASS_ZMAX, OVERPASS_IDS } from '../gamedata.js';
+import { RAMP_STEP, STEEP_DZ, OVERPASS_Z, OVERPASS_ZMAX, OVERPASS_IDS } from '../gamedata.js';
 
 export function validate(graph, layout) {
   const errors = [];
@@ -59,10 +59,13 @@ export function validate(graph, layout) {
         if (z > 0 && stationCell.has(`${x},${y}`)) errors.push(`${name}高架带从物流站上方 (${x},${y}) 经过`);
         if (x < 0 || x >= layout.width || y < 0 || y >= layout.height) errors.push(`${name}带超出蓝图范围 (${x},${y})`);
         const n = tiles[i + 1];
-        // 相邻：水平走一格（高度变化不超过 RAMP_MAX_DZ 层；现在是 0，即不用斜坡），或者同一格里上下差一层（原地竖直升降）
+        // 相邻：水平走一格（坡一格最多升降 STEEP_DZ 层：一层的陡坡要超级磁场，后处理重走 plan/reroute.js 才出；不用原地升降时最多 RAMP_STEP 半层，
+        // docs/game-rules.md 第 38 条；平常的高架不走坡），或者同一格里上下差一层（原地竖直升降）。不用原地升降（route.js 的 noLift，layout.noLift）时一节都不该有
         const flat = n ? Math.abs(n[0] - x) + Math.abs(n[1] - y) : 1;
+        const ramp = layout.noLift ? RAMP_STEP : STEEP_DZ;
         if (n && !(flat === 1 || (flat === 0 && Math.abs(n[2] - z) === 1))) errors.push(`${name}带在 (${x},${y},${z}) 处断开`);
-        else if (n && flat === 1 && Math.abs(n[2] - z) > RAMP_MAX_DZ) errors.push(`${name}带在 (${x},${y},${z}) 处斜着升降 ${Math.abs(n[2] - z)} 层（升降应在同一格里竖直叠放）`);
+        else if (n && flat === 1 && Math.abs(n[2] - z) > ramp + 1e-9) errors.push(`${name}带在 (${x},${y},${z}) 处斜着升降 ${Math.abs(n[2] - z)} 层（一格最多升降 ${ramp} 层，平常的升降在同一格里竖直叠放）`);
+        else if (n && flat === 0 && layout.noLift) errors.push(`${name}带在 (${x},${y},${z}) 处原地竖直升降（选了不用原地升降）`);
       });
     }
   }

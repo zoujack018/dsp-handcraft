@@ -269,21 +269,9 @@ export function sorterPlanOf(c) {
 //   不往 c.penalties 里记任何东西：最终惩罚数组的内容和先后和原来一样。
 // 守卫：调用方只在 preLegFloor 不是 null（权重、opt.penalty 每一项、已记的惩罚都 ≥ 0）时才来，这里再看一遍新用到的几项；不成立返回 null
 export function preLegSorterFloor(c, plan) {
-  const { opt, P, penalties, pos, sides } = c;
+  const { opt, P } = c;
   if (!(P.slots >= 0 && P.clash >= 0 && P.shortfall >= 0 && P.tracks >= 0 && P.slow >= 0 && opt.sorterLenWeight >= 0)) return null;
-  // 高架前已经记下的惩罚
-  let pen = 0;
-  for (let i = 0; i < penalties.length; i++) pen += penalties[i].amount;
-  // slots：和 scoreLayout 开头同一个算法、同一个先后（按块、先下侧后上侧）
-  sides.forEach((sd, bid) => {
-    const g = pos.get(bid).g;
-    const nb = sd.bottom.size;
-    const cb = sideCap(g, 'bottom');
-    if (nb > cb) pen += P.slots * (nb - cb);
-    const nt = sd.top.size;
-    const ct = sideCap(g, 'top');
-    if (nt > ct) pen += P.slots * (nt - ct);
-  });
+  let pen = preLegSlotsPen(c);
   // 分拣器的 clash → shortfall → tracks → slow，和 scoreLayout 记的先后一样
   if (plan.clashes) pen += P.clash * plan.clashes;
   const { starved, tooLong, slow, sorters } = plan;
@@ -300,6 +288,101 @@ export function preLegSorterFloor(c, plan) {
   }
   const sorterLenCost = (n2 + 2 * n3) * opt.sorterLenWeight;
   return preLegBase(c) + pen + sorterLenCost;
+}
+
+/** 已经记下的惩罚，再加上分拣器位（slots：和 scoreLayout 开头同一个算法、同一个先后，按块、先下侧后上侧）；preLegSorterFloor、preLegWantFloor 共用 */
+function preLegSlotsPen(c) {
+  const { penalties } = c;
+  let pen = 0;
+  for (let i = 0; i < penalties.length; i++) pen += penalties[i].amount;
+  return addSlotsPen(c, pen);
+}
+/** 分拣器位（slots）逐条加到 pen 上（preLegSlotsPen、preLegElevFloor 共用） */
+function addSlotsPen(c, pen) {
+  const { P, pos, sides } = c;
+  sides.forEach((sd, bid) => {
+    const g = pos.get(bid).g;
+    const nb = sd.bottom.size;
+    const cb = sideCap(g, 'bottom');
+    if (nb > cb) pen += P.slots * (nb - cb);
+    const nt = sd.top.size;
+    const ct = sideCap(g, 'top');
+    if (nt > ct) pen += P.slots * (nt - ct);
+  });
+  return pen;
+}
+
+// 退火提前拒绝，第五处（route.js 的 layout()：preLegFloor 没拒之后、提前排分拣器之前）：preLegFloor 补上分拣器位、够不着、太慢三项再问一次。
+// 背景（2026/10/27，分支 explore/template 的 tools/exp/reject-anatomy.mjs，排版内核 8 条线 × 两轮）：调了 route() 的评估只有 2%~7% 被接受，
+// 被拒的多半要等分拣器排完才拒——上下撞列、太慢、够不着占被拒的 10%~86%（300 台以上的线 20%~86%），高架前那一问只拦得住通道超轨的。
+// 够不着、太慢在 assignSorters 收集工厂那一段就定了（接哪段带、第几条轨、分拣器多长、按槽位上限减根数），不用动态规划（countOnly），
+// 分拣器位分带之后就定了；补上这三项，大部分本来要排完分拣器、甚至跑完高架才拒的评估在这里就拒了。
+//
+// 为什么这个下限不超过最终代价（论证照 preLegSorterFloor）：这里是 面积下限×w + 地面带（preLegBase）+ pen，pen 按 高架前已记的 → slots
+// → 够不着（每条一个 P.tracks）→ 太慢（每条一个 P.slow）逐条加，是最终惩罚数组（高架前已记的 → 高架记的 → slots → clash → shortfall
+// → tracks → slow → …）的一个子序列，每条的数和 scoreLayout 记的同一个式子、同样的输入：slots 照 scoreLayout 开头的算法；够不着、太慢的
+// 条数和不带 countOnly 时 tooLong、slow 的长度一样（同一段代码，分拣器的输入 placePorts 之后都定了、高架不改，见 preLegSorterFloor）。
+// 一样的道理，它也不超过 preLegSorterFloor（多了 clash、shortfall 和分拣器长度代价），不超过 scoreLayout 里供电之前那一问（各项按同样的
+// 先后都在，只多了非负项）。所以：
+//   - 退火（place.js 的 runRound）：这里拒了的，算完也注定被接受判断拒掉，随机数、状态、存档、best 都一样；stateMemo 多记一个下限，回放单调；
+//   - 只在 opt.power || opt.stationHoles（scoreLayout 有供电之前那一问）时问：那一问只要算到就一定问，这里能拒的、算下去到那一问也一定
+//     被拒，所以定点精修（place.js 的 polish，被拒的不进存档）、配电站挖空位第一遍（route.js 的 route）拒不拒都和原来一样；
+//   - 提前排分拣器开着时，那一问能拒的这里先拒了，只是更早；
+//   - 不往 c.penalties 里记任何东西，assignSorters 只数不排、不碰按通道的缓存（cache: false），后面排分拣器照旧从头排。
+// 守卫：调用方只在 preLegFloor 不是 null（权重、opt.penalty 每一项、已记的惩罚都 ≥ 0）时才来，这里再看一遍新用到的几项；不问时返回 null
+export function preLegWantFloor(c) {
+  const { graph, rows, pos, rowCy, rowBelow, rowAbove, channels, segments, sides, opt, P } = c;
+  if (!(opt.power || opt.stationHoles)) return null;
+  if (!(P.slots >= 0 && P.tracks >= 0 && P.slow >= 0)) return null;
+  let pen = preLegSlotsPen(c);
+  const counts = assignSorters(graph, { rows, pos, rowCy, rowBelow, rowAbove, channels, segments }, sides, { sorter: opt.sorter, headroom: opt.headroom, cache: false, countOnly: true });
+  c.wantCounts = counts; // 第六处（preLegElevFloor）接着用
+  for (let i = 0; i < counts.nTooLong; i++) pen += P.tracks;
+  for (let i = 0; i < counts.nSlow; i++) pen += P.slow;
+  return preLegBase(c) + pen;
+}
+
+// 退火提前拒绝，第六处（elevation.js 的 liftLegs → levels.js 的 solveLevels：拓扑排序、贪心放层之后，局部搜索之前）：
+// 在第五处（或提前排的分拣器那一问）上补高架已经定了的罚分再问一次。
+// 背景（2026/10/27，分支 explore/perf6 的 tools/exp/cost-anatomy.mjs，考卷 2 十格 × 两轮，主干内核）：打分里才被拒的评估多半靠的是高架的
+// 「无处可放」（每段 4 个 P.route），这些段在局部搜索之前就全判死了（成环里最短的、贪心放不下的，还有带喷涂窗口和形状随层变的那批先排时
+// 放不下的）；在这里问能省掉局部搜索、落地和打分，量出来每步 0.4%~21%（量子化工厂那条、轨道采集器高配最多）。
+//
+// 为什么这个下限不超过最终代价（论证照 preLegSorterFloor、preLegWantFloor）：这里是 面积下限×w + 地面带（preLegBase：高架不改段、口、
+// 桩和高）+ pen，pen 按 已记的（高架前的 + 高架先排那批记的，正好是最终惩罚数组的前缀）→ 已判死的平段各一个 P.route × 4 → slots →
+// （提前排过分拣器时）clash → shortfall → tracks → slow，或者（没排过）第五处数的够不着、太慢，逐条加。判死的段 solveLevels 不会再放回去
+// （dead 只置 1），liftLegs 对层号是 0 的平段各记一条 P.route × 4，所以这几条是最终惩罚数组高架那一段的子序列（值都一样，先后无关），
+// 整串是最终惩罚数组的子序列；分拣器长度代价同 preLegSorterFloor。也不超过 scoreLayout 里供电之前那一问（各项都在，只多了非负项）。
+// 所以和第五处一样：退火里拒了的算完也注定被拒；只在第五处问过时问（开着供电或站空地），精修、配电站挖空位第一遍拒不拒不变；stateMemo 回放单调。
+// 第五处没问（c.wantCounts 没有）时返回 null
+export function preLegElevFloor(c, nDead) {
+  const { P, opt, penalties } = c;
+  const counts = c.wantCounts;
+  if (counts === undefined) return null;
+  let pen = 0;
+  for (let i = 0; i < penalties.length; i++) pen += penalties[i].amount;
+  for (let i = 0; i < nDead; i++) pen += P.route * 4;
+  pen = addSlotsPen(c, pen);
+  const plan = c.sorterPlan;
+  if (plan === undefined) {
+    for (let i = 0; i < counts.nTooLong; i++) pen += P.tracks;
+    for (let i = 0; i < counts.nSlow; i++) pen += P.slow;
+    return preLegBase(c) + pen;
+  }
+  // 提前排过分拣器：clash → shortfall → tracks → slow 和长度代价照 preLegSorterFloor
+  if (plan.clashes) pen += P.clash * plan.clashes;
+  const { starved, tooLong, slow, sorters } = plan;
+  for (let i = 0; i < starved.length; i++) pen += P.shortfall;
+  for (let i = 0; i < tooLong.length; i++) pen += P.tracks;
+  for (let i = 0; i < slow.length; i++) pen += P.slow;
+  let n2 = 0;
+  let n3 = 0;
+  for (let i = 0; i < sorters.length; i++) {
+    const len = sorters[i].length;
+    if (len === 2) n2++;
+    else if (len === 3) n3++;
+  }
+  return preLegBase(c) + pen + (n2 + 2 * n3) * opt.sorterLenWeight;
 }
 
 // 退火里每一步都要打一次分：下面的循环都按下标走（不用 for…of、不解构、不拼临时数组），

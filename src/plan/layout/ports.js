@@ -381,14 +381,15 @@ export function placePorts(c) {
     // 左侧的口朝着蓝图外面，不用。
     const yOf = (l) => segments[l.kind === 'in' ? l.to : l.from].y;
     const segOf = (l) => segments[l.kind === 'in' ? l.to : l.from];
-    // 按真实物品分：副产物送出去的带和产线自己要用的同种物品共用一个存储格，送出的多就设为供应。
+    // 按真实物品和进出分（同 stations.js 的 stationGroups）：送出去的设为供应，要进的设为需求；副产物和产线自己要用的同种物品
+    // 各占一格、不进同一座站（下面 groupBy；用户 2026/10/27：同一格里需求运来的料装满后副产物送不进去，那组工厂就停了）。
     // （原来先 filter 出非 link 的带再逐条放进 Map，再 [...entries()].map(…).sort(…)；现在按同样的先后直接放，
     // 平均行、供需的累加按原来 reduce 的先后逐条加，排序换成稳定的插入排序、比较式照抄）
     const byItem = new Map();
     for (let i = 0; i < legs.length; i++) {
       const l = legs[i];
       if (l.kind === 'link') continue;
-      const k = realItem(l.itemId);
+      const k = l.kind === 'in' ? realItem(l.itemId) : -1 - realItem(l.itemId); // 送出去的键取负，和要进的分开
       let ls = byItem.get(k);
       if (!ls) byItem.set(k, (ls = []));
       ls.push(l);
@@ -403,7 +404,8 @@ export function placePorts(c) {
       return a >= 0 ? 'supply' : 'demand';
     };
     const items = [];
-    byItem.forEach((ls, itemId) => {
+    byItem.forEach((ls, key) => {
+      const itemId = key < 0 ? -1 - key : key;
       let a = 0;
       for (let i = 0; i < ls.length; i++) a = a + yOf(ls[i]);
       const it = { itemId, legs: ls, y: a / ls.length, role: roleOf(ls) };
@@ -436,7 +438,7 @@ export function placePorts(c) {
           // 不超过 9 条时这一份就是整种物品：直接用 it（原来抄一份 {...it, legs: it.legs.slice(0, 9)}，键、值都一样；
           // 分组、站、试算只读它，谁都不改它和它的 legs）
           const part = it.legs.length <= 9 ? it : { ...it, legs: it.legs.slice(i, i + 9) };
-          if (!cur || cur.length >= kinds || n + part.legs.length > cap) {
+          if (!cur || cur.length >= kinds || n + part.legs.length > cap || cur.some((q) => q.itemId === part.itemId && q.role !== part.role)) {
             groups.push((cur = []));
             n = 0;
           }

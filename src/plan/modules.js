@@ -40,7 +40,7 @@ export function splitLine(input, { splitItems = SPLIT_ITEMS, maxItems = MODULE_I
   const itemsOf = new Map(units.map((u) => [u.id, new Set([u.itemId])]));
   for (const f of calc.flows) {
     if (f.to !== 'OUT') itemsOf.get(f.to).add(f.itemId);
-    if (f.byproduct) itemsOf.get(f.from).add(f.itemId);
+    if (byId.has(f.from)) itemsOf.get(f.from).add(f.itemId); // 副产物、和主产物一起供产线的（u.shared）
   }
   const consumers = new Map(); // 物品 -> 用它的组
   for (const f of real) if (f.to !== 'OUT') (consumers.get(f.itemId) ?? consumers.set(f.itemId, new Set()).get(f.itemId)).add(f.to);
@@ -78,7 +78,7 @@ export function splitLine(input, { splitItems = SPLIT_ITEMS, maxItems = MODULE_I
     changed = false;
     for (const u of units.slice().reverse()) {
       if (smelt.has(u.id) || goesOut.has(u.id)) continue;
-      const to = new Set([...(consumers.get(u.itemId) ?? [])].map(find));
+      const to = new Set([u.itemId, ...(u.shared ?? [])].flatMap((id) => [...(consumers.get(id) ?? [])]).map(find));
       if (to.size !== 1) continue;
       const [c] = to;
       const r = find(u.id);

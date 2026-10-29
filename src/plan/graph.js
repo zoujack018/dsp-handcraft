@@ -32,7 +32,8 @@ export function buildGraph(calc) {
     const rateOf = st ? () => st.rate / u.count : (o) => (o.count * outMul * 60 * f.speed * speedMul * levels) / r.time; // 个/分钟
     const perFactory = rateOf(r.outputs.find((o) => o.id === u.itemId) ?? r.outputs[0]);
     // 产物：主产物 + 副产物（副产物在生产图里的编号是 BYPRODUCT + 真实编号，单独一条带）
-    const outputs = r.outputs.map((o) => ({ itemId: o.id === u.itemId ? o.id : BYPRODUCT + o.id, perFactory: rateOf(o) }));
+    // 和主产物一起供产线的（u.shared，同一道配方被几种物品同时选中，calculator.js）也是正经产物
+    const outputs = r.outputs.map((o) => ({ itemId: o.id === u.itemId || u.shared?.includes(o.id) ? o.id : BYPRODUCT + o.id, perFactory: rateOf(o) }));
     return {
       id: u.id,
       letter: GROUP_LETTERS[i] ?? `G${i}`,
@@ -68,6 +69,7 @@ export function buildGraph(calc) {
       width: u.count * f.pitch + f.trailing,
       perFactory,
       outputs,
+      crafts: st ? null : (60 * f.speed * speedMul * levels) / r.time, // 每台（一叠）每分钟跑几次配方：页面上工厂小窗算原料用量
       outputRate: u.outputRate,
       ...(st ? { store: { ...st, key } } : null),
     };

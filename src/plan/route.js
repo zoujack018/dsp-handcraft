@@ -19,8 +19,8 @@ import { placeBlocks } from './layout/positions.js';
 import { routeItems } from './layout/belts.js';
 import { placeTracks } from './layout/tracks.js';
 import { placePorts } from './layout/ports.js';
-import { liftLegs, estimateLegs } from './layout/elevation.js';
-import { scoreLayout, preLegFloor, preLegSorterFloor, sorterPlanOf } from './layout/score.js';
+import { liftLegs, estimateLegs, rampLegs } from './layout/elevation.js';
+import { scoreLayout, preLegFloor, preLegSorterFloor, preLegWantFloor, preLegElevFloor, sorterPlanOf } from './layout/score.js';
 import { powerHoles } from './layout/powerholes.js';
 import { BELT_SPEED } from '../gamedata.js';
 
@@ -82,6 +82,10 @@ export const DEFAULTS = {
   // 出入口都在左边（箱子供货的左侧仓列模式，用户 2026/10/26）：原料从左边进、成品从左边出，和靠左侧站列一样的方向约束，边缘口照旧
   leftPorts: false,
   busGround: false, // 侧边总线的竖直段也落地（试验开关，默认关；用户 2026/10/26 边缘优化的候选之一）：开着时 ground.js 不再跳过总线的段，能落地的照常落地
+  // 不用原地升降（用户 2026/10/28：最低配置默认没解锁「超级磁场发生器」，原地竖直升降贴不上）：高架的升降都换成每格升降半层的坡，
+  // 中间在 0.5 层以上或落在空着的地面上（layout/elevation.js 的 rampLegs，docs/game-rules.md 第 38 条）；后处理的高架落地（plan/ground.js）不做，
+  // 接物流站、仓组、发电厂的线只走地面，还剩原地升降的（喷涂）按不可行。默认关，关着时结果一字不变
+  noLift: false,
   longFrom: 24, // 高架段超过这么长（格）的部分
   longWeight: 1, // 每格再多计这么多（为一种子材料拉跨半张图的长带）
   levelWeight: 3, // 高架每多抬一层（第 2 层起）计入成本的格数：叠得高不好看，也难手搭
@@ -167,6 +171,17 @@ export function route(graph, rows, options = {}, pads = {}, blocks = null, stree
   return second.cost < first.cost ? second : first;
 }
 
+/**
+ * 第六处的回调（liftLegs → solveLevels 局部搜索之前调，c 是这一次的布局上下文）：用模块级的这一个函数，不在每次评估里新建闭包挂到 c 上
+ * （2026/10/27 量过：每次新建一个闭包、挂在 c 上再传进去调，回调什么都不做也让氘核燃料棒那条每步慢两成）
+ */
+function elevAsk(c, nDead) {
+  const f = preLegElevFloor(c, nDead);
+  if (f === null || !c.opt.rejectFloor(f)) return false;
+  c.elevRejected = f;
+  return true;
+}
+
 /** 排一遍：holePlan 是要挖的配电站空位（第二遍才有） */
 function layout(graph, rows, options, opt, pads, blocks, streets, holePlan) {
   // 物流站靠左侧：站在最左侧 7 列，紧挨着一列主干走廊，生产区全在右边
@@ -192,6 +207,8 @@ function layout(graph, rows, options, opt, pads, blocks, streets, holePlan) {
     roads: undefined,
     // 下面的 earlySorters：高架之前排好的分拣器（scoreLayout 直接用）
     sorterPlan: undefined,
+    // 第五、六处（score.js 的 preLegWantFloor 记下够不着、太慢的条数，liftLegs 局部搜索之前那一问）
+    wantCounts: undefined, elevAsk: undefined, elevRejected: undefined,
   };
   placeBlocks(c);
   routeItems(c);
@@ -201,6 +218,12 @@ function layout(graph, rows, options, opt, pads, blocks, streets, holePlan) {
   // 下限怎么算、为什么不超过最终代价、为什么不改结果，见 score.js 的 preLegFloor。守卫不满足时返回 null，照常往下算。
   const floorPre = preLegFloor(c);
   if (floorPre !== null && opt.rejectFloor(floorPre)) return { rejected: true, cost: floorPre };
+  // 第五处（2026/10/27）：再补上分拣器位、够不着、太慢（分拣器收集工厂那一段就定了，不排落位）问一次。开着供电或站空地时才问，
+  // 下限怎么算、为什么不改结果见 score.js 的 preLegWantFloor。在下面自适应开关的计时之前：两臂都不含它
+  if (floorPre !== null) {
+    const floorWant = preLegWantFloor(c);
+    if (floorWant !== null && opt.rejectFloor(floorWant)) return { rejected: true, cost: floorWant };
+  }
   // 第四处（earlySorters）：分拣器挪到高架之前排，加上它的惩罚和长度代价再问一次（下限为什么不超过最终代价、为什么能挪，见 score.js 的
   // preLegSorterFloor）。没拒就把这份留给 scoreLayout 用。挪不挪按线自适应（earlyArm），只改算的先后、不改拒不拒、不改结果
   let st = null; // 自适应时这条线的统计（quick、没有 rejectFloor、强制开关时不记、不计时）
@@ -223,10 +246,23 @@ function layout(graph, rows, options, opt, pads, blocks, streets, holePlan) {
       return { rejected: true, cost: floor };
     }
   }
-  if (opt.quick) estimateLegs(c);
-  else liftLegs(c);
+  if (opt.noLift) {
+    // 坡的 0.5 层不压分拣器的手臂：要先知道分拣器落在哪（和 scoreLayout 用同一份，见上面的 earlySorters）
+    if (c.sorterPlan === undefined) c.sorterPlan = sorterPlanOf(c);
+    rampLegs(c);
+  } else if (opt.quick) estimateLegs(c);
+  else {
+    // 第六处（2026/10/27）：高架分层的局部搜索之前，按已经判死的段补紧再问一次（score.js 的 preLegElevFloor，只在第五处问过时问）
+    if (c.wantCounts !== undefined) c.elevAsk = elevAsk;
+    liftLegs(c);
+    if (c.elevRejected !== undefined) {
+      if (st !== null) noteArm(st, early, performance.now() - t0);
+      return { rejected: true, cost: c.elevRejected };
+    }
+  }
   const res = scoreLayout(c);
   if (st !== null) noteArm(st, early, performance.now() - t0);
+  if (opt.noLift && !res.rejected) res.noLift = true; // 后处理（plan/index.js）、校验（plan/validate.js）认这个
   return res;
 }
 

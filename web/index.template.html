@@ -122,7 +122,8 @@ dialog::backdrop { background: rgba(17, 47, 82, 0.45); }
 .dlg-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .dlg-head h2 { margin: 0; font-size: 17px; font-weight: 600; flex: 1 1 auto; }
 .dlg-head p { margin: 0; flex-basis: 100%; color: var(--ink-2); font-size: 13px; }
-.close { font: 13px/1 var(--ui); color: var(--ink-2); background: transparent; border: 1px solid var(--rule); border-radius: 4px; padding: 6px 10px; cursor: pointer; }
+.close { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; font: 22px/1 var(--ui); color: var(--ink-2); background: #fff; border: 1px solid var(--rule); border-radius: 6px; cursor: pointer; }
+.close:hover { color: #fff; background: #e5484d; border-color: #e5484d; } /* 弹窗右上角的叉：平时白的，指上去变红（用户 2026/10/27） */
 .close:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; }
 .toggle { display: flex; border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; background: #fff; }
 .toggle button { font: 13px/1 var(--ui); padding: 7px 12px; border: 0; border-right: 1px solid var(--rule); background: transparent; color: var(--ink); cursor: pointer; }
@@ -141,26 +142,39 @@ dialog::backdrop { background: rgba(17, 47, 82, 0.45); }
 .cat-key i.k-partial { background: linear-gradient(225deg, #c4882b 0 30%, #fff 30%); }
 .cat-key i.k-off { opacity: 0.35; }
 
-/* 外部供应弹窗：按离目标的层级排 */
-.tiers { position: relative; display: grid; gap: 22px; max-height: min(62vh, 620px); overflow: auto; padding: 2px; }
-/* 依赖连线：铺在方块后面；悬停某个产物时只亮相连的线 */
-.tiers .links { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 0; overflow: visible; }
-.tiers .tier { position: relative; z-index: 1; }
-.lk { opacity: 0.42; transition: opacity 120ms; }
-.lk path { fill: none; }
-.lk circle { stroke: none; }
-.lk.st-external { stroke-dasharray: 5 4; }
-.lk.st-dropped { opacity: 0.12; stroke-dasharray: 2 4; }
-.tiers.has-focus .lk { opacity: 0.08; }
-.tiers.has-focus .lk.on { opacity: 0.95; }
+/* 外部供应弹窗：依赖图——一种物品一张卡（副产物另一张），原料在上、产物在下，直角细线从原料往下送进产物；白底画布，图比画布大时滚动、按住能拖
+   （横向滑到头不往外传：Mac 上触控板左右滑到头会被浏览器当成后退、前进）。有新配方时列在画布右边 */
+#ext-dialog { max-width: min(1180px, calc(100vw - 32px)); }
+.ext-body { display: flex; gap: 12px; align-items: flex-start; min-width: 0; }
+.tiers { position: relative; flex: 1 1 auto; min-width: 0; }
+.tree-canvas { position: relative; max-height: min(62vh, 640px); overflow: auto; border: 1px solid var(--rule); border-radius: 6px; background: #fff; cursor: grab; touch-action: pan-x pan-y; overscroll-behavior-x: contain; user-select: none; -webkit-user-select: none; }
+.tree-canvas.is-panning, .tree-canvas.is-panning * { cursor: grabbing !important; }
+/* 缩放（app.js 的 zoomExt）：tree-zoom 按缩放后的大小占位、居中，里面的图从左上角整个缩放 */
+.tree-zoom { position: relative; margin: 0 auto; }
+.tree-stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.tree-tools { position: absolute; top: 8px; right: 20px; z-index: 2; display: flex; gap: 2px; padding: 2px; background: rgba(255, 255, 255, 0.94); border: 1px solid var(--rule); border-radius: 6px; box-shadow: 0 1px 3px rgba(17, 47, 82, 0.1); }
+.tree-tools button { min-width: 26px; height: 24px; margin: 0; padding: 0 6px; border: 0; border-radius: 4px; background: none; color: var(--ink-2); font: 12px/24px var(--ui); cursor: pointer; }
+.tree-tools button:hover { background: #eef3f9; color: var(--sheet); }
+.tree-tools button:focus-visible { outline: 2px solid var(--sheet); outline-offset: 0; }
+.tree-tools .zoom-pct { min-width: 44px; font-family: var(--num); }
+.tree-stage:active { cursor: grabbing; }
+/* 连线铺在卡片下面：整层 0.8 的不透明度（线段在接头处叠着画，分开设透明度会叠出深点）；悬停时连着的线变实色、别的淡到 0.15。
+   悬停变化不加过渡：点一下整张图重画，过渡会让高亮的卡片和线闪一下 */
+.tree-links { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; opacity: 0.8; }
+.tree-links .ln { fill: none; stroke: #5b7ea8; stroke-width: 1.5; }
+.tree-links .ln.ext { stroke-dasharray: 4 3; }
+.tree-links .ln.by { stroke-dasharray: 1.5 3; }
+.tree-links .ar { fill: #5b7ea8; }
+.tiers.has-focus .tree-links { opacity: 1; }
+.tiers.has-focus .tree-links .ln { stroke-opacity: 0.15; }
+.tiers.has-focus .tree-links .ar { fill-opacity: 0.15; }
+.tiers.has-focus .tree-links .ln.on { stroke: var(--sheet); stroke-opacity: 1; }
+.tiers.has-focus .tree-links .ar.on { fill: var(--sheet); fill-opacity: 1; }
 .tiers.has-focus .xt:not(.near) { opacity: 0.45; }
-.xt.is-goal { border-color: var(--sheet); background: #eef3f9; cursor: default; }
-.xt.is-goal .sub::before { content: "目标　"; color: var(--sheet); font-weight: 600; }
-.tier h3 { margin: 0 0 6px; font-size: 13px; font-weight: 500; color: var(--ink-2); }
-.tier-row { display: flex; flex-wrap: wrap; gap: 8px; }
+/* 一张卡（宽和 app.js 的 GRAPH.w 一致）：左边图标，右边物品名和一行小字，左边一条类别色 */
 .xt {
   --cat: #9aa5b1;
-  position: relative; width: 156px; display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 2px 8px; align-items: center; text-align: left;
+  position: absolute; left: 0; top: 0; width: 156px; display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 2px 8px; align-items: center; margin: 0; text-align: left;
   font: 13px/1.3 var(--ui); color: var(--ink); background: #fff; border: 1px solid var(--rule); border-left: 4px solid var(--cat); border-radius: 4px; padding: 7px 8px; cursor: pointer;
 }
 .xt .gl { grid-row: span 2; width: 28px; height: 28px; }
@@ -168,21 +182,37 @@ dialog::backdrop { background: rgba(17, 47, 82, 0.45); }
 .xt .sub { font-size: 11px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .xt:hover { border-color: var(--sheet); }
 .xt:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; }
+.xt.is-goal { border-color: var(--sheet); background: #eef3f9; cursor: inherit; }
+.xt.is-goal .sub::before { content: "目标　"; color: var(--sheet); font-weight: 600; }
 .xt.is-ext { background: repeating-linear-gradient(135deg, #fff 0 5px, #dbe5f1 5px 10px); border-style: dashed; border-color: var(--sheet); border-left-style: solid; }
 .xt.is-ext .sub::before { content: "外部供应　"; color: var(--sheet); font-weight: 600; }
-.xt.is-dropped { opacity: 0.4; cursor: default; }
-.xt.is-dropped .sub::before { content: "已不需要　"; }
+.xt.is-raw { background: #f5f7fa; cursor: inherit; }
+.xt.is-by { border-style: dotted; border-left-style: solid; cursor: inherit; }
+.xt.is-co { border-style: dotted; border-left-style: solid; }
+.xt .sub[data-tag]::before { content: attr(data-tag) "　"; color: var(--sheet); font-weight: 600; }
 .xt.is-blocking { border-color: #c4882b; box-shadow: inset 0 0 0 1px #c4882b; }
 .xt.is-blocking .sub { color: #8a5a12; }
-.recipes { margin: 0 0 12px; padding: 10px 0 0; border-top: 1px solid var(--rule); }
+/* 珍奇和原矿、新配方：画布右边一列，每张卡和画布里的卡一样大（28 的图标、名字一行、小字一行「用于 …」，用户 2026/10/27），最高和画布一样，再多就自己滚 */
+.recipes { flex: none; width: 168px; max-height: min(62vh, 640px); overflow: auto; }
 .recipes h3 { margin: 0 0 8px; font: 600 13px/1.2 var(--ui); color: var(--ink-2); }
-.rc-row { display: flex; flex-wrap: wrap; gap: 8px; }
-.rc { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 3px; padding: 7px 10px; border: 1px solid var(--rule); border-radius: 4px; background: #fff; color: var(--ink); cursor: pointer; text-align: left; font: 13px/1.2 var(--ui); }
-.rc .rc-line { font-size: 12px; color: var(--ink-2); }
-.rc[aria-pressed="true"] { border-color: var(--sheet); background: #e8eef6; box-shadow: inset 3px 0 0 var(--sheet); }
-.rc[aria-pressed="true"] .rc-name::after { content: "　已开启"; color: var(--sheet); font-weight: 600; }
+.recipes .rc-list + h3 { margin-top: 14px; }
+.rc-list { display: flex; flex-direction: column; gap: 6px; }
+.rc { --cat: #9aa5b1; display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; grid-template-areas: "ico name state" "ico for for"; align-items: center; gap: 2px 8px; width: 100%; margin: 0; padding: 7px 8px; border: 1px solid var(--rule); border-left: 4px solid var(--cat); border-radius: 4px; background: #fff; color: var(--ink); cursor: pointer; text-align: left; font: 13px/1.3 var(--ui); }
 .rc:hover { border-color: var(--sheet); }
 .rc:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; }
+.rc.is-on { border-color: var(--sheet); background: #e8eef6; }
+.rc-ico { grid-area: ico; display: flex; }
+.rc-ico .gl { width: 28px; height: 28px; }
+.rc-name { grid-area: name; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rc-state { grid-area: state; font-size: 11px; font-weight: 600; color: var(--sheet); }
+.rc-for, .rc .rc-line { grid-area: for; font-size: 11px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 弹窗窄（宽 ≤ 720，即视口 ≤ 752）时上下排：画布在上，新配方在下、一行排几个 */
+@media (max-width: 752px) {
+  .ext-body { flex-direction: column; align-items: stretch; }
+  .recipes { width: auto; max-height: none; overflow: visible; padding-top: 10px; border-top: 1px solid var(--rule); }
+  .rc-list { flex-direction: row; flex-wrap: wrap; }
+  .rc { width: 168px; }
+}
 .dlg-foot { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
 .dlg-foot .grow { flex: 1 1 260px; font-size: 13px; color: var(--ink-2); }
 .dlg-foot .warn { color: var(--alert); }
@@ -237,6 +267,68 @@ dialog::backdrop { background: rgba(17, 47, 82, 0.45); }
 .route-info dt { color: #a9c1db; }
 .route-info dd { margin: 0; overflow-wrap: anywhere; }
 .route-info .route-flow { font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+/* 物流站简介（app.js 的 renderStation，照游戏里星际物流站的面板）：图纸右上角的深色框；上面站口示意，下面存储一格一行（左边色条是星际那头：
+   供应蓝、需求橙、仓储灰；中间上限滑条；右边本地、星际两个按钮，点一下轮换），再下面物流站设置的滑条和勾选 */
+.station-info { position: absolute; z-index: 4; top: 10px; right: 10px; width: min(276px, calc(100% - 20px)); max-height: calc(100% - 20px); overflow: auto; padding: 10px 12px; border: 1px solid #8cafcf; background: #173b60f5; color: #e6f0ff; box-shadow: 0 4px 18px #07172c66; font-size: 11.5px; }
+.station-info header { display: flex; align-items: center; margin-bottom: 4px; }
+.station-info h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.station-info header button { margin-left: auto; font: 20px/1 var(--ui); color: #d8e8fa; border: 0; background: transparent; padding: 0 3px; cursor: pointer; }
+.station-info .st-map { display: block; width: 160px; height: 160px; margin: 0 auto 6px; font-family: var(--num); }
+.st-rows { display: grid; gap: 4px; }
+.st-row { display: grid; grid-template-columns: 30px minmax(0, 1fr) 62px; align-items: center; gap: 6px; padding: 6px 6px 6px 7px; background: #12304f; border-left: 3px solid #5b6c80; }
+.st-row.r1 { border-left-color: #3e9bbd; }
+.st-row.r2 { border-left-color: #e0884f; }
+.st-ico { display: flex; }
+.st-ico .gl { width: 30px; height: 30px; }
+.st-mid { min-width: 0; }
+.st-name { display: flex; align-items: baseline; gap: 5px; white-space: nowrap; }
+.st-name b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.st-name small { color: #a9c1db; font-size: 10.5px; }
+.st-keep { margin-left: auto; padding: 0 4px; border: 1px solid #6f90b3; border-radius: 3px; color: #cfe0f2; font-size: 10px; }
+.st-cap { margin: 1px 0 3px; font-size: 10.5px; color: #a9c1db; }
+.st-cap b { color: #e6f0ff; font-weight: 500; }
+.st-slider { -webkit-appearance: none; appearance: none; display: block; width: 100%; height: 10px; margin: 0; background: linear-gradient(90deg, #f2f6fb var(--p, 0%), #213f60 var(--p, 0%)); border: 1px solid #4b6d92; border-radius: 0; cursor: pointer; }
+.st-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 4px; height: 14px; background: #9ad0f5; border: 0; }
+.st-slider::-moz-range-thumb { width: 4px; height: 14px; background: #9ad0f5; border: 0; border-radius: 0; }
+.st-slider:disabled { opacity: 0.6; cursor: default; }
+.st-slider:focus-visible { outline: 2px solid #9ad0f5; outline-offset: 2px; }
+.st-btns { display: grid; gap: 4px; }
+.st-role { padding: 3px 0; border: 0; border-radius: 2px; color: #fff; font: 600 11px/1.3 var(--ui); cursor: pointer; }
+.st-role.r1 { background: #3a8fb0; }
+.st-role.r2 { background: #d97f45; }
+.st-role.r0 { background: #5b6c80; }
+.st-role:hover:not(:disabled) { filter: brightness(1.12); }
+.st-role:disabled { cursor: default; opacity: 0.7; }
+.st-row.is-empty { grid-template-columns: 30px minmax(0, 1fr); color: #6f8aa8; }
+.st-hole { display: block; width: 26px; height: 26px; margin: 2px; border-radius: 50%; background: #2a4a6c; }
+.st-empty { text-align: center; font-size: 13px; letter-spacing: 0.2em; }
+.st-h { margin: 12px 0 6px; font-size: 13px; font-weight: 600; }
+.st-h small { margin-left: 6px; font-size: 10.5px; font-weight: 400; color: #a9c1db; }
+.st-set-row { display: grid; grid-template-columns: 86px minmax(0, 1fr) 44px; align-items: center; gap: 6px; margin: 5px 0; font-size: 11px; color: #cfe0f2; }
+.st-set-row b { text-align: right; font-weight: 500; white-space: nowrap; }
+.st-checks { display: flex; gap: 14px; margin-top: 6px; }
+.st-check { display: flex; align-items: center; gap: 4px; font-size: 11px; color: #cfe0f2; }
+.st-note { margin: 10px 0 0; color: #a9c1db; line-height: 1.5; }
+/* 工厂小窗（app.js 的 renderMachine）：和物流站简介同一个位置、同一套样子；标题是产物图标 + 名字 + 编号，下面配方（原料 → 产物，图标右下角数量、
+   下面每台每分钟多少），这台机器和分拣器的示意，分拣器一根一行 */
+.machine-info h2 { display: flex; align-items: center; gap: 6px; }
+.machine-info h2 .gl { width: 22px; height: 22px; }
+.machine-info h2 small { font-size: 12px; font-weight: 500; color: #a9c1db; }
+.mc-sub { margin: 4px 0 8px; color: #a9c1db; line-height: 1.5; }
+.mc-sub b { color: #e6f0ff; font-weight: 500; }
+.mc-recipe { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; padding: 8px; background: #12304f; }
+.mc-tile { display: grid; justify-items: center; gap: 2px; min-width: 42px; }
+.mc-ico { position: relative; display: flex; padding: 3px; background: #1d4a73; border: 1px solid #3f6890; border-radius: 3px; }
+.mc-ico .gl { width: 30px; height: 30px; }
+.mc-ico b { position: absolute; right: 1px; bottom: -2px; font: 600 10.5px/1 var(--num); color: #fff; text-shadow: 0 0 2px #0b223b, 0 0 2px #0b223b; }
+.mc-tile small { font-size: 10.5px; color: #cfe0f2; font-family: var(--num); white-space: nowrap; }
+.mc-arrow { align-self: center; margin-top: -12px; color: #9ad0f5; font-size: 16px; }
+.machine-info .mc-map { display: block; width: auto; max-width: 100%; max-height: 170px; margin: 6px auto; font-family: var(--num); }
+.mc-list { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.mc-list li { display: flex; align-items: center; gap: 6px; padding: 4px 6px; background: #12304f; }
+.mc-list li .gl { width: 18px; height: 18px; flex: none; }
+.mc-list li b { font-weight: 600; }
+.mc-list li small { margin-left: auto; color: #a9c1db; white-space: nowrap; }
 .sheet.is-expanded { position: fixed; inset: 8px; width: auto; height: auto; min-height: 0; z-index: 100; box-shadow: 0 0 0 30px #0d223beb; }
 body.viewer-expanded { overflow: hidden; }
 .result-details { margin-top: 12px; border: 1px solid #c7d1de; background: #f5f7fa; }
@@ -273,8 +365,9 @@ body.viewer-expanded { overflow: hidden; }
 .page { max-width: none; padding: 10px 14px 24px; }
 .spec-heading { display: none; }
 .page { padding-top: 14px; } /* 标题去掉了（用户 2026/10/26），上方留一点白 */
-.desk { grid-template-columns: 280px minmax(0, 1fr); gap: 12px; align-items: start; }
-.spec { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 8px; padding: 12px; background: #f5f7fa; max-height: calc(100dvh - 80px); overflow-y: auto; border-radius: 3px; }
+.desk { grid-template-columns: 280px minmax(0, 1fr); gap: 12px; align-items: stretch; }
+/* 左栏和右边「按钮条 + 图纸」底边对齐（用户 2026/10/27）：左栏不参与算行高（contain: size），拉到和右边一样高，内容多了自己滚 */
+.spec { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; min-width: 0; gap: 8px; padding: 12px; background: #f5f7fa; contain: size; overflow-y: auto; border-radius: 3px; }
 .spec > * { min-width: 0; }
 .spec .seg { min-width: 0; }
 .spec .seg > legend, .spec .seg > .opts { display: none; }
@@ -293,7 +386,7 @@ body.viewer-expanded { overflow: hidden; }
 .goal input { font-size: 15px; }
 .go { padding: 11px; font-size: 14px; border-radius: 3px; }
 .hint, .status { font-size: 11px; }
-.status { min-height: 0; }
+.status { min-height: auto; } /* 不能写 0：左栏是 contain: size 的网格，排满时那行就是 0 高，两行字压住下面的选项（用户 2026/10/29） */
 .linkish { padding: 6px 9px; font-size: 12px; }
 .chips { font-size: 12px; }
 .output { margin-top: 12px; gap: 12px; }
@@ -309,7 +402,7 @@ body.viewer-expanded { overflow: hidden; }
 }
 @media (max-width: 850px) {
   .desk, .output { grid-template-columns: 1fr; }
-  .spec { max-height: none; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .spec { contain: none; max-height: none; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .spec > .field, .spec > .status, .spec > .go { grid-column: 1 / -1; }
   .sheet { height: 78dvh; min-height: 460px; }
   .sheet-foot { grid-template-columns: 1fr; }
@@ -336,7 +429,6 @@ body.viewer-expanded { overflow: hidden; }
   .dlg { padding: 14px 12px; }
   .find { flex: 1 1 120px; width: auto; }
   .slots { grid-template-columns: repeat(14, 54px); }
-  .xt { width: calc(50% - 4px); }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 
@@ -353,9 +445,8 @@ body.viewer-expanded { overflow: hidden; }
 .spec .seg span[data-short] { font-size: 0; }
 .spec .seg span[data-short]::before { content: attr(data-short); font-size: 12px; }
 /* 试验中的功能（用户 2026/10/26）：图例后面一个小 beta 标，不要上面 .seg span 那套格子样式 */
-.spec .seg .beta { display: inline-block; margin-left: 5px; padding: 0 4px; font: 500 10px/1.5 var(--ui); color: var(--sheet); border: 1px solid var(--sheet); border-radius: 3px; vertical-align: 1px; overflow: visible; cursor: default; }
 .modern-option { display: none; }
-#pile-field[hidden], #stitch-field[hidden] { display: none !important; }
+#pile-field[hidden], .spec > [data-name="station"] { display: none !important; }
 .spec > .field { order: 0; }
 .spec > .go { order: 7; }
 .spec > .status { order: 8; }
@@ -370,13 +461,6 @@ body.viewer-expanded { overflow: hidden; }
 .group > summary:focus-visible { outline: 2px solid var(--sheet); outline-offset: 2px; }
 .group .inner { display: grid; gap: 8px; margin-top: 8px; }
 /* 切成几块时图纸上方的标签：一块一个，和标题栏同一个深蓝底 */
-.module-tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px 0; background: #0c2340; }
-.module-tabs button { display: flex; align-items: baseline; gap: 6px; font: 13px/1.2 var(--ui); color: #acc2da; background: #163a63; border: 1px solid #2a5480; border-bottom: 0; border-radius: 3px 3px 0 0; padding: 7px 10px; cursor: pointer; max-width: 100%; }
-.module-tabs button[aria-selected="true"] { color: #10294a; background: #e6f0ff; border-color: #e6f0ff; }
-.module-tabs button small { font-size: 11px; opacity: 0.8; }
-.module-tabs button small.warn { color: #f2c46d; opacity: 1; }
-.module-tabs button[aria-selected="true"] small.warn { color: #9a5b00; }
-.module-tabs button:focus-visible { outline: 2px solid #a8cee9; outline-offset: 2px; }
 /* 图不可行时标题栏下面的红条 */
 .sheet-alert { margin: 0; padding: 9px 14px; font-size: 13px; line-height: 1.5; color: #5c1a12; background: #fbe3dc; border-bottom: 1px solid #e8b4a6; }
 .sheet-alert strong { margin-right: 6px; }
@@ -430,7 +514,8 @@ body.viewer-expanded { overflow: hidden; }
   .copy-top { padding: 7px 10px; }
 }
 
-/* 规格栏顺序（用户 2026/10/26）：目标、外部供应 → 搜索力度、生成 → 物流站位置或箱子 → 自动切分 → 集装、物流站格子 → 高纬度间距、研究站叠层 → 宽、长、长宽比上限；设备、供电、喷增产剂在图纸上方那排 */
+/* 规格栏顺序（用户 2026/10/26）：目标、外部供应 → 搜索力度、生成 → 箱子 → 集装、物流站格子 → 高纬度间距、研究站叠层 → 宽、长、长宽比上限；设备、供电、喷增产剂在图纸上方那排
+   （「物流站位置」「自动切分」「切分后的蓝图」2026/10/27 用户去掉了：物流站一律放进空地，网页不切块） */
 .spec > .field { order: 0; }
 .spec > [data-name="effort"] { order: 1; }
 .spec > .go { order: 2; }
@@ -447,8 +532,6 @@ body.viewer-expanded { overflow: hidden; }
 .spec > [data-name="supply"][hidden], .spec > [data-name="dist"][hidden] { display: none !important; }
 .spec > [data-name="power"] { order: 7; }
 .spec > [data-name="spray"] { order: 8; }
-.spec > [data-name="split"] { order: 20; } /* beta 的两项放最底下（用户 2026/10/26） */
-.spec > [data-name="stitch"] { order: 21; }
 .spec > [data-name="chemwide"], .spec > .field.labstack { order: 13; }
 .spec > [data-name="pile"], .spec > [data-name="proslot"], .spec > [data-name="warper"] { order: 12; } /* 物流站的三项（不再折叠，用户 2026/10/26） */
 .spec > [data-name="proslot"][hidden], .spec > [data-name="warper"][hidden] { display: none !important; }
@@ -469,7 +552,7 @@ body.viewer-expanded { overflow: hidden; }
 .pill::after { content: "▾"; color: var(--ink-2); }
 .pill .pill-ico { display: inline-flex; flex: none; width: 14px; height: 14px; color: var(--ink-2); } /* 和字隔开靠 .pill 的 gap；14 像素比行高矮，按钮不变高 */
 .pill-wrap:hover > .pill, .pill-wrap.open > .pill { border-color: #9fb1c6; }
-.pill-menu { display: none; position: absolute; top: 100%; left: 0; margin-top: 4px; min-width: 100%; padding: 4px 0; background: #fff; border-radius: 8px; box-shadow: 0 6px 20px rgba(17, 47, 82, 0.22); }
+.pill-menu { display: none; position: absolute; z-index: 10; top: 100%; left: 0; margin-top: 4px; min-width: 100%; padding: 4px 0; background: #fff; border-radius: 8px; box-shadow: 0 6px 20px rgba(17, 47, 82, 0.22); }
 .pill-menu::before { content: ""; position: absolute; left: 0; right: 0; top: -6px; height: 6px; } /* 鼠标从按钮挪到菜单，中间那几像素也算悬停 */
 .pill-wrap.flip > .pill-menu { left: auto; right: 0; } /* 右边放不下就靠右展开 */
 .pill-wrap.open > .pill-menu, .pill-wrap:not(.shut):hover > .pill-menu { display: block; }
@@ -625,12 +708,12 @@ body.viewer-expanded { overflow: hidden; }
           <label><input type="radio" name="logistics" value="station"><span data-pill="物流站">物流站</span></label>
         </div>
       </fieldset>
-      <fieldset class="seg" data-name="station">
-        <legend>物流站位置</legend>
+      <!-- 物流站一律放进空地（用户 2026/10/27 去掉了「物流站位置」这一项）：这组单选不显示，只给「物流方式」记接不接站 -->
+      <fieldset class="seg" data-name="station" hidden>
+        <legend>物流站</legend>
         <div class="opts">
           <label hidden><input type="radio" name="station" value=""><span>不接</span></label>
-          <label><input type="radio" name="station" value="ils"><span data-short="放进空地">星际物流站（放进空地）</span></label>
-          <label><input type="radio" name="station" value="ils-side"><span data-short="靠左侧站列">星际物流站（靠左侧站列）</span></label>
+          <label><input type="radio" name="station" value="ils"><span>星际物流站（放进空地）</span></label>
         </div>
       </fieldset>
       <fieldset class="seg" data-name="supply" id="supply-field">
@@ -664,20 +747,6 @@ body.viewer-expanded { overflow: hidden; }
           <label><input type="radio" name="spray" value="1"><span data-pill="Mk.I 增产">Mk.I</span></label>
           <label><input type="radio" name="spray" value="2"><span data-pill="Mk.II 增产">Mk.II</span></label>
           <label><input type="radio" name="spray" value="3"><span data-pill="Mk.III 增产">Mk.III</span></label>
-        </div>
-      </fieldset>
-      <fieldset class="seg" data-name="split">
-        <legend>自动切分<span class="beta">beta</span></legend>
-        <div class="opts">
-          <label><input type="radio" name="split" value="1"><span>开（太大就切）</span></label>
-          <label><input type="radio" name="split" value="0"><span>关</span></label>
-        </div>
-      </fieldset>
-      <fieldset class="seg" data-name="stitch" id="stitch-field">
-        <legend>切分后的蓝图<span class="beta">beta</span></legend>
-        <div class="opts">
-          <label><input type="radio" name="stitch" value="1"><span>拼接成一张</span></label>
-          <label><input type="radio" name="stitch" value="0"><span>分开生成</span></label>
         </div>
       </fieldset>
       <fieldset class="seg" data-name="pile" id="pile-field">
@@ -717,7 +786,6 @@ body.viewer-expanded { overflow: hidden; }
     <div class="stage">
     <div class="toolbar" id="toolbar" role="toolbar" aria-label="设备与物流"></div>
     <section class="sheet" id="sheet" aria-label="布局图">
-      <nav class="module-tabs" id="module-tabs" role="tablist" aria-label="模块" hidden></nav>
       <div class="sheet-bar">
         <div class="name" id="sheet-name">布局图</div>
         <div class="sheet-stats viewer-only" id="sheet-stats" hidden></div>
@@ -748,6 +816,14 @@ body.viewer-expanded { overflow: hidden; }
           <div class="drawing" id="drawing" tabindex="0" role="region" aria-label="图纸预览，拖动移动、点击线路查看简介，按钮或「大图」里滚轮缩放">
             <div class="empty"><strong>生成蓝图后在这里查看</strong></div>
           </div>
+          <section class="station-info" id="station-info" aria-labelledby="station-title" hidden>
+            <header><h2 id="station-title"></h2><button type="button" id="close-station" aria-label="关闭物流站简介">×</button></header>
+            <div id="station-body"></div>
+          </section>
+          <section class="station-info machine-info" id="machine-info" aria-labelledby="machine-title" hidden>
+            <header><h2 id="machine-title"></h2><button type="button" id="close-machine" aria-label="关闭工厂简介">×</button></header>
+            <div id="machine-body"></div>
+          </section>
         </div>
         <aside class="layer-rail" id="layer-rail" aria-label="楼层与用电" hidden>
           <section class="route-info viewer-only" id="route-info" aria-labelledby="route-title" hidden>
@@ -781,7 +857,7 @@ body.viewer-expanded { overflow: hidden; }
           <button type="button" data-page="2" aria-pressed="false">建筑</button>
         </div>
         <input class="find" id="find" type="search" placeholder="搜索物品" aria-label="搜索物品" autocomplete="off">
-        <button type="button" class="close" data-close>关闭</button>
+        <button type="button" class="close" data-close aria-label="关闭" title="关闭">×</button>
       </div>
       <div class="slots" id="slots" role="grid" aria-label="物品"><p class="hint">物品列表加载中…</p></div>
       <p class="pick-msg" id="pick-msg" role="status" aria-live="polite"></p>
@@ -797,11 +873,13 @@ body.viewer-expanded { overflow: hidden; }
     <div class="dlg">
       <div class="dlg-head">
         <h2 id="ext-title">外部供应</h2>
-        <button type="button" class="close" data-close>关闭</button>
-        <p>点中间产物设为外部供应（不在这条产线里做，由外部供给），再点一下取消。</p>
+        <button type="button" class="close" data-close aria-label="关闭" title="关闭">×</button>
+        <p>点中间产物设为外部供应（不在这条产线里做，由外部供给），再点一下取消。上面是原料、下面是用它的产物，最终产物在最下面；画布可以按住拖动。</p>
       </div>
-      <div class="tiers" id="tiers"></div>
-      <div class="recipes" id="ext-recipes" hidden></div>
+      <div class="ext-body">
+        <div class="tiers" id="tiers"></div>
+        <div class="recipes" id="ext-recipes" hidden></div>
+      </div>
       <div class="dlg-foot">
         <span class="grow" id="ext-foot"></span>
         <button type="button" class="linkish" id="ext-suggest">按建议设置</button>

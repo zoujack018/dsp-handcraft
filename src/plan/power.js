@@ -644,12 +644,41 @@ export function placePower(L, type, opt = {}) {
 }
 
 /**
+ * 给定的一组设施位（后处理重走时接站后先选好、一路跟着布局平移过来的那一组，plan/reroute.js 的 L.powerReserve）在现在的布局上还能不能原样用：
+ * 每座占的格都在布局里、空着、不挡出入口，两两隔够，要供电的目标都覆盖到，设施之间连得通（不补中继）。能用就照 placePower 的格式返回，不能用 null
+ */
+export function fitPlacement(L, type, nodes, opt = {}) {
+  const spec = POWER[type];
+  if (!spec || !nodes?.length) return null;
+  const { cover, link } = powerReach(type, opt);
+  const { occ, targets } = occupancy(L, { ...opt, power: spec.itemId });
+  const blocked = portBlocks(L);
+  for (const n of nodes) for (const [x, y] of cellsOf(spec, n.x, n.y)) if (x < 0 || y < 0 || x >= L.width || y >= L.height || occ.has(x, y) || blocked.has(K(x, y))) return null;
+  for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) if (!apart(spec, nodes[i], nodes[j])) return null;
+  const r2 = cover * cover;
+  if (targets.some((t) => !nodes.some((n) => (n.x - t.x) ** 2 + (n.y - t.y) ** 2 <= r2))) return null;
+  const l2 = link * link;
+  const seen = new Set([0]);
+  const st = [0];
+  while (st.length) {
+    const a = st.pop();
+    for (let b = 0; b < nodes.length; b++) if (!seen.has(b) && (nodes[a].x - nodes[b].x) ** 2 + (nodes[a].y - nodes[b].y) ** 2 <= l2) {
+      seen.add(b);
+      st.push(b);
+    }
+  }
+  if (seen.size !== nodes.length) return null;
+  return { options: { rowGaps: !!opt.rowGaps }, type, name: spec.name, itemId: spec.itemId, model: spec.model, size: spec.size, cover, link, nodes: nodes.map(({ x, y }) => ({ x, y })), extend: { left: 0, right: 0, bottom: 0, top: 0 }, uncovered: 0, warnings: [] };
+}
+
+/**
  * 放好供电，并把外沿加地计入布局尺寸（就地修改 L）。
  * 左侧、下方加地时坐标原点不动，设施坐标为负；出蓝图时整体平移 L.origin。
+ * P：已经选好的（placePower / fitPlacement 的结果），不给就照旧现选
  */
-export function addPower(L, type, opt) {
+export function addPower(L, type, opt, P = null) {
   if (!type || type === 'none') return L;
-  const P = placePower(L, type, opt);
+  if (!P) P = placePower(L, type, opt);
   L.power = P;
   const e = P.extend;
   L.origin = { x: e.left, y: e.bottom };

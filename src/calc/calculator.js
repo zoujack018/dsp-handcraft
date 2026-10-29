@@ -90,10 +90,22 @@ export function calculate({ target, rate, targets, smelter = 2302, assembler = 2
   const rawSupply = [];
   const byproducts = [];
   const flows = goals.map((g) => ({ itemId: g.item.id, from: null, to: 'OUT', rate: g.rate }));
-  for (const itemId of post.slice().reverse()) {
-    const need = demand.get(itemId) || 0;
-    if (need <= EPS) continue;
-    const r = recipeFor.get(itemId);
+  // 同一道多产物配方被几种物品同时选中（石墨烯、氢都选了石墨烯（高效）；精炼油当目标、氢也要用时的等离子精炼）：只开一组工厂，
+  // 台数按缺得最多的那种算，这几种产物都直接供产线（unit.shared），多出来的跟着自己那条带一起送出（flow.extra）。
+  // 用户 2026/10/27：以前各开一组，各把对方要的东西当副产物送出去。轮到其中最后一种时几种的需求都齐了（后序倒过来走，用它们的都在前面），
+  // 这组在那时开；配方的原料是它们共同的下游，排在更后面
+  const sharers = new Map();
+  for (const [id, r] of recipeFor) if (r && r.outputs.length > 1) (sharers.get(r) ?? sharers.set(r, []).get(r)).push(id);
+  const order = post.slice().reverse();
+  const lastOf = new Map();
+  for (const id of order) if (sharers.get(recipeFor.get(id))?.length > 1) lastOf.set(recipeFor.get(id), id);
+  for (const id0 of order) {
+    const r = recipeFor.get(id0);
+    const ids = sharers.get(r)?.length > 1 ? sharers.get(r) : null;
+    if (ids && lastOf.get(r) !== id0) continue;
+    const itemId = ids ? r.outputs.find((o) => ids.includes(o.id)).id : id0;
+    let need = demand.get(itemId) || 0;
+    if (!ids && need <= EPS) continue;
     if (!r) {
       rawSupply.push({ itemId, item: item(itemId).name, rate: need });
       continue;
@@ -106,6 +118,12 @@ export function calculate({ target, rate, targets, smelter = 2302, assembler = 2
     const outMul = mode === 'extra' ? 1 + eff.extra : 1;
     const speedMul = mode === 'speed' ? 1 + eff.speed : 1;
     const out = (r.outputs.find((o) => o.id === itemId) ?? r.outputs[0]).count * outMul;
+    const countOf = (id) => r.outputs.find((o) => o.id === id).count * outMul;
+    if (ids) {
+      const crafts = Math.max(...ids.map((id) => (demand.get(id) || 0) / countOf(id)));
+      if (crafts <= EPS) continue;
+      need = crafts * out; // 主产物实际出多少（可能比要的多）
+    }
     const perFactory = (out * 60 * f.speed * speedMul) / r.time;
     const exact = need / perFactory;
     const unit = {
@@ -120,6 +138,7 @@ export function calculate({ target, rate, targets, smelter = 2302, assembler = 2
       count: Math.ceil(exact - EPS),
       outputRate: need,
       spray: mode ? { mode, outMul, speedMul } : null,
+      ...(ids ? { shared: ids.filter((id) => id !== itemId) } : null),
     };
     if (f.kind === 'lab') {
       const max = Math.max(1, Math.floor(Number(labStack) || 1));
@@ -129,9 +148,15 @@ export function calculate({ target, rate, targets, smelter = 2302, assembler = 2
       unit.count = unit.stacks;
     }
     units.push(unit);
+    // 几种产物都供产线的：比要的多出来的跟着那条带送出
+    if (ids)
+      for (const id of ids) {
+        const extra = (need / out) * countOf(id) - (demand.get(id) || 0);
+        if (extra > 1e-6) flows.push({ itemId: id, from: null, to: 'OUT', rate: extra, extra: true });
+      }
     // 副产物：按主产物的产量折算，单独一股流送到出口
     for (const o of r.outputs) {
-      if (o.id === itemId) continue;
+      if (o.id === itemId || ids?.includes(o.id)) continue;
       const rate = (need / out) * o.count * outMul;
       byproducts.push({ itemId: o.id, item: item(o.id).name, rate, from: unit.id, of: itemId });
       flows.push({ itemId: o.id, from: unit.id, to: 'OUT', rate, byproduct: true });
@@ -144,7 +169,7 @@ export function calculate({ target, rate, targets, smelter = 2302, assembler = 2
     }
   }
   // 回填每条流的来源：生产该物品的配方组，或 'RAW'
-  const producerOf = new Map(units.map((u) => [u.itemId, u.id]));
+  const producerOf = new Map(units.flatMap((u) => [[u.itemId, u.id], ...(u.shared ?? []).map((id) => [id, u.id])]));
   for (const fl of flows) if (!fl.byproduct) fl.from = producerOf.get(fl.itemId) || 'RAW';
   // 增产剂用量：进吃到增产的工厂的料都喷过，一个增产剂喷 sprays 个
   const sprayInfo = eff ? { ...eff, rate: sprayFlow / eff.sprays } : null;

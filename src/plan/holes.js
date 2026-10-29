@@ -10,15 +10,15 @@ const HALF = 3;
 /** 按 stations.js 的装站规则估算要几座站、每座站接哪些出入口：每座站最多 5 种物品（翘曲器格占一格时 4 种）、12 条带 */
 export function stationGroups(ports, axis = 'x', slots = null) {
   const cap = stationItemCap(slots);
-  // 按真实物品分（同 stations.js）：副产物和产线自己要用的同种物品共用一个存储格
+  // 按真实物品和进出分（同 stations.js）：副产物送出去的和产线自己要用的同种物品各占一格、放在两座站（下面装站时同种物品不进同一座）
   const byItem = new Map();
   for (const p of ports) {
-    const k = realItem(p.itemId);
-    if (!byItem.has(k)) byItem.set(k, []);
-    byItem.get(k).push(p);
+    const k = `${realItem(p.itemId)}${p.kind === 'in' ? '<' : '>'}`;
+    if (!byItem.has(k)) byItem.set(k, { itemId: realItem(p.itemId), ports: [] });
+    byItem.get(k).ports.push(p);
   }
-  const items = [...byItem.entries()]
-    .flatMap(([itemId, ps]) => {
+  const items = [...byItem.values()]
+    .flatMap(({ itemId, ports: ps }) => {
       const out = [];
       for (let i = 0; i < ps.length; i += 12) out.push({ itemId, ports: ps.slice(i, i + 12) });
       return out;

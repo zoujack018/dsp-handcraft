@@ -461,8 +461,10 @@ for (const a of [-1, 0, 1]) {
  * @param L route() 的中间结果（需已有 pos、rowCy、channels、segments、sides）
  * @param sideIo Map<gid, {bottom: Map<itemId,'in'|'out'>, top: ...}>
  * cache：按通道复用算过的落位（见 SC），开关结果逐字一样；关掉只给测试和量速度用（route.js 的 DEFAULTS.sorterCache）
+ * countOnly：只走收集工厂那一段，数够不着（tooLong）和太慢（slow）各有几条，返回 { nTooLong, nSlow }，不排落位、不做动态规划、不碰缓存
+ * （layout/score.js 的 preLegWantFloor：高架之前的代价下限）。条数和不带它时 tooLong、slow 的长度一样：同一段代码、同样的输入
  */
-export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15, fourthTrack = false, wideTracks = false, cache = true } = {}) {
+export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15, fourthTrack = false, wideTracks = false, cache = true, countOnly = false } = {}) {
   const speed = SORTER_SPEED[sorter];
   if (!speed) throw new Error(`未知分拣器 ID ${sorter}`);
   const sorters = [];
@@ -470,6 +472,8 @@ export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15
   const slow = [];
   const starved = [];
   const tooLong = [];
+  let nTooLong = 0; // countOnly 时数的
+  let nSlow = 0;
   // 段按通道分桶（见 POOL）：通道 ch 里的段按 segments 的先后，segFor 再按物品挑，和原来按 通道 -> 物品 -> 各段 的 Map 查出来的先后一样
   const segs = L.segments;
   let nSeg = 0;
@@ -622,6 +626,21 @@ export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15
           w.k--;
           total--;
         }
+        // 速度不够的物品和工厂中心无关，每台工厂各记一遍（顺序和原来一样：按工厂、再按物品）。
+        // 这一圈挪到建 needs 之前（countOnly 也要用）：两边读写的字段不相干，先后换了结果一样
+        for (let j = w0; j < w1; j++) {
+          const w = W[j];
+          w.slow = tank ? !w.stubOk : w.rate * headroom > w.k * (speed[w.length] ?? 0) + 1e-9;
+        }
+        // 只数：够不着每种物品一条、太慢每台工厂一条，和下面往 tooLong、slow 里推的条件和条数一样；不建 needs、unit
+        if (countOnly) {
+          for (let j = w0; j < w1; j++) {
+            const w = W[j];
+            if (w.length > 3) nTooLong++;
+            if (w.slow) nSlow += p.centers.length;
+          }
+          continue;
+        }
         const tmp = POOL.need;
         let nn = 0;
         for (let j = w0; j < w1; j++) for (let t = 0; t < W[j].k; t++) tmp[nn++] = W[j];
@@ -629,11 +648,6 @@ export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15
         for (let j = w0; j < w1; j++) {
           const w = W[j];
           if (w.length > 3) tooLong.push({ group: g.item, item: graph.items.get(w.itemId).name, length: w.length, bid });
-        }
-        // 速度不够的物品和工厂中心无关，每台工厂各记一遍（顺序和原来一样：按工厂、再按物品）
-        for (let j = w0; j < w1; j++) {
-          const w = W[j];
-          w.slow = tank ? !w.stubOk : w.rate * headroom > w.k * (speed[w.length] ?? 0) + 1e-9;
         }
         const slotMask = slotMaskOf(g, side, tap);
         const centers = p.centers;
@@ -662,6 +676,7 @@ export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15
         }
       }
     }
+    if (countOnly) continue; // 只数的话这个通道到此为止：后面的排序、缓存、动态规划、碰撞统计都不做
     // 按 cx 排序，同一列下方行的在前。两行各自的 cx 都严格递增时（实际总是这样）直接归并：这时任意两台的先后都由 (cx, 下方在前) 唯一确定，
     // 和稳定排序的结果一样；否则照原样排序
     let ascending = true;
@@ -1046,5 +1061,6 @@ export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15
       }
     }
   }
+  if (countOnly) return { nTooLong, nSlow };
   return { sorters, clashes, slow, starved, tooLong };
 }

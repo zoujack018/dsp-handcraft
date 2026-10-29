@@ -9,10 +9,11 @@
 // 没有时间上限时，两种驱动的结果完全一致。
 import { buildGraph } from './graph.js';
 import { optimize, mergeRounds, precompute } from './place.js';
-import { addPower, placePower } from './power.js';
+import { addPower, placePower, fitPlacement } from './power.js';
 import { spaceStats } from '../metrics/space.js';
 import { attachStations, linkWarpers, cropToContent } from './stations.js';
 import { groundRoutes, groundOptions } from './ground.js';
+import { rerouteBelts, rerouteOptions, beltStats, rerouteWorse } from './reroute.js';
 import { addAddons, needsStacking } from './addons.js';
 import { stackCapOf } from './route.js';
 import { addStores, addProStores, isColumnSupply } from './storage.js';
@@ -20,10 +21,13 @@ import { addBurners, burnable } from './burn.js';
 import { translateLayout } from './coordinates.js';
 import { busMinX } from './layout/shared.js';
 import { powerCells, realItem } from '../gamedata.js';
+import { chainTiles } from '../emit/blueprint.js';
 
 export const TARGET_SPACE = 0.8;
 /** 为了利用率达标，传送带最多比代价最小的候选多这么多 */
 export const BELT_SLACK = 0.1;
+/** 内核 'auto'：排版内核搜完这么多段、最好那张还不可行，就换主干内核从头排（planCore） */
+export const AUTO_SEGMENTS = 2;
 
 /**
  * 物流站选项统一成 { place, stack }：
@@ -96,6 +100,22 @@ function trimSegmentEnds(L) {
   return cut;
 }
 
+/** 整张图的带子里有几处原地竖直升降（同一格前后两节高度不同）：各条物品带（含劈开的死胡同那半）、翘曲器带、增产剂带 */
+function liftsLeft(L) {
+  let n = 0;
+  const scan = (tiles) => {
+    for (let i = 1; i < tiles.length; i++) if (tiles[i][0] === tiles[i - 1][0] && tiles[i][1] === tiles[i - 1][1] && tiles[i][2] !== tiles[i - 1][2]) n++;
+  };
+  for (const chain of L.chains) {
+    const { main, extra } = chainTiles(L, chain);
+    scan(main);
+    for (const t of extra) scan(t);
+  }
+  for (const w of L.warperLinks || []) scan(w.cells);
+  for (const p of L.proLines || []) scan(p.cells);
+  return n;
+}
+
 export function finishOne(cand, ctx) {
   const { station, power, powerOptions, maxWidth, maxHeight, noGrounding, ground = null, busGround = false, aw = 1, spray = 0, sprayItems = null, sprayTo = null, pile = false, sprayRate = 0, burn = false, supply = null, sorter = 2013, storeLayers = 15, stackCap = 0 } = ctx;
   // 后处理改的是自己的一份。接物流站（edge）时 attachStations 自己先复制一份再改，供电预选只读布局，这里不用先复制；
@@ -121,11 +141,11 @@ export function finishOne(cand, ctx) {
       // burn：true 全烧，或要烧的真实物品编号（网页「外部供应」弹窗里逐个选）
       const want = (id) => burn === true || (Array.isArray(burn) && burn.includes(realItem(id)));
       for (const p of L.ports) if (p.kind === 'out' && burnable(p.itemId) && want(p.itemId)) p.burn = true;
-      L = addBurners(L, { power, maxWidth, maxHeight });
+      L = addBurners(L, { power, maxWidth, maxHeight, ...(L.noLift ? { maxLevel: 0 } : null) });
     }
   }
   // 箱子供货（不接物流站时，plan/storage.js）：原料入口、成品出口接储物仓 / 储液罐，原来通到边缘的那截作废
-  if (supply && !station) L = addStores(L, { supply, sorter, maxLayers: storeLayers, maxWidth, maxHeight, sprayItems: spray ? sprayItems ?? true : null });
+  if (supply && !station) L = addStores(L, { supply, sorter, maxLayers: storeLayers, maxWidth, maxHeight, sprayItems: spray ? sprayItems ?? true : null, ...(L.noLift ? { maxLevel: 0 } : null) });
   if (station?.place === 'edge') {
     // 要供电时先在紧凑布局上选好塔位，接站时绕开它们，免得站的接线把塔唯一能放的空地占掉
     let reserve = [];
@@ -135,14 +155,15 @@ export function finishOne(cand, ctx) {
       reserve = pre.nodes.flatMap((n) => powerCells(pre.itemId, n.x, n.y)); // 设施占的每一格
       reserveItem = pre.itemId;
     }
-    const opts = { stack: station.stack, maxWidth, maxHeight, maxLevel: 6, siteLimit: 6, slots: station.slots };
+    const opts = { stack: station.stack, maxWidth, maxHeight, maxLevel: L.noLift ? 0 : 6, siteLimit: 6, slots: station.slots };
     // 预留的塔位挡住了所有站位或接线时，不预留再试一次（塔位之后另找）
     L = attachStations(L, { ...opts, reserve, reserveItem }) ?? (reserve.length ? attachStations(L, opts) : null);
     if (!L) return null;
   }
-  if (!noGrounding && L.feasible) groundRoutes(L, ground, busGround);
+  // 高架落地（plan/ground.js）的升降是原地竖直的：不用原地升降（route.js 的 noLift）时不做
+  if (!noGrounding && L.feasible && !L.noLift) groundRoutes(L, ground, busGround);
   // 翘曲器整张一格：一座站存，别的站用传送带接（落地之后、增产剂和供电之前，后面的会让开这些带子）
-  if (station?.slots?.warper && L.stations?.length) linkWarpers(L);
+  if (station?.slots?.warper && L.stations?.length) linkWarpers(L, L.noLift ? { maxLevel: 0 } : undefined);
   // 增产剂（所有原料和中间产物进工厂前喷）和自动集装机（产物出线前叠层；运的超过一条带的产物带上集装）：在供电之前加，供电要给喷涂机、集装机通电
   const stack = needsStacking(L, stackCap);
   if (spray || pile || stack) {
@@ -158,14 +179,48 @@ export function finishOne(cand, ctx) {
       L.penalties = [...L.penalties, { kind: 'spray', amount: 0, msg: `${L.sprayMissed} 条进工厂的带没喷上增产剂（${L.addonNotes.join('；')}）` }];
     }
     // 箱子供货：增产剂带从边缘出来的源头也接储物仓（plan/storage.js 的 addProStores）
-    if (spray && supply && !station) addProStores(L, { supply, sorter, maxLayers: storeLayers });
+    if (spray && supply && !station) addProStores(L, { supply, sorter, maxLayers: storeLayers, ...(L.noLift ? { maxLevel: 0 } : null) });
   }
+  // 后处理重走只做挑中的那张时（planFrame 的 mode 'pick'）：记一份供电之前的布局，挑完以后拿它接着做后半段（finishTail，中间加重走），
+  // 不用从头再接一遍站（大的线接站要一两秒）
+  const pre = ctx.keepPre ? { layout: structuredClone(L), other } : null;
+  L = finishTail(L, ctx, other);
+  return pre ? { ...cand, layout: L, pre } : { ...cand, layout: L };
+}
+
+/**
+ * 后处理的后半段（finishOne 接完站、落地、翘曲器带、喷涂机、集装机之后）：开了重走时先重走，再放供电、查不用原地升降、尺寸上限，
+ * 算利用率和最终代价。L 原地改，返回 L；other 是搜索代价里除了面积和带数以外的部分
+ */
+export function finishTail(L, ctx, other) {
+  const { station, power, powerOptions, maxWidth, maxHeight, noGrounding } = ctx;
+  // 后处理重走（routeOptions.reroute，plan/reroute.js）：落地、翘曲器带、喷涂机、增产剂带、集装机都照旧放完（和不重走时一字不差），
+  // 放供电之前把段间高架、站的接线、翘曲器带拆了重走（增产剂带、喷涂机、集装机当固定的让开）
+  if (ctx.reroute && !noGrounding && station?.place !== 'side' && L.feasible) rerouteBelts(L, { opts: ctx.reroute, power, powerOptions, maxWidth, maxHeight, slots: station?.slots ?? null });
   if (power) {
-    addPower(L, power, { ...powerOptions, maxWidth, maxHeight });
+    // 后处理重走：现选的要往外加地或有覆盖不到的，而重走前选好的那一组（L.powerReserve）原样还能用，就用那一组
+    let P = null;
+    if (L.powerReserve) {
+      const po = { ...powerOptions, maxWidth, maxHeight };
+      const now = placePower(L, power, po);
+      const e = now.extend;
+      P = now.uncovered || e.left || e.right || e.bottom || e.top ? fitPlacement(L, power, L.powerReserve.nodes, po) ?? now : now;
+      delete L.powerReserve;
+    }
+    addPower(L, power, { ...powerOptions, maxWidth, maxHeight }, P);
     // 有工厂或分拣器没通上电，这张图贴进游戏也开不起来，按不可行处理
     if (L.power.uncovered) {
       L.feasible = false;
       L.penalties = [...L.penalties, { kind: 'power', amount: 0, msg: `${L.power.uncovered} 个工厂/分拣器不在${L.power.name}范围内` }];
+    }
+  }
+  // 不用原地升降（route.js 的 noLift）：高架段走的是坡，后处理接的线（物流站、仓组、发电厂、翘曲器的寻路只走地面）照理也没有升降；
+  // 还剩原地竖直升降的（增产剂带之类还不会走坡）按不可行处理，免得出一张没解锁超级磁场贴不上的图
+  if (L.noLift) {
+    const n = liftsLeft(L);
+    if (n) {
+      L.feasible = false;
+      L.penalties = [...L.penalties, { kind: 'route', amount: 0, msg: `选了不用原地升降，还有 ${n} 处原地竖直升降（增产剂带等的接线还不会走坡）` }];
     }
   }
   // 接站、供电外沿加地之后再看一次尺寸上限：超出的按不可行处理
@@ -178,7 +233,7 @@ export function finishOne(cand, ctx) {
   L.space = spaceStats(L);
   // 最终代价：后处理之后的真实面积（含供电外沿加地、物流站）和带数，面积按 1 倍计
   L.finalCost = L.area + L.belts + other;
-  return { ...cand, layout: L };
+  return L;
 }
 
 /**
@@ -199,22 +254,60 @@ export function* planSteps(calc, options = {}) {
   const orient = options.orient ?? 'h';
   const asym = (ro.maxWidth ?? null) !== (ro.maxHeight ?? null);
   if (orient === 'v') {
-    const r = yield* planFrame(calc, swapped());
+    const r = yield* planCore(calc, swapped());
     r.layout.rotated = true;
     return { ...r, orient: 'v', orientTried: ['v'] };
   }
   if (orient === 'auto' && asym) {
     // 两种各用一半时间
     const half = (o) => (o.timeLimit ? { ...o, timeLimit: Math.max(1000, o.timeLimit / 2) } : o);
-    const h = yield* planFrame(calc, half(options));
-    const v = yield* planFrame(calc, half(swapped()));
+    const h = yield* planCore(calc, half(options));
+    const v = yield* planCore(calc, half(swapped()));
     v.layout.rotated = true;
     const score = (r) => (r.layout.feasible ? 0 : 1e9) + r.layout.finalCost;
     const pick = score(v) < score(h) ? v : h;
     return { ...pick, ms: h.ms + v.ms, orient: pick === v ? 'v' : 'h', orientTried: ['h', 'v'], orientAlt: { orient: pick === v ? 'h' : 'v', width: (pick === v ? h : v).layout.width, height: (pick === v ? h : v).layout.height, rotated: pick !== v, area: (pick === v ? h : v).layout.area, belts: (pick === v ? h : v).layout.belts, feasible: (pick === v ? h : v).layout.feasible, finalCost: (pick === v ? h : v).layout.finalCost } };
   }
-  const r = yield* planFrame(calc, options);
+  const r = yield* planCore(calc, options);
   return { ...r, orient: 'h', orientTried: ['h'] };
+}
+
+/**
+ * 用哪个内核：routeOptions.core 写明的为准，没写用 options.core（网页档位 EFFORT 给的默认，web/src/worker.js；考卷外壳照抄），
+ * 都没写是主干内核。'master' 主干内核（等于不写）；'typeset' 排版内核（src/plan/typeset.js）；
+ * 'auto'（用户 2026/10/27）：先用排版内核排，搜完第 AUTO_SEGMENTS 段最好那张还不可行，就换主干内核从头再排一遍，
+ * 和直接用主干内核一样（同一个种子），只是整次规划的时间（untilTarget.maxMs）、段数上限扣掉排版内核用掉的（至少留一半，
+ * 退回站列也是这么给的）；每段搜索的 timeLimit 是保险丝，照档位原样给，换过的就和只用主干内核排出来的一样。
+ * 换过的在返回值的 coreSwitch 里记着排版内核搜了几段，网页打到控制台的「规划细节」；searchRounds、ms 是两次合计。
+ * 依据（考卷 2 标准档 3 个种子）：排版内核不可行的 5 份第 2 段搜完都还不可行、再搜十几段也没救回来，可行的 25 份最多用 2 段
+ */
+function* planCore(calc, options) {
+  const ro = options.routeOptions || {};
+  const core = ro.core ?? options.core;
+  // 没有档位给的 options.core、routeOptions 里也没写 auto / master：原来的路，一字不动
+  if (!('core' in options) && core !== 'auto' && core !== 'master') return yield* planFrame(calc, options);
+  // 往下传的不带 options.core（搜索的活里只看 routeOptions.core），主干内核就是不写
+  const base = { ...options };
+  delete base.core;
+  const pin = (c) => {
+    const r = { ...ro };
+    if (c == null || c === 'master') delete r.core;
+    else r.core = c;
+    return r;
+  };
+  if (core !== 'auto') return yield* planFrame(calc, { ...base, routeOptions: pin(core) });
+  const a = yield* planFrame(calc, { ...base, routeOptions: pin('typeset'), giveUpAfter: AUTO_SEGMENTS });
+  if (!a.gaveUp) return a;
+  const master = pin('master');
+  const left = (cap, used) => Math.max(cap * 0.5, cap - used);
+  const ut = options.untilTarget;
+  const b = yield* planFrame(calc, {
+    ...base,
+    routeOptions: master,
+    ...(ut ? { untilTarget: { ...ut, ...(ut.maxMs != null ? { maxMs: left(ut.maxMs, a.ms) } : {}), ...(ut.maxSegments != null ? { maxSegments: Math.ceil(left(ut.maxSegments, a.searchRounds)) } : {}) } } : {}),
+    ...(options.onRound ? { onRound: (r) => options.onRound({ ...r, round: r.round + a.searchRounds }) } : {}),
+  });
+  return { ...b, searchRounds: a.searchRounds + b.searchRounds, ms: a.ms + b.ms, coreSwitch: { from: 'typeset', segments: a.searchRounds } };
 }
 
 /** 在一个方向上规划（宽、长上限按给定的算） */
@@ -258,13 +351,14 @@ function* planFrame(calc, options) {
   const searchOpts = (ro, timeLimit) => {
     const o = { ...options, routeOptions: ro, timeLimit };
     delete o.station; // 物流站已经折进 routeOptions
-    delete o.untilTarget; // 下面两个只在这里用；回调也传不进帮手线程
+    delete o.untilTarget; // 下面几个只在这里用；回调也传不进帮手线程
     delete o.onRound;
+    delete o.giveUpAfter;
     // onSnapshot（实时预览的快照钩子）留着：单线程驱动就地执行用得上；多线程驱动发活前自己删（见 planLineAsync），
     // 帮手线程按 snapshotMs 开关自己装钩子（web/src/worker.js 的 task 分支）
     return o;
   };
-  const ctx = (aw = routeOptions.areaWeight ?? 1) => ({ station: station && { ...station }, power, powerOptions: options.powerOptions, maxWidth: routeOptions.maxWidth, maxHeight: routeOptions.maxHeight, noGrounding: !!options.noGrounding, ground: groundOptions(routeOptions), busGround: !!routeOptions.busGround, aw, spray: calc.spray ? calc.spray.level : 0, sprayItems: calc.spray?.items ?? null, sprayTo: calc.spray?.to ?? null, pile: !!options.pile, sprayRate: calc.spray?.rate ?? 0, burn: options.burn || false, allowMissed: !!routeOptions.allowMissed, supply: options.supply ?? null, sorter: routeOptions.sorter ?? options.sorter ?? 2013, storeLayers: options.storeLayers ?? 15, stackCap: stackCapOf(routeOptions) });
+  const ctx = (aw = routeOptions.areaWeight ?? 1) => ({ station: station && { ...station }, power, powerOptions: options.powerOptions, maxWidth: routeOptions.maxWidth, maxHeight: routeOptions.maxHeight, noGrounding: !!options.noGrounding, ground: groundOptions(routeOptions), busGround: !!routeOptions.busGround, aw, spray: calc.spray ? calc.spray.level : 0, sprayItems: calc.spray?.items ?? null, sprayTo: calc.spray?.to ?? null, pile: !!options.pile, sprayRate: calc.spray?.rate ?? 0, burn: options.burn || false, allowMissed: !!routeOptions.allowMissed, supply: options.supply ?? null, sorter: routeOptions.sorter ?? options.sorter ?? 2013, storeLayers: options.storeLayers ?? 15, stackCap: stackCapOf(routeOptions), ...rerouteCtx(routeOptions) });
 
   let result = yield { kind: 'search', graph, options: searchOpts(routeOptions, options.timeLimit ?? null) };
 
@@ -296,7 +390,22 @@ function* planFrame(calc, options) {
     return kept.reduce((a, b) => (b.layout.finalCost + 8 * short(b.layout) < a.layout.finalCost + 8 * short(a.layout) ? b : a));
   };
 
-  let finished = (yield { kind: 'finish', cands: pool(result), ctx: ctx() }).filter(Boolean);
+  // 后处理重走只做挑中的那张时（routeOptions.reroute 的 mode 'pick'，默认，见最后）：每个候选的后处理多记一份供电之前的布局（finishOne 的 keepPre）
+  // 和用的哪份 ctx，挑完拿它接着做后半段。不重走时不记，ctx 和以前一字不差、也不多占内存
+  const rrPick = (() => {
+    const r = rerouteOptions(routeOptions);
+    return r && r.mode !== 'all' && !options.noGrounding ? r : null;
+  })();
+  const finish = function* (cands, c) {
+    const res = yield { kind: 'finish', cands, ctx: rrPick ? { ...c, keepPre: true } : c };
+    return rrPick ? res.map((r) => (r ? { ...r, srcCtx: c } : null)).filter(Boolean) : res.filter(Boolean);
+  };
+  // 已经有可行的了，不可行的以后不会再挑中（choose 只在可行的里挑），它们记着的那份布局扔掉，少占内存
+  const dropPre = (list) => {
+    if (rrPick && list.some((x) => x.layout.feasible)) for (const x of list) if (!x.layout.feasible) delete x.pre;
+    return list;
+  };
+  let finished = dropPre(yield* finish(pool(result), ctx()));
   let fallback = false;
   if (!finished.length && station?.place === 'edge') {
     // 所有候选都接不上站：改用靠左侧的站列重新搜索（不是悄悄丢掉物流站）
@@ -309,9 +418,15 @@ function* planFrame(calc, options) {
     delete routeOptions.stationSlots;
     // 退回站列要重搜一遍：大产线第一遍搜索常常把时间上限用光，这里至少再给原预算的一半，不然只剩 1 秒搜出来的是废图
     result = yield { kind: 'search', graph, options: searchOpts(routeOptions, deadline ? Math.max(options.timeLimit * 0.5, deadline - Date.now()) : options.timeLimit ?? null) };
-    finished = (yield { kind: 'finish', cands: pool(result), ctx: ctx() }).filter(Boolean);
+    finished = dropPre(yield* finish(pool(result), ctx()));
   }
   let pick = choose(finished);
+  // 物流站放进空地时，搜索里的高架最多 4 层（route.js 的 DEFAULTS.maxLevel），站列模式、接站的线（attachStations）、增产剂带都是 6 层。
+  // 第一段搜完（接上站以后）最好那张还不可行时，后面各段搜索放到 6 层（考卷 2 的量子化工厂 + 大型采矿机高配：主干内核 20 段 240 轮
+  // 没有一轮可行，193 轮卡在高架层数上，最接近的那张只差一截电路板要第 5 层）。只在这时才放：第一段就可行的线一字不变
+  // （可行了以后挑的一直是可行的，不会再放）；routeOptions 里写明了 maxLevel 的照写明的
+  const levelRelaxed = station?.place === 'edge' && routeOptions.maxLevel == null && !pick.layout.feasible;
+  if (levelRelaxed) routeOptions.maxLevel = 6;
   // 接力退火（排版内核，分支 explore/typeset）：后面每一段从目前最好那张接着退一半的轮（place.js 的 warm），不是都从头再来。
   // 大线一段段从头搜，常常每段都卡在同一个地方（黄棒 30 塔第 3~13 段都是 78.2%、不可行）
   const warmOf = (c) => (routeOptions.core === 'typeset' && c?.seq ? { seq: c.seq, W: c.W, bays: c.bays ?? null, gaps: c.gaps ?? null } : null);
@@ -320,6 +435,8 @@ function* planFrame(calc, options) {
   const retries = options.adaptive === false ? 0 : options.retries ?? 1;
   let aw = routeOptions.areaWeight ?? 1;
   let rounds = 1;
+  // planCore 的内核 'auto' 用：搜完第 giveUpAfter 段（≥ 2）最好那张还不可行就不往下搜了，交回去换主干内核
+  const giveUp = () => rounds >= (options.giveUpAfter ?? Infinity) && !pick.layout.feasible;
   // 利用率只看地面占得满不满：一长条单行（比如 152×10）利用率也能有 75%，面积却大一倍多。
   // 所以没设宽 / 长 / 长宽比上限时，搜出来比 4:1 还瘦长的也加重面积再搜一轮
   const free = !routeOptions.maxWidth && !routeOptions.maxHeight && !routeOptions.maxAspect;
@@ -335,11 +452,12 @@ function* planFrame(calc, options) {
     if (stuck) so.seed = (options.seed ?? 7) + 7919 * (k + 1);
     if (warmOf(pick)) so.warm = warmOf(pick);
     const again = yield { kind: 'search', graph, options: so };
-    const more = (yield { kind: 'finish', cands: pool(again), ctx: ctx(aw) }).filter(Boolean);
-    finished = [...finished, ...more];
+    const more = yield* finish(pool(again), ctx(aw));
+    finished = dropPre([...finished, ...more]);
     pick = choose(finished);
     rounds++;
     options.onRound?.({ round: rounds, space: pick.layout.space.space, feasible: !!pick.layout.feasible, target });
+    if (giveUp()) return { gaveUp: true, searchRounds: rounds, ms: Date.now() - t };
   }
   // 没达标接着搜（用户 2026/10/07，网页的三档用）：照上面搜完还没达标（不可行或利用率不到目标），换种子、面积权重继续加倍（封顶 16）再搜，
   // 直到达标或到 untilTarget.maxMs；每轮的时间上限照旧。达没达标写在 targetMet 里，到点没达标页面照常显示最好那张、说明没到这一档
@@ -364,11 +482,12 @@ function* planFrame(calc, options) {
       o.seed = (options.seed ?? 7) + 1009 * k;
       if (warmOf(pick)) o.warm = warmOf(pick);
       const again = yield { kind: 'search', graph, options: o };
-      const more = (yield { kind: 'finish', cands: pool(again), ctx: ctx(aw) }).filter(Boolean);
-      finished = [...finished, ...more];
+      const more = yield* finish(pool(again), ctx(aw));
+      finished = dropPre([...finished, ...more]);
       pick = choose(finished);
       rounds++;
       options.onRound?.({ round: rounds, space: pick.layout.space.space, feasible: !!pick.layout.feasible, target });
+      if (giveUp()) return { gaveUp: true, searchRounds: rounds, ms: Date.now() - t };
       const now = { feasible: !!pick.layout.feasible, space: pick.layout.space.space };
       if ((now.feasible && !best.feasible) || (now.feasible === best.feasible && now.space >= best.space + 0.01)) {
         best = now;
@@ -376,9 +495,42 @@ function* planFrame(calc, options) {
       } else still++;
     }
   }
+  // 后处理重走只做挑中的那张（routeOptions.reroute 的 mode 'pick'，默认）：搜索、每个候选的后处理、挑法都和不重走时一字不差，
+  // 挑完拿这张供电之前的那份布局、照它那份 ctx 接着做后半段（finishTail，中间加重走），哪一项都不比原来差才换上（plan/reroute.js 的 rerouteWorse）；
+  // 差了就把相遇、叠格的代价加重再试一次，还差就留原来那张。就在这里做、不交给线程池（只有一张，排在别的活后面等线程反而慢）；
+  // 用时记在 layout.rerouteGuard（ms 合计、tryMs 每次）
+  if (rrPick && pick?.pre && station?.place !== 'side') {
+    const t0 = Date.now();
+    const base = beltStats(pick.layout);
+    // 拐弯守门（实验开关 turnGuard）：拐弯也比；第一次换不上，先把拐弯的代价加重再试，再不行拐弯、相遇、叠格一起加重
+    const heavyTurn = { ...rrPick, turn: rrPick.turn * rrPick.turnMul, slopeTurn: rrPick.slopeTurn * rrPick.turnMul };
+    const tries = rrPick.turnGuard ? [rrPick, heavyTurn, { ...heavyTurn, meet: rrPick.meet * 3, over: rrPick.over * 1.5 }] : [rrPick, { ...rrPick, meet: rrPick.meet * 3, over: rrPick.over * 1.5 }];
+    const guard = { tried: 0, used: 0, why: [], ms: 0, tryMs: [] };
+    for (const o of tries) {
+      guard.tried++;
+      const t1 = Date.now();
+      const alt = finishTail(structuredClone(pick.pre.layout), { ...pick.srcCtx, reroute: o }, pick.pre.other);
+      guard.tryMs.push(Date.now() - t1);
+      if (!alt.reroute) {
+        guard.why.push('没重走');
+        break;
+      }
+      const why = rerouteWorse(pick.layout, base, alt, beltStats(alt), { turns: rrPick.turnGuard });
+      // 带子少了利用率会跟着降一点：原来达标、换上以后不达标（网页会说没到这一档）也不换
+      if (met(pick.layout) && !met(alt)) why.push('没达标');
+      if (!why.length) {
+        guard.used = guard.tried;
+        pick = { ...pick, layout: alt };
+        break;
+      }
+      guard.why.push(why.join('，'));
+    }
+    guard.ms = Date.now() - t0;
+    pick.layout.rerouteGuard = guard;
+  }
   const rest = { ...result };
   delete rest.candidates; // 候选只在这里用，不往外带
-  return { graph, ...rest, rows: pick.rows, pads: pick.pads, blocks: pick.blocks, streets: pick.streets, layout: pick.layout, station, stationFallback: fallback, targetSpace: target, targetMet: met(pick.layout), stalled, searchRounds: rounds, ms: Date.now() - t };
+  return { graph, ...rest, rows: pick.rows, pads: pick.pads, blocks: pick.blocks, streets: pick.streets, layout: pick.layout, station, stationFallback: fallback, levelRelaxed, targetSpace: target, targetMet: met(pick.layout), stalled, searchRounds: rounds, ms: Date.now() - t };
 }
 
 /**
@@ -388,7 +540,15 @@ function* planFrame(calc, options) {
 export function finishContext(calc, options) {
   const ro = options.routeOptions || {};
   const station = ro.station ? { place: 'side', stack: ro.station.stack, slots: ro.station.slots } : ro.externalStack != null ? { place: 'edge', stack: ro.externalStack, slots: ro.stationSlots } : null;
-  return { station, power: ro.power ?? null, powerOptions: ro.powerOptions, maxWidth: ro.maxWidth, maxHeight: ro.maxHeight, noGrounding: !!options.noGrounding, ground: groundOptions(ro), busGround: !!ro.busGround, aw: ro.areaWeight ?? 1, spray: calc.spray ? calc.spray.level : 0, sprayItems: calc.spray?.items ?? null, sprayTo: calc.spray?.to ?? null, pile: !!options.pile, sprayRate: calc.spray?.rate ?? 0, burn: options.burn || false, allowMissed: !!ro.allowMissed, supply: options.supply ?? null, sorter: ro.sorter ?? options.sorter ?? 2013, storeLayers: options.storeLayers ?? 15, stackCap: stackCapOf(ro) };
+  return { station, power: ro.power ?? null, powerOptions: ro.powerOptions, maxWidth: ro.maxWidth, maxHeight: ro.maxHeight, noGrounding: !!options.noGrounding, ground: groundOptions(ro), busGround: !!ro.busGround, aw: ro.areaWeight ?? 1, spray: calc.spray ? calc.spray.level : 0, sprayItems: calc.spray?.items ?? null, sprayTo: calc.spray?.to ?? null, pile: !!options.pile, sprayRate: calc.spray?.rate ?? 0, burn: options.burn || false, allowMissed: !!ro.allowMissed, supply: options.supply ?? null, sorter: ro.sorter ?? options.sorter ?? 2013, storeLayers: options.storeLayers ?? 15, stackCap: stackCapOf(ro), ...rerouteCtx(ro) };
+}
+/**
+ * 后处理重走（plan/reroute.js）的参数进 ctx：没开时、只做挑中的那张时（mode 'pick'，planFrame 最后自己做）不加这一项，ctx 和以前一字不差；
+ * mode 'all' 时每个候选的后处理都重走（重走以后的代价参与挑选）
+ */
+function rerouteCtx(ro) {
+  const r = rerouteOptions(ro);
+  return r && r.mode === 'all' ? { reroute: r } : {};
 }
 
 /** 就地执行一个请求 */

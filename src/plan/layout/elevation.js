@@ -1,6 +1,6 @@
 // 高架：每段高架的格子、逐段分配高度（可请出重排）、升降落成原地竖直的一叠、路网统计
 import { RAMP_MAX_DZ } from '../../gamedata.js';
-import { gk, line } from './shared.js';
+import { gk, line, portRays } from './shared.js';
 import { solveLevels, toCsr } from './levels.js';
 
 // 归属表的缓冲区按线程复用：每次 liftLegs 换一个代际，表不够大才重新分配；代际用到上限时清零重来
@@ -924,7 +924,8 @@ export function liftLegs(c) {
     maxLevels = flat.map(capOf);
     break;
   }
-  const lv = solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel: opt.maxLevel, top, minLevel, maxLevels });
+  const lv = solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel: opt.maxLevel, top, minLevel, maxLevels, onGreedy: c.elevAsk ?? null, hookCtx: c });
+  if (lv === null) return; // 局部搜索之前那一问拒了（route.js 的 layout() 看 c.elevRejected，这次评估作废）
   // 只有高度变的段：直接按第 1 层的格子落到分到的层（见 realizeFlat）。之后再没有人查归属表，不用再写
   const isFlat = new Uint8Array(legs.length);
   for (let k = 0; k < n; k++) {
@@ -948,6 +949,413 @@ export function liftLegs(c) {
     }
     if (!l.cells?.length || l.broken || !(l.level > RAMP_MAX_DZ)) continue;
     realizeLeg(l, cellsAt(l, l.level));
+  }
+  c.roads = roadStats(c);
+}
+
+/**
+ * 不用原地升降（route.js 的 noLift，用户 2026/10/28：最低配置默认没解锁「超级磁场发生器」，蓝图里不能有原地竖直升降）。
+ * 每段高架的平面路径照旧（cellsFor 第 1 层的格子），高度改成逐格的剖面：相邻两格最多差 RAMP_STEP（半层）——没解锁时贴得上的坡
+ * （docs/game-rules.md 第 38 条）；中间的格子在 0.5 层以上，或者落在空着的地面上（和 plan/ground.js 的落地一个意思，那一步这时不做）。
+ * 高度用半层计（第 k 个半层 = z k/2，第 0 个是地面），同一格里两段至少隔一个半层（gamedata.js 的 LEVEL_GAP），这些不能用：
+ *   物流站 7×7 的所有高度；分拣器手臂那几格（从带子到工厂边）的地面和 0.5 层（手臂离地约 0.7~1.0 m，0.5 层的带子会穿在一起，推断）；
+ *   喷涂空当候选格的地面到 2.5 层、取料格两侧的地面和第 1 层（同 liftLegs 的保护区）；桥段在熔炉、制造台头顶低于第 bridgeLevel 层；
+ *   地面上已经有东西的格（地面段、出入口和它们往外留空的那一行、工厂和储物仓本体）；每段两头那一格的 0.5 层留给它自己。
+ * 同一格前后两节都和别的段挨着走（同一条边）时，两段的上下不能在这条边上对调（不然在半路交叉）。
+ * 排法：长的先排（同 liftLegs），每段在上面这些限制下做一遍动态规划挑剖面：每格每个半层计 RAMP_CELL、每变一次高度计 RAMP_CHANGE
+ * （转弯那格变高度再加 RAMP_TURN），尽量低、少起伏。排不下的段算断开（同 liftLegs 的「无处可放」）；最高超过 maxLevel 按超出的层数计 level 罚。
+ * 形状随层变的段（cellsFor 退回原地升降那几种）、带喷涂窗口的段（喷涂机要平的一截）、自己走回头路的段也算断开。
+ * 分配完直接落成最终格子（没有升降那一叠），c.roads 照算
+ */
+const RAMP_CELL = 0.1;
+const RAMP_CHANGE = 1;
+const RAMP_TURN = 0.5;
+/** 一次最多试着修几段排不下的（每段最多和 RAMP_RIVALS 段换先后）：断开很多段的排法本来就不会被选上，修多了只是费时间 */
+const RAMP_REPAIR = 8;
+const RAMP_RIVALS = 4;
+// rampLegs 的平面表（按线程复用）：每格一个戳，戳不是这一次的就当空着。blk 固定挡住的半层位，occ 已排的段占的半层位，
+// rsv 留给哪一段的 0.5 层（段号 + 1），ovr 桥段要垫高的工厂头顶，head 每格往 +x、+y 两条边上记的段（链表头，条目号 + 1）
+let rpStamp = new Int32Array(0);
+let rpBlk = new Int32Array(0);
+let rpOcc = new Int32Array(0);
+let rpRsv = new Int32Array(0);
+let rpOvr = new Uint8Array(0);
+let rpHead = new Int32Array(0);
+let rpGen = 0;
+// 边上的条目：下一条、哪一段、这条边小格号那头的半层、另一头的半层
+let reNext = new Int32Array(1024);
+let reLeg = new Int32Array(1024);
+let reA = new Int8Array(1024);
+let reB = new Int8Array(1024);
+// 动态规划的表
+let rpCost = new Float64Array(0);
+let rpFrom = new Int8Array(0);
+export function rampLegs(c) {
+  const { P, addPenalty, graph, itemBids, legs, opt, segments, stations, ports, pos, rowCy } = c;
+  const cellsFor = makeCellsFor(c);
+  const K = Math.min(30, 2 * (opt.maxLevel + 2)); // 最高到第几个半层（再高算无处可放）
+  const ALL = 2 ** (K + 1) - 1; // 第 0..K 个半层（第 0 个是地面）
+  // 排的次序：长的先排（水平格数从多到少，一样长保持原来的先后），同 liftLegs
+  const todo = [];
+  for (const l of legs) {
+    l.cells = [];
+    l.shadow = [];
+    l.level = 0;
+    if (l.direct) continue;
+    const r = cellsFor(l, 1);
+    todo.push({ l, r, n: r.cells.length, idx: todo.length });
+  }
+  todo.sort((a, b) => b.n - a.n); // Array.prototype.sort 是稳定的
+  const name = (l) => graph.items.get(l.itemId).name;
+  // 平面表的范围：各段走过的格和两头接地面的格，四周留 1 格
+  let x0 = Infinity;
+  let x1 = -Infinity;
+  let y0 = Infinity;
+  let y1 = -Infinity;
+  const span = (q) => {
+    if (q[0] < x0) x0 = q[0];
+    if (q[0] > x1) x1 = q[0];
+    if (q[1] < y0) y0 = q[1];
+    if (q[1] > y1) y1 = q[1];
+  };
+  for (const t of todo) {
+    for (const q of t.r.cells) span(q);
+    if (t.r.rise) span(t.r.rise);
+    if (t.r.drop) span(t.r.drop);
+  }
+  if (x0 > x1) {
+    c.roads = roadStats(c);
+    return;
+  }
+  x0--;
+  y0--;
+  x1++;
+  y1++;
+  const HH = y1 - y0 + 1;
+  const size = (x1 - x0 + 1) * HH;
+  if (rpStamp.length < size || rpGen >= 2e9) {
+    const m = Math.max(size, Math.ceil(rpStamp.length * 1.5));
+    rpStamp = new Int32Array(m);
+    rpBlk = new Int32Array(m);
+    rpOcc = new Int32Array(m);
+    rpRsv = new Int32Array(m);
+    rpOvr = new Uint8Array(m);
+    rpHead = new Int32Array(2 * m);
+    rpGen = 0;
+  }
+  const gen = ++rpGen;
+  const ST = rpStamp;
+  const BLK = rpBlk;
+  const OCC = rpOcc;
+  const RSV = rpRsv;
+  const OVR = rpOvr;
+  const HEAD = rpHead;
+  const at = (x, y) => (x < x0 || x > x1 || y < y0 || y > y1 ? -1 : (x - x0) * HH + (y - y0));
+  const touch = (i) => {
+    if (ST[i] !== gen) {
+      ST[i] = gen;
+      BLK[i] = 0;
+      OCC[i] = 0;
+      RSV[i] = 0;
+      OVR[i] = 0;
+      HEAD[2 * i] = 0;
+      HEAD[2 * i + 1] = 0;
+    }
+  };
+  const blockAt = (x, y, m) => {
+    const i = at(x, y);
+    if (i < 0) return;
+    touch(i);
+    BLK[i] |= m;
+  };
+  // 固定挡住的：物流站 7×7 的所有高度；喷涂空当候选格的地面到 2.5 层、取料格两侧的地面和第 1 层；
+  // 分拣器手臂那几格的地面和 0.5 层（下侧的分拣器从带子往上伸到工厂、上侧的往下）；地面上已经有东西的格（地面段、出入口和它们往外留空的那一行）
+  for (const st of stations) for (let dx = -3; dx <= 3; dx++) for (let dy = -3; dy <= 3; dy++) blockAt(st.x + dx, st.y + dy, ALL);
+  const guards = sprayGuards(segments, legs, true);
+  for (const [x, y] of guards.guard2) blockAt(x, y, 0b111111);
+  for (const [x, y] of guards.guard1) blockAt(x, y, 0b101);
+  for (const s of c.sorterPlan?.sorters ?? []) {
+    if (s.stub || s.segId == null) continue;
+    const seg = segments[s.segId];
+    const sg = s.side === 'top' ? -1 : 1;
+    for (let k = 0; k < s.length; k++) blockAt(s.col, seg.y + sg * k, 0b11);
+  }
+  for (const s of segments) {
+    if (s.y < y0 || s.y > y1) continue;
+    for (let x = Math.max(s.a, x0); x <= Math.min(s.b, x1); x++) blockAt(x, s.y, 1);
+  }
+  for (const q of ports) blockAt(q.x, q.y, 1);
+  for (const [x, y] of portRays({ ports, width: c.xR + 1 })) if (x >= x0 && x <= x1) blockAt(x, y, 1);
+  for (const t of todo) for (const q of [t.r.rise, t.r.drop, ...t.r.pre, ...t.r.post]) if (q) blockAt(q[0], q[1], 1); // 各段两头接地面的那一格、走廊里多走的那一格
+  // 桥段（route.js 的 bridges）：熔炉、制造台本体头顶的格子低于第 bridgeLevel 层不行
+  const lowBits = 2 ** Math.min(K + 1, 2 * (opt.bridgeLevel ?? 4)) - 1;
+  if (opt.bridges) {
+    pos.forEach((p) => {
+      if (p.g.kind !== 'smelter' && p.g.kind !== 'assembler') return;
+      const cy = rowCy[p.row];
+      for (let x = Math.max(p.x0, x0); x <= Math.min(p.x1, x1); x++) for (let y = cy - p.g.bodyBelow; y <= cy + p.g.bodyAbove; y++) {
+        const i = Number.isInteger(x) && Number.isInteger(y) ? at(x, y) : -1;
+        if (i < 0) continue;
+        touch(i);
+        OVR[i] = 1;
+      }
+    });
+  }
+  // 每段不随排法变的东西：平面格号、地面那两头、转弯的格；两头那一格的 0.5 层先替它留着（坡从这里起；那一格空着的地面它自己也能用）
+  for (const t of todo) {
+    const { l, r, n } = t;
+    if (!n) continue;
+    if (r.varies) t.why = '这里只能原地升降';
+    else if (l.spray) t.why = '喷涂机要骑在平的一截高架上';
+    const cs = r.cells;
+    t.keys = new Int32Array(n);
+    for (let i = 0; i < n; i++) {
+      const k = at(cs[i][0], cs[i][1]);
+      t.keys[i] = k;
+      touch(k);
+    }
+    if (!t.why && new Set(t.keys).size < n) t.why = '自己走回头路';
+    if (t.why) continue;
+    t.rise = r.rise ? at(r.rise[0], r.rise[1]) : -1;
+    t.drop = r.drop ? at(r.drop[0], r.drop[1]) : -1;
+    if (t.rise >= 0) touch(t.rise);
+    if (t.drop >= 0) touch(t.drop);
+    const prevOf = (i) => (i > 0 ? cs[i - 1] : r.rise ?? null);
+    const nextOf = (i) => (i + 1 < n ? cs[i + 1] : r.drop ?? null);
+    t.turn = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      const a = prevOf(i);
+      const b = nextOf(i);
+      const q = cs[i];
+      if (a && b && (q[0] - a[0] !== b[0] - q[0] || q[1] - a[1] !== b[1] - q[1])) t.turn[i] = 1;
+    }
+    for (const k of [t.keys[0], t.keys[n - 1]]) if (!RSV[k]) RSV[k] = t.idx + 1;
+  }
+  const release = (t) => {
+    for (const k of [t.keys[0], t.keys[t.n - 1]]) if (RSV[k] === t.idx + 1) RSV[k] = 0;
+  };
+  // 边：格 i 往 +x（dir 0）或 +y（dir 1）那条，条目记两头的半层（a 在格 i、b 在邻格）和是哪一次记进来的（每段每记一次换一个号）；
+  // alive[号] 为 0 的条目当不存在：拿掉一段只关它这次的号，放回原样再打开，重新记一遍的换新号（旧的条目一直关着）
+  let eTop = 0;
+  let cTop = 0;
+  let alive = new Uint8Array(todo.length * 2 + 8);
+  const legCid = new Int32Array(todo.length);
+  /** 从格 p 走到相邻的格 q 那条边的槽：p 是小那头时 2p+dir、flip 0；q 是小那头时 2q+dir、flip 1（格号按 x 优先排，+x 一格差 HH） */
+  let eSlot = 0;
+  let eFlip = 0;
+  const edgeOf = (p, q) => {
+    if (q === p + HH) {
+      eSlot = 2 * p;
+      eFlip = 0;
+    } else if (q === p - HH) {
+      eSlot = 2 * q;
+      eFlip = 1;
+    } else if (q === p + 1) {
+      eSlot = 2 * p + 1;
+      eFlip = 0;
+    } else {
+      eSlot = 2 * q + 1;
+      eFlip = 1;
+    }
+  };
+  const grow = (a) => {
+    const b = new a.constructor(a.length * 2);
+    b.set(a);
+    return b;
+  };
+  const putEdge = (p, kp, q, kq, leg) => {
+    edgeOf(p, q);
+    if (eTop === reNext.length) {
+      reNext = grow(reNext);
+      reLeg = grow(reLeg);
+      reA = grow(reA);
+      reB = grow(reB);
+    }
+    reNext[eTop] = HEAD[eSlot];
+    reLeg[eTop] = leg;
+    reA[eTop] = eFlip ? kq : kp;
+    reB[eTop] = eFlip ? kp : kq;
+    HEAD[eSlot] = ++eTop;
+  };
+  const W = K + 1;
+  const INF = Infinity;
+  /**
+   * 在已排的段之外给段 t 挑剖面（动态规划：cost[i·W + k] 走到第 i 格、在第 k 个半层的最小代价）。从地面那一头上来，第 0 格只能在地面或 0.5 层；
+   * 最后一格也一样（落地那一步也算一次变高度）。同一条边上挨着已排的段走时不能和它对调上下。排不下返回 null
+   */
+  const solve = (t) => {
+    const { l, n, keys } = t;
+    if (rpCost.length < n * W) {
+      rpCost = new Float64Array(n * W * 2);
+      rpFrom = new Int8Array(n * W * 2);
+    }
+    const cost = rpCost;
+    const from = rpFrom;
+    cost.fill(INF, 0, n * W);
+    const me = t.idx + 1;
+    const bridge = !!l.bridge;
+    let k0 = keys[0];
+    let bad = BLK[k0] | OCC[k0] | (RSV[k0] && RSV[k0] !== me ? 0b10 : 0) | (bridge && OVR[k0] ? lowBits : 0);
+    // 两头接地面那两条边也不能和已排的段对调上下（地面那头在第 0 个半层）
+    const edgeOk = (p, q, kp, kq) => {
+      edgeOf(p, q);
+      for (let e = HEAD[eSlot]; e; e = reNext[e - 1]) {
+        if (!alive[reLeg[e - 1]]) continue;
+        const a = eFlip ? reB[e - 1] : reA[e - 1]; // 别的段在 p 格的半层
+        const b = eFlip ? reA[e - 1] : reB[e - 1]; // 在 q 格的
+        if (kp > a !== kq > b) return false;
+      }
+      return true;
+    };
+    for (let k = 0; k <= 1; k++) if (!(bad & (1 << k)) && (t.rise < 0 || edgeOk(t.rise, keys[0], 0, k))) cost[k] = RAMP_CELL * k + (k ? RAMP_CHANGE : 0);
+    for (let i = 1; i < n; i++) {
+      k0 = keys[i];
+      bad = BLK[k0] | OCC[k0] | (RSV[k0] && RSV[k0] !== me ? 0b10 : 0) | (bridge && OVR[k0] ? lowBits : 0);
+      edgeOf(keys[i - 1], k0);
+      const flip = eFlip;
+      let e = HEAD[eSlot];
+      while (e && !alive[reLeg[e - 1]]) e = reNext[e - 1];
+      const turnHere = t.turn[i] || t.turn[i - 1];
+      const base = (i - 1) * W;
+      for (let k = 0; k <= K; k++) {
+        if (bad & (1 << k)) continue;
+        let best = INF;
+        let arg = 0;
+        const lo = k > 0 ? k - 1 : 0;
+        const hi = k < K ? k + 1 : K;
+        for (let kp = lo; kp <= hi; kp++) {
+          const v = cost[base + kp];
+          if (v === INF) continue;
+          if (e) {
+            let cross = false;
+            for (let q = e; q; q = reNext[q - 1]) {
+              if (!alive[reLeg[q - 1]]) continue;
+              const a = flip ? reB[q - 1] : reA[q - 1]; // 别的段在第 i−1 格的半层
+              const b = flip ? reA[q - 1] : reB[q - 1]; // 在第 i 格的
+              if (kp > a !== k > b) {
+                cross = true;
+                break;
+              }
+            }
+            if (cross) continue;
+          }
+          const w = kp !== k ? v + RAMP_CHANGE + (turnHere ? RAMP_TURN : 0) : v;
+          if (w < best) {
+            best = w;
+            arg = kp;
+          }
+        }
+        if (best === INF) continue;
+        cost[i * W + k] = best + RAMP_CELL * k;
+        from[i * W + k] = arg;
+      }
+    }
+    let kEnd = -1;
+    let cEnd = INF;
+    for (let k = 0; k <= 1; k++) {
+      if (t.drop >= 0 && !edgeOk(keys[n - 1], t.drop, k, 0)) continue;
+      const v = cost[(n - 1) * W + k] + (k ? RAMP_CHANGE : 0);
+      if (v < cEnd) {
+        cEnd = v;
+        kEnd = k;
+      }
+    }
+    if (kEnd < 0) return null;
+    const ks = new Int8Array(n);
+    ks[n - 1] = kEnd;
+    for (let i = n - 1; i > 0; i--) ks[i - 1] = from[i * W + ks[i]];
+    return ks;
+  };
+  /** 段 t 按剖面 ks 记进表：占的半层、走过的边（两头接地面那两条也记，地面那头按第 0 个半层） */
+  const commit = (t, ks) => {
+    const { keys, n } = t;
+    const cid = cTop++;
+    if (cid >= alive.length) alive = grow(alive);
+    alive[cid] = 1;
+    legCid[t.idx] = cid;
+    if (t.rise >= 0) putEdge(t.rise, 0, keys[0], ks[0], cid);
+    if (t.drop >= 0) putEdge(keys[n - 1], ks[n - 1], t.drop, 0, cid);
+    for (let i = 0; i < n; i++) {
+      OCC[keys[i]] |= 1 << ks[i];
+      if (i > 0) putEdge(keys[i - 1], ks[i - 1], keys[i], ks[i], cid);
+    }
+  };
+  /** 把段 t 从表里拿掉（它边上的条目关掉） */
+  const uncommit = (t, ks) => {
+    for (let i = 0; i < t.n; i++) OCC[t.keys[i]] &= ~(1 << ks[i]);
+    alive[legCid[t.idx]] = 0;
+  };
+  // 先按次序一段段排；排不下的再试着和挡它的段换先后（把那段拿掉、先排它、再把那段放回去，两段都排得下才换）
+  const prof = new Array(todo.length).fill(null); // 段 → 剖面
+  const failed = [];
+  for (const t of todo) {
+    if (!t.n || t.why) continue;
+    const ks = solve(t);
+    if (ks) {
+      prof[t.idx] = ks;
+      commit(t, ks);
+    } else failed.push(t);
+  }
+  for (let f = 0; f < failed.length; f++) {
+    const t = failed[f];
+    if (f >= RAMP_REPAIR) {
+      release(t);
+      continue;
+    }
+    const mine = new Set(t.keys);
+    let tried = 0;
+    let done = false;
+    for (const u of todo) {
+      if (tried >= RAMP_RIVALS) break;
+      const ku0 = prof[u.idx];
+      if (!ku0 || !u.keys.some((k) => mine.has(k))) continue;
+      tried++;
+      uncommit(u, ku0);
+      const ks = solve(t);
+      if (ks) {
+        commit(t, ks);
+        const ku = solve(u);
+        if (ku) {
+          commit(u, ku);
+          prof[t.idx] = ks;
+          prof[u.idx] = ku;
+          done = true;
+          break;
+        }
+        uncommit(t, ks);
+      }
+      // 换不成：放回原样（它边上的条目还在，把它那次的号重新打开就是原来那份）
+      for (let i = 0; i < u.n; i++) OCC[u.keys[i]] |= 1 << ku0[i];
+      alive[legCid[u.idx]] = 1;
+    }
+    if (!done) release(t);
+  }
+  // 落成最终格子，按排的次序记惩罚
+  for (const t of todo) {
+    const { l, r, n } = t;
+    if (!n) continue;
+    const ks = prof[t.idx];
+    if (!ks) {
+      l.broken = true;
+      l.level = 0;
+      addPenalty('route', P.route * 4, `${name(l)} 的高架段无处可放${t.why ? `（${t.why}）` : ''}`, itemBids(l.itemId));
+      continue;
+    }
+    let top = 0;
+    for (let i = 0; i < n; i++) if (ks[i] > top) top = ks[i];
+    l.level = top / 2;
+    const cells = new Array(r.pre.length + n + r.post.length);
+    let j = 0;
+    for (const q of r.pre) cells[j++] = q;
+    for (let i = 0; i < n; i++) {
+      const q = r.cells[i];
+      q[2] = ks[i] / 2;
+      cells[j++] = q;
+    }
+    for (const q of r.post) cells[j++] = q;
+    l.cells = cells;
+    const cap = opt.bridges && l.bridge ? opt.bridgeMaxLevel : opt.maxLevel;
+    if (l.level > cap) addPenalty('level', P.level * (l.level - cap), `${name(l)} 的高架段和别的高架段撞在一起（${cap} 层都占满了，升到第 ${l.level} 层）`, itemBids(l.itemId));
   }
   c.roads = roadStats(c);
 }
