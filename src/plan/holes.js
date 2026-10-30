@@ -1,7 +1,7 @@
 // 物流站的空地估算（搜索时用）：边缘放站模式下，站是排完生产区之后才放进去的。
 // 搜索阶段不真的接线（A* 太慢），只估两件事：把每座站放进布局里或贴在边上要多占多少面积，
 // 以及站离它要接的出入口有多远。计入成本后，退火会主动在出入口附近留出 7×7 的空地。
-import { STATION_GAP, realItem } from '../gamedata.js';
+import { STATION_GAP, stationSpan, realItem } from '../gamedata.js';
 import { keepFreeSlot, stationItemCap } from './layout/shared.js';
 
 const SIZE = 7;
@@ -105,8 +105,8 @@ export function stationHoles(L, { pad = SIZE + 2, distWeight = 1, slots = null }
     }
   }
   const taken = [];
-  // 两座站至少隔 STATION_GAP 格（直线距离），自然也就不重叠
-  const clash = (x, y) => taken.some((t) => Math.hypot(t.x - x, t.y - y) < STATION_GAP);
+  // 两座站至少隔 STATION_GAP 格（东西向按最窄格宽折算，gamedata.js 的 stationSpan），自然也就不重叠
+  const clash = (x, y) => taken.some((t) => stationSpan(t.x - x, t.y - y) < STATION_GAP);
   let bx0 = 0;
   let by0 = 0;
   let bx1 = W - 1;

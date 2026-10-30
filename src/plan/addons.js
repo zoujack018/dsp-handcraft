@@ -18,6 +18,7 @@ import { sprayGapCells } from './layout/elevation.js';
 import { portRays } from './layout/shared.js';
 import { SPRAY_LEVELS, ITEMS, realItem, baseItem } from '../gamedata.js';
 import { storeSites } from './storage.js';
+import { STACK_AT, pileOnce, slotsOf, takeItems } from './piling.js';
 
 const key = (x, y) => `${x},${y}`;
 const cell = (x, y, z) => `${x},${y},${z}`;
@@ -90,9 +91,7 @@ function alignCoaters(wants, blocked) {
   }
 }
 
-/** 集装（stackPilers）：一条带每分钟占的格位过了单条带运力的这么多（极速带 1700 / 1800）就在下游放一台集装机 */
-const STACK_AT = 17 / 18;
-/** 产物带（原料带头一截是入口的高架段）里运的超过单条带运力 cap 的：开集装机时 layout/belts.js 按 4 倍运力排成一条（pileCap） */
+/** 产物带（原料带头一截是入口的高架段）里运的超过单条带运力 cap 的：开集装机时 layout/belts.js 按 pileCap 排成一条（route 选项 pileModel，不写是 4 倍） */
 const stackChain = (L, ch, cap) => {
   const q0 = ch.parts[0];
   if (q0?.leg != null && L.legs[q0.leg].kind === 'in') return false; // 原料：站口出来的是叠好的（rawCap），不在这里集装
@@ -105,8 +104,11 @@ export const needsStacking = (L, stackCap) => stackCap > 0 && L.chains.some((ch)
 
 /**
  * 集装（用户 2026/10/26）：产物带一条运的超过单条带的运力时（layout/belts.js 的 pileCap），分拣器放上带的是单个物品，一个占一个格位；
- * 沿流向数每分钟占了多少格位，过了 STACK_AT 就在下游第一格能放的直带上放一台自动集装机，带上的物品都叠成 4 层（格位降到物品数的 1/4）。
- * 取料只减物品，格位按不多于物品数算（保守）。放料按每台工厂满速（取放事件和 layout/belts.js 的一样，同一列先放后取），
+ * 沿流向数每分钟占了多少格位，过了 STACK_AT 就在下游第一格能放的直带上放一台自动集装机。一台只把相邻两个货物合成一个
+ * （用户 2026/10/30 确认，docs/game-rules.md 第 36 条）：带上按各层的货物数记（plan/piling.js），过一台按 pileOnce 算
+ * （单个物品进时格位降到约一半，格位 1700/1800 处 × 0.514；再往下补单个、再过一台才到 3 层、4 层；满 4 层的原样过去），
+ * 格位再过 STACK_AT 就再放一台。上一台之后没放新的单个时，下一台合不上（pileOnce 的 fresh），格位降不到 1% 运力的不放。
+ * 取料只减物品，格位按不多于物品数算（保守，piling.js 的 takeItems）。放料按每台工厂满速（取放事件和 layout/belts.js 的一样，同一列先放后取），
  * 同一台工厂在这一段同一个方向有几根分拣器时平分。能放的格：直带、不在分拣器的取放格和横穿的格上、头顶没有高架、不挨着物流站、
  * 不占喷涂机的空当（can）。哪儿的格位超过单条带的运力（集装机放不下），记进 L.stackShort（finishOne 判不可行）
  */
@@ -139,12 +141,13 @@ function stackPilers(L, tiles, cap, can, used, name) {
     let peak = 0;
     // 主链和劈开的死胡同那一半各走一遍（死胡同从劈开处起，料不进主链）
     for (const m of [t.main, ...t.extra]) {
-      let items = 0;
-      let slots = 0;
+      let c = [0, 0, 0, 0, 0]; // 带上每分钟 1~4 层的货物各几个（plan/piling.js）
+      let fresh = Infinity; // 上一台集装机之后新放上来的单个物品（带头起算不限）
       let want = false;
-      let back = -1; // 上一台集装机之后最近一格能放（没放）的，和到那儿时带上的物品数
-      let backItems = 0;
-      const put = (k) => {
+      let back = -1; // 上一台集装机之后最近一格能放（没放）的，和到那儿时带上的货物
+      let backC = null;
+      let backFresh = 0;
+      const put = (k, next) => {
         const [x, y] = m[k];
         L.pilers.push({ chain: ci, x, y, dx: m[k + 1][0] - x, dy: m[k + 1][1] - y, itemId });
         // 集装机沿流向前后各伸进邻格大半格：邻格也不再放别的喷涂机、集装机
@@ -152,30 +155,36 @@ function stackPilers(L, tiles, cap, can, used, name) {
         count.set(itemId, (count.get(itemId) ?? 0) + 1);
         want = false;
         back = -1;
+        c = next;
+        fresh = 0;
       };
       for (let k = 0; k < m.length; k++) {
         const [x, y, z] = m[k];
         if (k >= 1 && k < m.length - 1 && straight(m, k) && can(x, y)) {
-          if (want) {
-            put(k);
-            slots = items / 4;
-          } else {
+          const next = want ? pileOnce(c, cap, fresh) : null;
+          // 格位降不到运力的 1%（上一台之后没放几个新的）：这台没用，不放，等下游放了新的再说
+          if (next && slotsOf(c) - slotsOf(next) > cap / 100) put(k, next);
+          else {
             back = k;
-            backItems = items;
+            backC = c.slice();
+            backFresh = fresh;
           }
         }
         const es = z === 0 ? ev.get(key(x, y)) : undefined;
         if (es) {
-          for (const e of es) if (e > 0) { items += e; slots += e; }
-          for (const e of es) if (e < 0) { items = Math.max(0, items + e); slots = Math.min(slots, items); }
+          for (const e of es) if (e > 0) { c[1] += e; fresh += e; }
+          for (const e of es) if (e < 0) takeItems(c, -e);
         }
-        // 超了运力还没等到能放的格（分拣器一格挨一格）：退回上一台之后最近一格能放的，放在那儿、从那儿重走
+        const slots = slotsOf(c);
+        // 超了运力还没等到能放的格（分拣器一格挨一格）：退回上一台之后最近一格能放的，放在那儿、从那儿重走（那儿放了也没用就不退）
         if (slots > cap + 1e-6 && back >= 0) {
-          k = back;
-          items = backItems;
-          slots = items / 4;
-          put(k);
-          continue;
+          const next = pileOnce(backC, cap, backFresh);
+          if (slotsOf(backC) - slotsOf(next) > cap / 100) {
+            k = back;
+            put(k, next);
+            continue;
+          }
+          back = -1;
         }
         if (slots > peak) peak = slots;
         if (slots > T + 1e-6) want = true;
@@ -224,6 +233,7 @@ export function addAddons(L, { spray = 0, sprayItems = null, sprayTo = null, pil
   }
   const tiles = L.chains.map((ch) => chainTiles(L, ch));
   const sorterCells = new Set(L.sorterList.map((s) => key(s.col, L.segments[s.segId].y)));
+  for (const g of L.labGaps || []) for (const t of g.taps) sorterCells.add(key(g.x, t.y)); // 研究站夹带上侧面分拣器接的格
   const overhead = new Set(); // 头顶有高架的格子（任何层）：集装机不放
   const levelsAt = new Map(); // 每格有带子的层（> 0）：喷涂机两层高，骑在第 z 层时 z+1、z+2 层不能有别的带（走线的保护区也只占这两层）
   for (const t of tiles) for (const [x, y, z] of [...t.main, ...t.extra.flat()]) if (z > 0) {

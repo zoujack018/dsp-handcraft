@@ -20,6 +20,13 @@ export function translateLayout(L, dx, dy) {
   }
   for (const p of L.ports) { p.x += dx; p.y += dy; }
   for (const s of L.sorterList) { s.col += dx; s.cx += dx; }
+  // 研究站夹带（layout/belts.js 的 labGaps）：那一列、带头带尾，侧面分拣器的研究站中心和接的那格
+  for (const g of L.labGaps || []) {
+    g.x += dx;
+    g.y0 += dy;
+    g.y1 += dy;
+    for (const t of g.taps) { t.cx += dx; t.y += dy; }
+  }
   for (const s of L.stations || []) { s.x += dx; s.y += dy; }
   for (const p of L.power?.nodes || []) { p.x += dx; p.y += dy; }
   for (const p of L.powerReserve?.nodes || []) { p.x += dx; p.y += dy; } // 后处理重走先选好的供电设施位（plan/reroute.js）

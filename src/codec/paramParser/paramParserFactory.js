@@ -230,7 +230,7 @@ export const MonitorParamParser = new ParamParser(128, {
     offset: ParamOpt.of(1), // ?
 
     targetCargoAmount: ParamOpt.of(2), // 目标流量(单位：0.1个)
-    periodTicksCount: ParamOpt.of(3), // 监测周期(单位：秒)
+    periodTicksCount: ParamOpt.of(3), // 监测周期(单位：帧，60 帧 1 秒；游戏 MonitorComponent 的 curPeriodTickCount)
     passOperator: ParamOpt.of(4), // 监测条件 -> 0:等于 1:不等于 2:大于等于 3:大于 4:小于等于 5:小于
     passColorId: ParamOpt.of(5), // 满足条件颜色索引 -> 0-255
     failColorId: ParamOpt.of(6), // 不满足条件颜色索引 -> 0-255

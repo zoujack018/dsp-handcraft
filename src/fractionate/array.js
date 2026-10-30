@@ -9,10 +9,14 @@
 //
 // 生成时：按要的重氢产量算塔数 → 挑几个循环（离站最近的先用）→ 每个循环留最靠近站的塔、多余的换成直带 →
 // 删掉没用的循环、站口、电塔 → 压紧（compact.js：删只剩直带的行、列，站往循环那边剪切，删多余电塔、重放电塔，每步查建造盒碰撞）→
-// 裁掉空出来的边 → 比宽还长就转 90°。有宽、长、长宽比上限时每份从 4 个循环往少了试，取第一个放得下的。
+// 裁掉空出来的边。有宽、长、长宽比上限时每份从 4 个循环往少了试，取第一个放得下的。
+// 照原图竖着出（塔距 4 格在南北向）：东西向格子离开赤道会变窄（游戏规则第 26 条），南北向不变。整张转 90° 横着出（orient 'h'）以后
+// 塔距 4 格到了东西向，按游戏的碰撞体（分馏塔建造盒 4.5 m 见方）东西向格宽不到赤道的 89.5% 塔就撞塔；循环两头最外面那条带离塔心只有 2 格，
+// 不到 98.7%（赤道带里约 9° 以外）就撞塔。所以默认不转（用户 2026/10/30 在游戏里贴横着的图：「最边上的传送带无法建造」）。
 import { fromStr, toStr } from '../codec/parser.js';
 import { POWER, powerReach } from '../plan/power.js';
 import { rotateBlueprint } from '../emit/rotate.js';
+import { narrowestEW } from '../gamedata.js';
 import { TEMPLATE } from './template.js';
 import { compact, collisions } from './compact.js';
 
@@ -132,12 +136,15 @@ export function analyzeTemplate(B) {
   return { station, tag, loops, fedBy, preds, untagged };
 }
 
-/** 要 n 座塔：分几份粘贴、每份几座、用哪几个循环、每个循环几座；maxLoops：每份最多几个循环（尺寸上限放不下时往少了试） */
-export function arrayPlan(rate, perTower = PER_TOWER, maxLoops = LOOPS.length) {
+/**
+ * 要 n 座塔：分几份粘贴、每份几座、用哪几个循环、每个循环几座；maxLoops：每份最多几个循环（尺寸上限放不下时往少了试）；
+ * loopCount：每份用几个循环（默认够装下的最少几个；多给的每个循环分得少几座）
+ */
+export function arrayPlan(rate, perTower = PER_TOWER, maxLoops = LOOPS.length, loopCount = null) {
   const towers = Math.max(1, Math.ceil(rate / perTower - 1e-9));
   const copies = Math.ceil(towers / (TOWERS_PER_LOOP * maxLoops));
   const per = Math.ceil(towers / copies);
-  const nLoops = Math.ceil(per / TOWERS_PER_LOOP);
+  const nLoops = Math.min(LOOPS.length, per, Math.max(Math.ceil(per / TOWERS_PER_LOOP), loopCount ?? 0));
   const base = Math.floor(per / nLoops);
   const extra = per % nLoops;
   const loops = LOOPS.slice(0, nLoops).map((l, i) => ({ key: l.key, towers: base + (i < extra ? 1 : 0) }));
@@ -150,12 +157,15 @@ export function arrayPlan(rate, perTower = PER_TOWER, maxLoops = LOOPS.length) {
  * @param {object} [o]
  * @param {number} [o.spray=3] 氢喷什么增产剂：0 不喷，1~3 Mk.I~Mk.III（决定分馏概率和站里存哪种增产剂）
  * @param {number} [o.perTower] 每座塔每分钟出多少重氢（默认 7200 × 概率）
- * @param {'h'|'v'} [o.orient='h'] 'h' 横着出：比宽还长就整张顺时针转 90°（同 emit/rotate.js），站到下边；'v' 照原图竖着
+ * @param {'v'|'h'} [o.orient='v'] 'v' 照原图竖着出，任何纬度都能贴；'h' 横着出：比宽还长就整张顺时针转 90°（同 emit/rotate.js），站到下边，
+ *   只在赤道附近贴得上（见文件头），checkArray 会把离开赤道才撞的报出来
  * @param {number} [o.maxWidth] [o.maxHeight] [o.maxAspect] 出出来的宽、长、长边比短边的上限：每份从 4 个循环往少了试，取第一个放得下的；
  *   都放不下就用 1 个循环的那种、notes 里说一声。plan.limits 记着上限、试过哪几种、被哪条卡住
+ * 每份的塔数要 3 个循环（31~45 塔）时，3 个、4 个循环各排一遍，放得下上限的里面挑面积小的（一样大挑 3 个）：3 个循环空着下半边左组那一角，
+ *   4 个循环每个少几座、列短一截，面积小 7%~21%（2026/10/30 量的 1~60 塔；1、2 个循环只用上半边，没有空角，多用循环都更大）
  * @returns {{str: string, plan: object, buildings: object[], width: number, height: number, tags: Map, notes: string[], rotated: boolean}}
  */
-export function fractionatorArray(rate, { spray = 3, perTower = perTowerOf(spray), title, orient = 'h', maxWidth = null, maxHeight = null, maxAspect = null } = {}) {
+export function fractionatorArray(rate, { spray = 3, perTower = perTowerOf(spray), title, orient = 'v', maxWidth = null, maxHeight = null, maxAspect = null } = {}) {
   const over = (r) => [
     maxWidth != null && r.width > maxWidth && 'width',
     maxHeight != null && r.height > maxHeight && 'height',
@@ -166,9 +176,15 @@ export function fractionatorArray(rate, { spray = 3, perTower = perTowerOf(spray
   for (let k = LOOPS.length; k >= 1; k--) {
     const plan = arrayPlan(rate, perTower, k);
     if (tried.some((t) => t.copies === plan.copies)) continue; // 份数一样就是同一种
-    r = buildArray(plan, { spray, perTower, title, orient });
-    tried.push({ loops: plan.loops.length, copies: plan.copies, per: plan.per, width: r.width, height: r.height, over: over(r) });
-    if (!tried.at(-1).over.length) break;
+    let pick = null;
+    for (const cand of plan.loops.length === LOOPS.length - 1 ? [plan, arrayPlan(rate, perTower, k, LOOPS.length)] : [plan]) {
+      const res = buildArray(cand, { spray, perTower, title, orient });
+      const o = over(res);
+      if (!pick || (pick.o.length && !o.length) || (!pick.o.length === !o.length && res.width * res.height < pick.res.width * pick.res.height)) pick = { res, o };
+    }
+    r = pick.res;
+    tried.push({ loops: r.plan.loops.length, copies: plan.copies, per: plan.per, width: r.width, height: r.height, over: pick.o });
+    if (!pick.o.length) break;
   }
   const p = r.plan;
   const first = tried[0], last = tried.at(-1);
@@ -239,10 +255,12 @@ function buildArray(plan, { spray, perTower, title, orient }) {
   const station = all.find((b) => b.itemId === ST);
   for (const l of LOOPS) if (!keep.has(l.key)) station.parameters.slots[l.slot] = { dir: 0, storageIdx: 0 };
   for (const [half, slot] of Object.entries(SLOT_IN)) if (!halves.has(half)) station.parameters.slots[slot] = { dir: 0, storageIdx: 0 };
-  // 增产剂：站里那一格换成选的等级；不喷就清掉那一格和 5 号口
+  // 增产剂：站里那一格换成选的等级，本地、星际都设成需求（2）；不喷就清掉那一格和 5 号口。
+  // 用户原图这一格是供应（1）：供应格只收带子送进站的和手放的，运输机、运输船不往里送，还会把它送给别的需求站，
+  // 喷涂机就一直空着（2026/10/30 用户报「还不能加增产」）。产线出的蓝图喷涂用的增产剂也是需求（emit/blueprint.js）；上限照原图 8600
   const proIdx = station.parameters.storage.findIndex((x) => x.itemId === PRO);
   if (proIdx >= 0) {
-    if (spray) station.parameters.storage[proIdx] = { ...station.parameters.storage[proIdx], itemId: SPRAY[spray].item };
+    if (spray) station.parameters.storage[proIdx] = { ...station.parameters.storage[proIdx], itemId: SPRAY[spray].item, localRole: 2, remoteRole: 2 };
     else {
       station.parameters.storage[proIdx] = { itemId: 0, localRole: 0, remoteRole: 0, max: 0, lockAmount: 0 };
       station.parameters.slots[SLOT_PRO] = { dir: 0, storageIdx: 0 };
@@ -315,7 +333,7 @@ function buildArray(plan, { spray, perTower, title, orient }) {
   bp.dragBoxSize = { x: x1 - x0 + 1, y: y1 - y0 + 1 };
   bp.cursorOffset = { x: Math.floor(bp.dragBoxSize.x / 2), y: Math.floor(bp.dragBoxSize.y / 2) };
   bp.areas = [{ ...bp.areas[0], size: { ...bp.dragBoxSize } }];
-  // 横着出：比宽还长就整张顺时针转 90°（朝向加 90°，站口、连接不变），站到下边
+  // 横着出（orient 'h'，只适合赤道附近，见文件头）：比宽还长就整张顺时针转 90°（朝向加 90°，站口、连接不变），站到下边
   const rotated = orient === 'h' && bp.dragBoxSize.y > bp.dragBoxSize.x;
   if (rotated) rotateBlueprint(bp);
   const { x: width, y: height } = bp.dragBoxSize;
@@ -335,12 +353,18 @@ function buildArray(plan, { spray, perTower, title, orient }) {
       : '氢从物流站出来过两台自动集装机叠到 4 层；物流站要供氢，收重氢。',
   ];
   if (replaced.length) notes.push(`有 ${replaced.length} 个塔位换成了直带（氢照样流过）。`);
+  if (rotated) notes.push('这张横着放（整张转了 90°），只在赤道附近贴得上：离开赤道东西向格子变窄，循环两头最外面的带子先撞分馏塔，再往外塔和塔也撞。');
   return { str: toStr(bp), bp, plan, buildings: kept, tags, width, height, fracs, notes, spray, rotated };
 }
 
+const NAMES = { [FRAC]: '分馏塔', [PILER]: '自动集装机', [COATER]: '喷涂机', [SPLIT]: '四向分流器', [ST]: '物流站', [TESLA]: '电力感应塔' };
+
 /**
  * 分馏阵列的独立检查：索引和链接、带子不重格、每座分馏塔前后都接着带子、
- * 每条重氢都能流回站、每座用电建筑都在电塔覆盖范围内、电塔连成一张网。
+ * 每条重氢都能流回站、每座用电建筑都在电塔覆盖范围内、电塔连成一张网，
+ * 贴蓝图会不会撞（compact.js 的 collisions：建造盒、带子的球和胶囊、电塔中心距 3.5 m，照游戏贴图的判法取严的一边）：
+ * 赤道上撞、贴到这张图的行数能到的最窄纬度才撞（东西向格宽 narrowestEW，第 41 条）都算错——阵列要在哪个纬度都能贴。
+ * stats.collisions：{ equator 赤道上撞几对, narrow 最窄纬度多撞几对, ew 最窄的东西向格宽 }
  */
 export function checkArray(str) {
   const bp = fromStr(str.trim());
@@ -402,7 +426,7 @@ export function checkArray(str) {
   const towers = B.filter((b) => b.itemId === TESLA);
   const need = B.filter((b) => [FRAC, PILER, COATER, SPLIT, ST].includes(b.itemId));
   const d2 = (a, b) => (R(a).x - R(b).x) ** 2 + (R(a).y - R(b).y) ** 2;
-  for (const b of need) if (!towers.some((t) => d2(t, b) <= reach.cover ** 2)) err(`建筑 ${b.index}（${{ [FRAC]: '分馏塔', [PILER]: '自动集装机', [COATER]: '喷涂机', [SPLIT]: '四向分流器', [ST]: '物流站' }[b.itemId]}）不在供电范围内`);
+  for (const b of need) if (!towers.some((t) => d2(t, b) <= reach.cover ** 2)) err(`建筑 ${b.index}（${NAMES[b.itemId]}）不在供电范围内`);
   if (towers.length) {
     const seenT = new Set([towers[0].index]);
     const st = [towers[0]];
@@ -412,24 +436,32 @@ export function checkArray(str) {
     }
     if (seenT.size < towers.length) warnings.push('电力感应塔没有连成一张网');
   }
+  // 碰撞：赤道上（东西向格宽 1）一遍，这张图能贴到的最窄纬度一遍
+  const ew = narrowestEW(Hh);
+  const what = (b) => {
+    const o = b.localOffset[0];
+    return `${isBelt(b) ? '传送带' : NAMES[b.itemId] ?? b.itemId} ${b.index}（${+o.x.toFixed(2)},${+o.y.toFixed(2)}${isBelt(b) && o.z > 0.25 ? `，高 ${+o.z.toFixed(2)} 层` : ''}）`;
+  };
+  const pair = ([i, j]) => (B[i].itemId === TESLA && B[j].itemId === TESLA ? `${what(B[i])}和${what(B[j])}中心不到 3.5 m` : `${what(B[i])}和${what(B[j])}相撞`);
+  const atEquator = collisions(B, 1);
+  const seenPair = new Set(atEquator.map(([i, j]) => `${i},${j}`));
+  const offEquator = collisions(B, ew).filter(([i, j]) => !seenPair.has(`${i},${j}`));
+  for (const p of atEquator) err(`${pair(p)}（赤道上就撞）`);
+  for (const p of offEquator) err(`${pair(p)}（贴到离赤道远的地方会撞：东西向格子最窄到赤道的 ${(ew * 100).toFixed(1)}%）`);
   return {
     ok: !errors.length,
     errors,
     warnings,
-    stats: { width: W, height: Hh, buildings: B.length, fractionators: B.filter((b) => b.itemId === FRAC).length, belts: B.filter(isBelt).length, power: towers.length },
+    stats: { width: W, height: Hh, buildings: B.length, fractionators: B.filter((b) => b.itemId === FRAC).length, belts: B.filter(isBelt).length, power: towers.length, collisions: { equator: atEquator.length, narrow: offEquator.length, ew } },
   };
 }
 
 /**
- * 建造盒碰撞扫一遍（compact.js 的规则，东西向格宽按 0.85）：转过 90° 的图倒回转之前的坐标、朝向再扫。
- * 转完原来的南北向成了东西向：塔距 4 格在东西向按 0.85 只有 4.27 m，比分馏塔的 4.5 m 窄，连原图转过来都撞（推断；东西向格宽 0.9 以上的赤道附近才干净）。
- * 返回撞的对子 [index, index]
+ * 碰撞扫一遍（compact.js 的 collisions，同 checkArray）：照出出来的蓝图本身（转过 90° 的就是转完的，x 东西向），
+ * ew 东西向格宽是赤道的几分之几，默认这张图的行数能贴到的最窄纬度（narrowestEW）。返回撞的对子 [index, index]
  */
-export function arrayCollisions(result) {
-  const B = !result.rotated
-    ? result.buildings
-    : result.buildings.map((b) => ({ ...b, localOffset: [{ x: result.height - 1 - b.localOffset[0].y, y: b.localOffset[0].x, z: b.localOffset[0].z }], yaw: [b.yaw[0] - 90] }));
-  return collisions(B);
+export function arrayCollisions(result, ew = narrowestEW(result.height)) {
+  return collisions(result.buildings, ew);
 }
 
 /**

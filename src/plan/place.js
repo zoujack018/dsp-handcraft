@@ -26,13 +26,51 @@ export function rng(seed) {
 
 const clone = (rows) => rows.map((r) => r.slice());
 const compact = (rows) => rows.filter((r) => r.length);
-/** 一个组最多拆成几块：块越多，物品带要经过的通道越多。限宽时大组放不进一行，按宽度放开 */
-const maxBlocks = (graph, gid, usable) => {
+/**
+ * 一个组最多拆成几块：块越多，物品带要经过的通道越多。限宽时大组放不进一行，按宽度放开；
+ * 给了 caps（每块最多几台，typeset.js 的 blockCaps）时至少放到 ⌈台数 ÷ 每块最多几台⌉ + 1，一块的带子运不过来的大组也切得开
+ */
+const maxBlocks = (graph, gid, usable, caps = null) => {
   const g = graph.byId.get(gid);
-  return usable ? Math.max(3, Math.ceil(g.width / usable) + 1) : 3;
+  const m = usable ? Math.max(3, Math.ceil(g.width / usable) + 1) : 3;
+  const cap = caps?.get(gid);
+  return cap ? Math.max(m, Math.ceil(g.count / cap) + 1) : m;
 };
 
 const wholeBlocks = (graph) => Object.fromEntries(graph.groups.map((g) => [g.id, { gid: g.id, n: g.count }]));
+
+/**
+ * 初始解按运力切块：台数超过 caps（每块最多几台）的块就地切成 ⌈台数 ÷ 最多几台⌉ 块、台数尽量平均，在同一行里挨着放
+ * （同一个通道里原料入口就能按位置在块与块之间切开，layout/belts.js）。新块 ID 照 wrapRows 的写法（组ID~w序号），跳过已有的；
+ * 空列给切开后最左那块。没有超的块时原样返回
+ */
+function splitOver(st, caps) {
+  if (!caps) return st;
+  const over = (b) => b.n > caps.get(b.gid);
+  if (!Object.values(st.blocks).some(over)) return st;
+  const used = new Set(Object.keys(st.blocks));
+  const pieces = new Map();
+  const blocks = {};
+  for (const [bid, b] of Object.entries(st.blocks)) {
+    if (!over(b)) {
+      blocks[bid] = b;
+      continue;
+    }
+    const k = Math.ceil(b.n / caps.get(b.gid));
+    const ids = [];
+    for (let i = 0, p = 0; i < k; i++) {
+      while (used.has(`${b.gid}~w${p}`)) p++;
+      const id = `${b.gid}~w${p}`;
+      used.add(id);
+      blocks[id] = { gid: b.gid, n: Math.floor(b.n / k) + (i < b.n % k ? 1 : 0) };
+      ids.push(id);
+    }
+    pieces.set(bid, ids);
+  }
+  const pads = {};
+  for (const [bid, v] of Object.entries(st.pads)) pads[pieces.get(bid)?.[0] ?? bid] = v;
+  return { ...st, rows: st.rows.map((r) => r.flatMap((bid) => pieces.get(bid) ?? [bid])), blocks, pads };
+}
 
 /** 初始解：按最长路径分层，一层一行，整组不拆 */
 export function layeredRows(graph) {
@@ -86,11 +124,11 @@ export function wrapRows(graph, width) {
   return { rows: compact(rows), blocks, pads };
 }
 
-/** 一组候选初始解：按层排布 + 几种目标宽度的折行排布。usable 是限宽时一行里能放工厂的列数 */
-export function initialStates(graph, usable = null) {
+/** 一组候选初始解：按层排布 + 几种目标宽度的折行排布。usable 是限宽时一行里能放工厂的列数；给了 caps 时超运力的块切开（splitOver） */
+export function initialStates(graph, usable = null, caps = null) {
   const total = graph.groups.reduce((a, g) => a + g.width, 0);
   const widest = Math.max(...graph.groups.map((g) => g.pitch * 2 + g.trailing));
-  const states = usable ? [] : [{ rows: layeredRows(graph), blocks: wholeBlocks(graph), pads: {} }];
+  const states = usable ? [] : [splitOver({ rows: layeredRows(graph), blocks: wholeBlocks(graph), pads: {} }, caps)];
   const seen = new Set();
   const r0 = usable ? Math.ceil(total / usable) : 1;
   for (let r = r0; r <= r0 + 7; r++) {
@@ -99,7 +137,7 @@ export function initialStates(graph, usable = null) {
       if (usable) w = Math.min(w, usable);
       if (seen.has(w)) continue;
       seen.add(w);
-      states.push(wrapRows(graph, w));
+      states.push(splitOver(wrapRows(graph, w), caps));
     }
   }
   return states;
@@ -179,8 +217,9 @@ function removeBlock(st, bid) {
 /**
  * hot：当前布局里和惩罚有关的块（route() 的 hot）。有惩罚时一半的动作挑它们下手，
  * 搜索就把力气花在出问题的地方，而不是在已经排好的块上随机游走。
+ * caps：每块最多几台（typeset.js 的 blockCaps），拆块上限按它放开（maxBlocks）；capMoves 时合并、挪台也不让超（routeOptions.capMoves，见 prepare）
  */
-export function neighbor(graph, st, rand, usable = null, streets = false, hot = null) {
+export function neighbor(graph, st, rand, usable = null, streets = false, hot = null, caps = null, capMoves = true) {
   let u = rand();
   const all = st.rows.flat();
   const hotIn = (list) => (hot?.length ? list.filter((b) => hot.includes(b)) : []);
@@ -213,7 +252,7 @@ export function neighbor(graph, st, rand, usable = null, streets = false, hot = 
   if (u < 0.26) {
     // 拆块：切下一部分，优先放到相邻行（两行夹着同一条通道，可以共用一条带）
     const byG = blocksOfGroup(st);
-    const cand = all.filter((bid) => st.blocks[bid].n >= 2 && byG.get(st.blocks[bid].gid).length < maxBlocks(graph, st.blocks[bid].gid, usable));
+    const cand = all.filter((bid) => st.blocks[bid].n >= 2 && byG.get(st.blocks[bid].gid).length < maxBlocks(graph, st.blocks[bid].gid, usable, caps));
     if (!cand.length) return { ...st, rows: neighborRows(st.rows, rand, hot) };
     const bid = pickFrom(cand);
     const b = st.blocks[bid];
@@ -243,6 +282,8 @@ export function neighbor(graph, st, rand, usable = null, streets = false, hot = 
     if (j >= i) j++;
     const keepId = list[i];
     const gone = list[j];
+    // 合起来超运力（caps）就不合，换成换行：这一块的料一条带运不过来，注定不可行；大线上合并省下的面积常比超运力的罚分多，退火会收下（2026/10/30）
+    if (caps && capMoves && st.blocks[keepId].n + st.blocks[gone].n > caps.get(st.blocks[keepId].gid)) return { ...st, rows: neighborRows(st.rows, rand, hot) };
     const next = removeBlock(st, gone);
     next.blocks[keepId] = { ...st.blocks[keepId], n: st.blocks[keepId].n + st.blocks[gone].n };
     return next;
@@ -257,6 +298,7 @@ export function neighbor(graph, st, rand, usable = null, streets = false, hot = 
     const a = from[Math.floor(rand() * from.length)];
     const others = list.filter((x) => x !== a);
     const b = others[Math.floor(rand() * others.length)];
+    if (caps && capMoves && st.blocks[b].n + 1 > caps.get(st.blocks[b].gid)) return { ...st, rows: neighborRows(st.rows, rand, hot) }; // 同上：挪过去就超运力的不挪
     const blocks = { ...st.blocks, [a]: { ...st.blocks[a], n: st.blocks[a].n - 1 }, [b]: { ...st.blocks[b], n: st.blocks[b].n + 1 } };
     return { ...st, blocks };
   }
@@ -318,7 +360,7 @@ let candsMemo = null;
  * snapshotMs / onSnapshot：实时预览的快照钩子（网页「观摩退火」用）。每隔约 snapshotMs 毫秒把当前状态
  * 报给 onSnapshot，钩子只读：不碰随机数、不多算 evalState、不改任何搜索状态，开不开结果逐字一致。
  */
-function prepare(graph, { iterations = 5000, restarts = 4, seed = 7, routeOptions = {}, initial, candidateLimit = 12, snapshotMs = 0, onSnapshot = null, warm = null } = {}) {
+function prepare(graph, { iterations = 5000, restarts = 4, seed = 7, routeOptions = {}, initial, candidateLimit = 12, snapshotMs = 0, onSnapshot = null, warm = null, masterWarm = null } = {}) {
   const evalState = (st) => route(graph, st.rows, routeOptions, st.pads, st.blocks, st.streets || []);
   // 辅路（预留整列空地）默认不开：三个种子的对比里，小的物流站布局能省 1% 面积、少四成叠层，
   // 但大产线在同样的迭代数下面积多 4%~8%（多出来的邻域动作把搜索搅散了）。需要时 routeOptions.streets = true。
@@ -329,6 +371,9 @@ function prepare(graph, { iterations = 5000, restarts = 4, seed = 7, routeOption
   const key = exactKey([routeOptions, initial ?? null]);
   // 排版内核：每组一块最多几台（运力断块，typeset.js 的 blockCaps）；边缘放站时估要几座站，排版留站位
   const caps = routeOptions.core === 'typeset' ? blockCaps(graph, routeOptions) : null;
+  // 主干内核也按运力切块（同一个 blockCaps；开自动集装机时产物、中间品按集装后的运力，同 score.js 的超运力）：
+  // 拆块上限放到切得开（maxBlocks），初始解里超运力的块就地切开（splitOver）
+  const masterCaps = routeOptions.core === 'typeset' ? null : blockCaps(graph, routeOptions, true);
   const stations = routeOptions.core === 'typeset' && routeOptions.stationHoles ? stationEstimate(graph, routeOptions) : 0;
   const gapsOn = routeOptions.core === 'typeset' && routeOptions.power === 'tesla'; // 供电缝（typeset.js 的 gapChunk）
   // 目标长宽比（排版内核：行宽收到 √(长宽比 × 6.5 × 总宽) 附近，见 typeset.js 的 widthRange）
@@ -337,8 +382,8 @@ function prepare(graph, { iterations = 5000, restarts = 4, seed = 7, routeOption
   if (key !== null && candsMemo?.graph === graph && candsMemo.key === key) cands = candsMemo.cands;
   else {
     // routeOptions.core = 'typeset'：排版内核（typeset.js，分支 explore/typeset），状态是一条组的队和行宽，布局由队排版出来
-    const states = routeOptions.core === 'typeset' ? typesetStates(graph, usable, caps, stations, gapsOn, aspect) : initialStates(graph, usable);
-    cands = (initial ? [{ rows: initial, blocks: wholeBlocks(graph), pads: {} }] : states)
+    const states = routeOptions.core === 'typeset' ? typesetStates(graph, usable, caps, stations, gapsOn, aspect) : initialStates(graph, usable, masterCaps);
+    cands = (initial ? [splitOver({ rows: initial, blocks: wholeBlocks(graph), pads: {} }, masterCaps)] : states)
       .map((st) => {
         const L = evalState(st);
         return { st, cost: L.cost, feasible: L.feasible, L };
@@ -353,9 +398,16 @@ function prepare(graph, { iterations = 5000, restarts = 4, seed = 7, routeOption
   if (warm && routeOptions.core === 'typeset') {
     const st = { seq: warm.seq, W: warm.W, ...(warm.bays ? { bays: warm.bays } : {}), ...(warm.gaps ? { gaps: warm.gaps } : {}), ...typeset(graph, warm.seq, warm.W, caps, warm.bays, warm.gaps) };
     warmCand = { st, L: evalState(st) };
+  } else if (masterWarm && routeOptions.core !== 'typeset') {
+    // 主干内核热启动（plan/index.js 的 planCore：内核 auto 换主干内核时，排版内核最好那张的行、块、空列）：原样当起点，偶数轮从它出发，同上。
+    // 块 ID 是 组ID、组ID#序号（分身单元）、…~t段号，route() 和主干内核的邻域只读块的 gid、n，不看 ID 长什么样
+    const st = { rows: masterWarm.rows, blocks: masterWarm.blocks, pads: masterWarm.pads };
+    warmCand = { st, L: evalState(st) };
   }
   // 邻域：排版内核改队的顺序和行宽（typesetNeighbor），否则照旧搬块
-  const step = routeOptions.core === 'typeset' ? (st, rand, hot, progress) => typesetNeighbor(graph, st, rand, hot, usable, caps, stations, gapsOn, aspect, progress) : (st, rand, hot) => neighbor(graph, st, rand, usable, useStreets, hot);
+  // 合并、挪台不让超运力（routeOptions.capMoves，默认限）：auto 热启动那次 planFrame 关掉（plan/index.js）
+  const capMoves = routeOptions.capMoves !== false;
+  const step = routeOptions.core === 'typeset' ? (st, rand, hot, progress) => typesetNeighbor(graph, st, rand, hot, usable, caps, stations, gapsOn, aspect, progress) : (st, rand, hot) => neighbor(graph, st, rand, usable, useStreets, hot, masterCaps, capMoves);
   return { graph, routeOptions, evalState, useStreets, usable, cands, step, iterations, restarts, seed, candidateLimit, snapshotMs, onSnapshot, warmCand, caps, gapsOn, aspect };
 }
 
@@ -503,7 +555,7 @@ function makeArchive(limit) {
 function runRound(P, s, roundEnd, archive, best) {
   const { graph, routeOptions, evalState, cands, step, iterations, seed, snapshotMs, onSnapshot, warmCand } = P;
   const rand = rng(seed + s * 1013);
-  // 接力：偶数轮都从上一段最好那张出发，起始温度低十倍，是在它附近细修；各轮靠各自的随机数分开。
+  // 接力：偶数轮都从上一段最好那张（主干内核热启动时是排版内核最好那张）出发，起始温度低十倍，是在它附近细修；各轮靠各自的随机数分开。
   // （以前第 2、4…轮先随机挪 1~5 步再退：大线挪一步整张重新断行，一条惩罚的图挪完常常变成几十条，低温退不回来）
   const relay = warmCand && s % 2 === 0;
   let st = relay ? warmCand.st : cands[s % cands.length].st;

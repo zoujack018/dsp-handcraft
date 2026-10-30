@@ -78,9 +78,21 @@ export function validate(graph, layout) {
     return Infinity;
   };
   const covers = (p, seg) => p.centers.every((c) => seg.a <= c + (p.g.tap ?? 0) + 1 && seg.b >= c + (p.g.tap ?? 0) - 1);
+  // 研究站夹带（layout/belts.js 的 labGaps）：产物从侧面出，每台研究站要有一根侧面分拣器接在它那条夹带的地面格上
+  const gapTaps = new Map(); // "块#第几台" -> 夹带
+  for (const g of layout.labGaps || []) {
+    for (const t of g.taps) {
+      gapTaps.set(`${t.bid}#${t.building}`, g);
+      if (t.y < g.y0 || t.y > g.y1) errors.push(`${layout.pos.get(t.bid).g.item}#${t.building} 的侧面分拣器接的 (${g.x},${t.y}) 不在夹带上`);
+    }
+  }
   for (const p of layout.pos.values()) {
     const need = [...p.g.inputs.map((id) => ({ id, io: 'in' })), ...(p.g.outputs ?? [{ itemId: p.g.itemId }]).map((o) => ({ id: o.itemId, io: 'out' }))];
     for (const n of need) {
+      if (n.io === 'out' && p.g.sideItem === n.id) {
+        for (let i = 0; i < p.n; i++) if (!gapTaps.has(`${p.bid}#${i}`)) errors.push(`${p.g.item}（块 ${p.bid}）第 ${i} 台的「${graph.items.get(n.id).name}」没有接上夹带`);
+        continue;
+      }
       const segs = layout.segments.filter((s) => s.itemId === n.id && reach(p, s) <= 3 && covers(p, s));
       if (!segs.length) errors.push(`${p.g.item}（块 ${p.bid}）的${n.io === 'in' ? '输入' : '输出'}「${graph.items.get(n.id).name}」没有可接的带`);
     }
@@ -122,7 +134,7 @@ export function validate(graph, layout) {
         for (let dy = -h; dy <= h; dy++) {
           const x = n.x + dx;
           const y = n.y + dy;
-          if (occ.has(`${x},${y}`)) errors.push(`${P.name} (${n.x},${n.y}) 压在 (${x},${y}) 的建筑或带子上`);
+          if (occ.has(x, y)) errors.push(`${P.name} (${n.x},${n.y}) 压在 (${x},${y}) 的建筑或带子上`);
           const e = P.extend;
           if (x < -e.left || y < -e.bottom || x >= layout.width - e.left || y >= layout.height - e.bottom) errors.push(`${P.name} (${n.x},${n.y}) 出界`);
         }

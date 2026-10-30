@@ -13,7 +13,7 @@
 // 往右挪，挪到够 3 格加上两边工厂要多隔的格数（gamedata.js 的 substationPad：化工厂左边 1、对撞机左 2 右 1、叠层研究站各 1）；
 // 只用比最宽那行短的行，不把图撑宽（撑宽常常比另起一行还贵）。挑覆盖得多、挪得少、离它近的。
 // 留好的空位这一行算「有工厂」，竖着走的高架带不从这里穿（layout/positions.js）；挖出来的那些供电时必放（power.js）。
-import { substationPad, SUBSTATION_GAP } from '../../gamedata.js';
+import { substationPad, powerApart } from '../../gamedata.js';
 import { powerReach } from '../power.js';
 import { STATION_COLS } from './shared.js';
 
@@ -50,7 +50,7 @@ export function powerHoles(L, opt) {
   const plan = [];
   const used = L.rows.map(() => new Set());
   const covers = (s, t, dx = 0) => (t.x + dx - s.x) ** 2 + (t.y - L.rowCy[s.row]) ** 2 <= r2;
-  const near = (h, x) => plan.some((s) => (s.x - x) ** 2 + (L.rowCy[s.row] - L.rowCy[h]) ** 2 < SUBSTATION_GAP ** 2);
+  const near = (h, x) => plan.some((s) => !powerApart(2212, 2212, s.x - x, L.rowCy[s.row] - L.rowCy[h])); // 两座配电站要南北隔 6 或东西隔 7（gamedata.js）
   for (;;) {
     let t = null;
     for (const q of T) if (!q.covered && !q.skip && (!t || q.x < t.x)) t = q;

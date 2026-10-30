@@ -52,6 +52,15 @@ export function line(from, to) {
   return out;
 }
 
+/**
+ * 研究站夹带（layout/belts.js 的 labGaps）的 'out' 高架接着的那一头：带尾那格（原地升起那格）和链在那里往哪流（往北）。
+ * 接站、接仓、接发电厂时寻路的终点就是它（普通段尾是 (exitX, y)、沿 dout 流）。返回 { x, y, dx, dy }
+ */
+export function gapEnd(L, leg) {
+  const g = L.labGaps[leg.gap];
+  return { x: g.x, y: g.y1, dx: 0, dy: 1 };
+}
+
 /** 侧边总线排到左边（route.js 的 busSide 'auto'）时最左那一列，就是左边总线口那一列（layout/ports.js）；没有排到左边的总线时 0 */
 export function busMinX(ports) {
   let m = 0;

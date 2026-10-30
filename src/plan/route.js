@@ -29,9 +29,13 @@ export { STATION_SIZE, TRUNK, STATION_COLS, STATION_SLOTS } from './layout/share
 export const DEFAULTS = {
   belt: 3, // 传送带等级 1/2/3
   stack: 1, // 带上堆叠层数（保守按 1 计算运力）
-  // 自动集装机（用户 2026/10/26）：产物（不是原料）一种超过单条带的运力时，不拆成几条带，一条带最多运单条带的 4 倍；
-  // 带上每放约 1700/分的单个物品，后处理就在下游放一台自动集装机叠成 4 层（plan/addons.js 的 stackPilers）。关掉时照旧按单条带拆带
+  // 自动集装机（用户 2026/10/26）：产物（不是原料）一种超过单条带的运力时，不拆成几条带，一条带最多运 pileModel 定的运力；
+  // 带上每放约 1700/分的单个物品，后处理就在下游放一台自动集装机（plan/addons.js 的 stackPilers）。关掉时照旧按单条带拆带
   pilers: true,
+  // 开集装机时产物带一条按多少运力排（layout/belts.js 的 pileCap，plan/piling.js 的 pileCapOf）：null 照旧按一台叠满 4 层算的单条带 4 倍（7200）；
+  // 一台只把相邻两个合成一个（用户 2026/10/30），7200 要很多台才接近。写正整数 k 按一条带最多放 k 台集装机够得着的算
+  // （料全先放后取，每台放在格位到 1700 处、之后补单个；极速带 k = 1~7：2626、3451、4119、4641、5071、5419、5700）。试验开关，量完考卷再定默认
+  pileModel: null,
   maxTracks: 3, // 分拣器最长 3 格 => 每个通道最多 3 条地面轨道
   // 第 4 条轨：一个通道 4 条地面轨道，条件是每根分拣器都够得着（下方那行只接第 0~2 条、上方那行只接第 1~3 条，layout/tracks.js 挑排法）。
   // 默认关；喷增产剂时 plan/index.js 打开（2026/10/08，待办 3 第二步，先只在喷涂线上量）
@@ -199,8 +203,8 @@ function layout(graph, rows, options, opt, pads, blocks, streets, holePlan) {
     // layout/positions.js
     addLoad: undefined, atPort: undefined, bestColumn: undefined, blocksOf: undefined, corridor: undefined, entryCol: undefined, exitCol: undefined, extraBottom: undefined, extraTop: undefined,
     itemBids: undefined, pos: undefined, powerHoles: undefined, rowAbove: undefined, rowBelow: undefined, stationX: undefined, streetX: undefined, xL: undefined, xR: undefined,
-    // layout/belts.js
-    beltCap: undefined, chains: undefined, legs: undefined, pileCap: undefined, rawCap: undefined, segments: undefined, sides: undefined,
+    // layout/belts.js（labGaps：研究站夹带，只有宇宙矩阵那种组才有）
+    beltCap: undefined, chains: undefined, legs: undefined, pileCap: undefined, rawCap: undefined, segments: undefined, sides: undefined, labGaps: undefined,
     // layout/tracks.js、layout/ports.js（height 两步都写）
     channels: undefined, height: undefined, rowCy: undefined, ports: undefined, stations: undefined,
     // layout/elevation.js

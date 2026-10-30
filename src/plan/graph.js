@@ -4,6 +4,18 @@ import { factory, recipe as recipeOf, item as itemOf, BYPRODUCT, realItem, plann
 const GROUP_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 /** 工厂上下两侧里有槽位的列数少的那一侧（一般 3，对撞机 2） */
 const slotCols = (f) => Math.min(Object.keys(f.slots?.bottom ?? {}).length, Object.keys(f.slots?.top ?? {}).length) || 3;
+/**
+ * 研究站一叠要接的物品（原料 + 产物）比上下两侧的分拣器位多（宇宙矩阵 6 进 1 出，上下各 3 个位；用户 2026/10/30：「把传送带从两个研究站之间插进去」）：
+ * 产物改从左右两侧出，返回产物的编号，否则 null。只认一种产物、产物只送成品出口的（宇宙矩阵就是）。这种组每台右边多留一列（间距 6），
+ * 两台中间那一列夹一条带（layout/belts.js 的 labGaps），上下两侧只接原料
+ */
+function sideItemOf(f, r, u, flows) {
+  if (f.kind !== 'lab' || u.store || r.outputs.length !== 1) return null;
+  const n = Object.keys(f.slots.bottom).length + Object.keys(f.slots.top).length;
+  if (r.inputs.length + r.outputs.length <= n) return null;
+  const outs = flows.filter((fl) => fl.from === u.id && !fl.byproduct);
+  return outs.length && outs.every((fl) => fl.to === 'OUT' && fl.itemId === u.itemId) ? u.itemId : null;
+}
 const ITEM_LETTERS = 'abcdefghijklmnopqrstuvwxyz0123456789';
 
 /**
@@ -34,6 +46,8 @@ export function buildGraph(calc) {
     // 产物：主产物 + 副产物（副产物在生产图里的编号是 BYPRODUCT + 真实编号，单独一条带）
     // 和主产物一起供产线的（u.shared，同一道配方被几种物品同时选中，calculator.js）也是正经产物
     const outputs = r.outputs.map((o) => ({ itemId: o.id === u.itemId || u.shared?.includes(o.id) ? o.id : BYPRODUCT + o.id, perFactory: rateOf(o) }));
+    const sideItem = sideItemOf(f, r, u, calc.flows);
+    const pitch = sideItem == null ? f.pitch : f.pitch + 1; // 夹带的组每台右边多一列（中心隔 6）
     return {
       id: u.id,
       letter: GROUP_LETTERS[i] ?? `G${i}`,
@@ -44,7 +58,7 @@ export function buildGraph(calc) {
       factoryId: f.id,
       factory: f.name,
       kind: f.kind,
-      pitch: f.pitch,
+      pitch,
       center: f.center,
       trailing: f.trailing,
       bodyWidth: f.bodyWidth,
@@ -62,11 +76,12 @@ export function buildGraph(calc) {
       ...(f.latitude ? { latitude: f.latitude } : null), // 化工厂、量子化工厂、精炼厂按哪套间距排：high 加宽、equator 赤道压缩
       levels,
       levelZ: f.levelZ ?? 0,
-      // 一侧可用的分拣器列（中心 −1/0/+1）折算成和间距可比的数；对撞机每侧只有 2 列有槽位，就按 2 算
-      colCap: slotCols(f) < 3 || st ? slotCols(f) : Math.min(f.pitch, 4),
+      // 一侧可用的分拣器列（中心 −1/0/+1）折算成和间距可比的数；对撞机每侧只有 2 列有槽位，就按 2 算；夹带的研究站多出来那列不放分拣器，按 3
+      colCap: slotCols(f) < 3 || st || sideItem != null ? slotCols(f) : Math.min(f.pitch, 4),
       ...(f.slots && !Object.keys(f.slots.top ?? {}).length ? { noTop: true } : null), // 上侧没有口（精炼厂）：只挂下面那条通道
+      ...(sideItem != null ? { sideItem } : null), // 产物从左右两侧出、走两台中间的夹带（见 sideItemOf）
       count: u.count,
-      width: u.count * f.pitch + f.trailing,
+      width: u.count * pitch + f.trailing,
       perFactory,
       outputs,
       crafts: st ? null : (60 * f.speed * speedMul * levels) / r.time, // 每台（一叠）每分钟跑几次配方：页面上工厂小窗算原料用量

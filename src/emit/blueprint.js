@@ -63,6 +63,12 @@ export function chainTiles(layout, chain) {
   let inStation = null; // 原料从物流站的哪个口出来：{k, slot}
   let outStation = null; // 成品进物流站的哪个口
   for (const part of chain.parts) {
+    if (part.gap != null) {
+      // 研究站夹带（plan/layout/belts.js 的 labGaps）：两台研究站中间那一列，从带头往北到带尾（原地升起那格）
+      const g = layout.labGaps[part.gap];
+      for (let y = g.y0; y <= g.y1; y++) main.push([g.x, y, 0]);
+      continue;
+    }
     if (part.leg != null) {
       const l = layout.legs[part.leg];
       if (l.kind === 'in') {
@@ -487,6 +493,33 @@ export function emitBlueprint(graph, layout, opt = {}) {
     so.yaw = up ? [0, 0] : [180, 180];
     so.parameters = { length: s.length };
     add(so);
+  }
+  // 研究站夹带的侧面分拣器（plan/layout/belts.js 的 labGaps）：横着、长 1，从研究站左右两侧的槽位往夹带那一列放产物，
+  // 整根对齐槽位的 y，带子那头在夹带那一列（照用户 2026/10/04 的参考蓝图 test/fixtures/ref-lab-collider.bp.txt）
+  for (const g of layout.labGaps || []) {
+    for (const t of g.taps) {
+      const p = layout.pos.get(t.bid);
+      const cy = layout.rowCy[p.row];
+      const factoryB = factoryOf.get(`${t.bid}#${t.building}`);
+      const beltB = beltAt.get(key(g.x, t.y, 0));
+      if (!beltB) {
+        issues.push(`${p.g.item}#${t.building} 的侧面分拣器在 (${g.x},${t.y}) 找不到传送带，已略过`);
+        continue;
+      }
+      const [dx, dy] = p.g.slotPos[t.slot];
+      const so = fresh(sorterId);
+      const edgePt = { x: t.cx + dx + ox, y: cy + dy + oy, z: 0 };
+      const beltPt = { x: g.x + ox, y: cy + dy + oy, z: 0 };
+      so.localOffset = [edgePt, beltPt];
+      so.inputObjIdx = factoryB.index;
+      so.inputFromSlot = t.slot;
+      so.outputObjIdx = beltB.index;
+      so.outputToSlot = -1;
+      so.filterId = realItem(g.itemId);
+      so.yaw = beltPt.x > edgePt.x ? [90, 90] : [270, 270];
+      so.parameters = { length: 1 };
+      add(so);
+    }
   }
 
   // ---------- 箱子供货：储物仓和进料带之间的分拣器（原料从仓口放上带、成品从带上取进仓口），长 1，照用户的蓝图 ----------

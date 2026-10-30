@@ -303,9 +303,20 @@ export function drawingSvg(model, floors, { level = 0, focus = '', selected = ''
   if (!mini && (all || level === 0) && sorters) for (const so of model.sorters) {
     // 分拣器（机械臂的平面符号）：工厂一端一个空心转轴圈，一根臂伸到所接那格带子的中心，那里一个实心圆点是爪（压在带子上）；
     // 臂中间一个开口箭头指向搬运方向（取料朝工厂，出料朝带子）。平时浅色线，选中某个物品时接它的分拣器变成它的颜色
-    const x = X(so.x), yf = Y(buildings ? pivotY(so) : so.y0), yb = Y(so.y1);
     const on = focus && String(so.itemId) === focus;
     const c = on ? routeColor(model, so.itemId) : dim(so.itemId) ? DIM : ARM;
+    if (so.x1 != null) {
+      // 横着的（研究站夹带的侧面分拣器，x1 是带子那一列）：转轴圈画在工厂轮廓的左边或右边上，臂横着伸到带子那格
+      const b = buildings ? boxes.find((q) => so.x >= q.x0 - 0.5 && so.x <= q.x1 + 0.5 && so.y0 >= q.y0 - 0.01 && so.y0 <= q.y1 + 0.01) : null;
+      const xf = X(b ? (so.x1 > so.x ? b.x1 : b.x0) : so.x), xb = X(so.x1), y = Y(so.y0);
+      const d = Math.sign(xb - xf) || 1;
+      const k = so.io === 'out' ? d : -d; // 箭头朝搬的方向
+      const mid = xb - d * 0.5;
+      const arrow = Math.abs(xb - xf) > 0.62 ? `<path d="M${F3(mid - 0.08 * k)} ${F3(y - 0.13)}L${F3(mid + 0.06 * k)} ${F3(y)}L${F3(mid - 0.08 * k)} ${F3(y + 0.13)}" fill="none" stroke="${c}" stroke-width="${THIN * 1.4}"/>` : '';
+      sorterParts.push(`<g ${attrs(so.itemId)}>${seg(xf + d * 0.12, y, xb, y, c, 0.06)}${ring(xf, y, 0.12, c, MED, PAPER)}<circle cx="${F3(xb)}" cy="${F3(y)}" r="0.11" fill="${c}"/>${arrow}</g>`);
+      continue;
+    }
+    const x = X(so.x), yf = Y(buildings ? pivotY(so) : so.y0), yb = Y(so.y1);
     const d = Math.sign(yb - yf) || 1;
     const from = so.io === 'out' ? yf : yb, to = so.io === 'out' ? yb : yf;
     const k = Math.sign(to - from) || 1;

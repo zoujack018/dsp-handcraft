@@ -3,6 +3,8 @@ import { blueprintText, blueprintSize, spaceStats } from '../../src/metrics/spac
 import { calculate } from '../../src/calc/calculator.js';
 import { planLine, planLineAsync, planSteps } from '../../src/plan/index.js';
 import { SORTER_SPEED } from '../../src/plan/sorters.js';
+import { pileCapOf } from '../../src/plan/piling.js';
+import { DEFAULTS as ROUTE_DEFAULTS } from '../../src/plan/route.js';
 import { buildGraph } from '../../src/plan/graph.js';
 import { powerDemand, powerText, fmtWatts, generatorsFor, IDLE_W, PILER_W, PILER_IDLE_W, COATER_W, COATER_IDLE_W, STATION_IDLE_W, STATION_CHARGE_W } from '../../src/metrics/energy.js';
 import { runTask } from '../../src/plan/tasks.js';
@@ -15,6 +17,7 @@ import { renderModel, groupLabels } from './model.js';
 import { autoWatcher, previewShapeOk } from './autowatch.js';
 import vanilla from '../../data/Vanilla.json' with { type: 'json' };
 import { fractionatorArray, checkArray, arrayModel, arrayPlan } from '../../src/fractionate/array.js';
+import { annealedArray, annealedEstimate } from '../../src/fractionate/anneal.js';
 import { fromStr, toStr } from '../../src/codec/parser.js';
 
 // 重氢的「分馏塔阵列」：不是普通配方（分馏塔不接分拣器、带子从塔里穿过），选了它就单独生成一张分馏阵列蓝图
@@ -42,11 +45,14 @@ function splitFraction(targets, raw, recipes) {
 // 细档的 bundleFee：开路费，高架竖直那截挑列时旁边没有别的竖直段就多计 8 格，带子挨着走成束（src/plan/layout/positions.js，分支 explore/bridges 的试验）
 // 细档的 openFee：走空地费，高架竖直那截穿过的行里既不压着也不挨着建筑的，每行多计 2 格，带子贴着建筑走（src/plan/layout/positions.js，分支 explore/bridges 的试验）
 // core：用哪个内核（src/plan/index.js 的 planCore；routeOptions.core 写明的为准），不写是主干内核。标准、美观档 'auto'：先排版内核，
-// 第 2 段搜完还不可行换主干内核从头排（考卷 2 的数在 docs/history.md「内核分档」）；快速档不用：考卷 2 上面积不省、线程时间 1.4 倍
+// 第 2 段搜完还不可行换主干内核、从排版内核最好那张热启动（考卷 2 的数在 docs/history.md「内核分档」）；快速档不用：考卷 2 上面积不省、线程时间 1.4 倍。
+// 美观档 autoSegments 4：排版内核搜满 4 段还不可行才换（考卷 3 的大线常在第 3、4 段才排出，换早了主干内核只排到五六成，2026/10/29）
+// 美观档 aspectTarget 1.78（16:9）：排版内核的行宽瞄着 16:9 横的（src/plan/index.js 的 planFrame；设了宽、长上限时不瞄，长宽比上限比它小时按上限）。
+// 用户 2026/10/28 要蓝图「长宽比最好符合电脑屏幕是横着的 16:9」；不瞄时大线上排版内核会挑 3 行、400 来格宽的长条，到后处理又排不成（考卷的数待补）
 const EFFORT = {
   quick: { iterations: 3000, restarts: 2, timeLimit: 20000, targetSpace: 0.5, retries: 1, untilTarget: { maxMs: 15 * 60000 } },
   normal: { iterations: 3000, restarts: 4, timeLimit: 30000, targetSpace: 0.66, retries: 2, untilTarget: { maxMs: 60 * 60000 }, powerHoles: true, core: 'auto' },
-  fine: { iterations: 8000, restarts: 6, timeLimit: null, targetSpace: 0.8, retries: 4, untilTarget: { maxMs: 200 * 60000 }, powerHoles: true, groundTax: true, core: 'auto' },
+  fine: { iterations: 8000, restarts: 6, timeLimit: null, targetSpace: 0.8, retries: 4, untilTarget: { maxMs: 200 * 60000 }, powerHoles: true, groundTax: true, core: 'auto', autoSegments: 4, aspectTarget: 1.78 },
 };
 
 // 别的网页带来的物品和配方（嵌在量产量化计算器里时，那边新出的物品随方案带过来，见 web/src/handoff.js 的 defs）。
@@ -510,8 +516,9 @@ function bottleneck(graph, p) {
   let sorterLoad = 0;
   let beltLoad = 0;
   for (const it of graph.items.values()) {
-    // 物流站出的原料能叠；产物带默认用自动集装机叠到 4 层（route.js 的 pilers），运力按 4 条带算（最低配置不放集装机，earlyGame）
-    const cap = it.producer === 'RAW' ? (p.station ? cap0 * Number(p.pile || 1) : cap0) : earlyGame(p) ? cap0 : cap0 * 4;
+    // 物流站出的原料能叠；产物带默认过自动集装机（route.js 的 pilers），运力和规划器排的一样（plan/piling.js 的 pileCapOf，
+    // route.js 的 pileModel 不写时按 4 条带算；最低配置不放集装机，earlyGame）
+    const cap = it.producer === 'RAW' ? (p.station ? cap0 * Number(p.pile || 1) : cap0) : earlyGame(p) ? cap0 : Math.max(cap0, pileCapOf(cap0, ROUTE_DEFAULTS.pileModel));
     const toGroup = new Map();
     for (const c of it.consumers) {
       beltLoad = Math.max(beltLoad, c.rate / cap);
@@ -689,7 +696,7 @@ async function run(p, id = 0) {
   const frac = splitFraction(targets, (p.raw || []).filter(Boolean), p.recipes || {});
   if (frac.on && frac.isGoal) {
     if (targets.length > 1) return { error: '重氢选了分馏塔阵列时，目标只能是重氢一种（分馏阵列单独一张蓝图）。可以把别的目标另外生成，重氢设为外部供应。' };
-    return fractionRun(targets[0].rate, Number(p.spray || 0), arrayLimits(p), p.stationPrefs);
+    return fractionRun(targets[0].rate, Number(p.spray || 0), arrayLimits(p), p.stationPrefs, p.fracengine === 'anneal' ? EFFORT_ARRAY[p.effort === 'fine' ? 'fine' : 'normal'] : null);
   }
   const input = lineInput(p, targets, frac);
   const pool = await poolReady();
@@ -737,7 +744,8 @@ function forecast(p) {
     if (frac.on && frac.isGoal) {
       if (targets.length > 1) return { error: '重氢选了分馏塔阵列时，目标只能是重氢一种。', chainItems, supplied };
       // 分馏塔阵列：照 fractionRun 生成一遍数塔（几毫秒）；一座站带不动时这张图要贴几份，塔数、用电都乘上
-      const r = fractionatorArray(targets[0].rate, { spray: Number(p.spray || 0), ...arrayLimits(p) });
+      // 退火排法（新）：不在预告里退火，按稳态够数要几座塔、几台集装机和喷涂机估（annealedEstimate）
+      const r = p.fracengine === 'anneal' ? annealedEstimate(targets[0].rate, { spray: Number(p.spray || 0) }) : fractionatorArray(targets[0].rate, { spray: Number(p.spray || 0), ...arrayLimits(p) });
       const k = r.plan.copies;
       const e = fracEnergy(r);
       return { machines: r.fracs * k, byFactory: [{ name: '分馏塔', count: r.fracs * k }], seconds: 0, power: forecastPower(e.idle * k, e.work * k, e.sprayExtra * k), chainItems: [DEUTERIUM], supplied };
@@ -940,7 +948,7 @@ function describePlan(plan, calc, p, effort, threadCount) {
       target: plan.targetSpace,
       searchRounds: plan.searchRounds,
       stationFallback: !!plan.stationFallback,
-      // 出图的是哪个内核（p.core 写明的为准，不写按档位）；auto 换过的 coreSwitch 记着排版内核搜了几段
+      // 出图的是哪个内核（p.core 写明的为准，不写按档位）；auto 换过的 coreSwitch 记着排版内核搜了几段、热启动没有（warm）
       core: plan.coreSwitch ? 'master' : (p.core || effort.core) === 'auto' ? 'typeset' : p.core || effort.core || 'master',
       coreSwitch: plan.coreSwitch ?? null,
       power: L.power
@@ -1016,15 +1024,20 @@ function energyTexts(e) {
 }
 
 /**
- * 分馏阵列也照左栏的宽度、长度、长宽比上限，并横着放（用户 2026/10/26；src/fractionate/array.js 按上限挑每份几个循环）。
- * 横着放时塔距 4 格到了东西向，离开赤道格子变窄就会撞（分馏塔碰撞盒 4.5 m，按游戏碰撞数据推断，原图转过来也一样），
- * 所以只在「化工厂、精炼厂高纬度间距展开」关着（只限赤道）时横放；开了就照原图竖着出
+ * 分馏阵列也照左栏的宽度、长度、长宽比上限（用户 2026/10/26；src/fractionate/array.js 按上限挑每份几个循环）。
+ * 一律照原图竖着出（2026/10/30）：以前「化工厂、精炼厂高纬度间距展开」关着时横放（整张转 90°），塔距 4 格、循环两头最外面那条带离塔心 2 格
+ * 都到了东西向，用户在游戏里贴了报「最边上的传送带无法建造」——按游戏的碰撞体东西向格宽不到赤道的 98.7%（赤道带里约 9° 以外）那条带就撞塔，
+ * 以前只算了塔撞塔（89.5%），说明里写的「只有几条纬度带贴不上」不对。竖着出的在任何纬度都能贴（array.js 的 checkArray 按最窄纬度查过）
  */
-const arrayLimits = (p) => ({ maxWidth: p.maxwidth ? Number(p.maxwidth) : null, maxHeight: p.maxheight ? Number(p.maxheight) : null, maxAspect: p.aspect ? Number(p.aspect) : null, orient: p.chemwide === '1' ? 'v' : 'h' });
+const arrayLimits = (p) => ({ maxWidth: p.maxwidth ? Number(p.maxwidth) : null, maxHeight: p.maxheight ? Number(p.maxheight) : null, maxAspect: p.aspect ? Number(p.aspect) : null, orient: 'v' });
+/** 分馏阵列退火排法（src/fractionate/anneal.js）每档的步数、重启几次：macmini 上 1000~5000/分 × 不喷 / Mk.III 量的，quick 0.35~1.4 秒、normal 0.37~1.8 秒、fine 0.55~4.1 秒 */
+const EFFORT_ARRAY = { quick: { steps: 200, restarts: 1 }, normal: { steps: 300, restarts: 1 }, fine: { steps: 600, restarts: 2 } };
 /** 分馏塔阵列：结果的字段和普通产线一样，页面照常画图、出检查和说明 */
-function fractionRun(rate, spray = 0, limits = {}, prefs = null) {
+function fractionRun(rate, spray = 0, limits = {}, prefs = null, anneal = null) {
   const t0 = performance.now();
-  const r = fractionatorArray(rate, { spray, ...limits });
+  // anneal：用退火排法（物流站在上、方形左右对称；宽、长、长宽比上限这一版不管，说明里写）
+  const r = anneal ? annealedArray(rate, { spray, ...anneal }) : fractionatorArray(rate, { spray, ...limits });
+  if (anneal && (limits.maxWidth != null || limits.maxHeight != null || limits.maxAspect != null)) r.notes.push('宽度、长度、长宽比上限对新排法不起作用（这一版只排成接近方形）。');
   const check = checkArray(r.str);
   const model = arrayModel(r);
   const B = r.buildings;
@@ -1085,7 +1098,7 @@ function fractionRun(rate, spray = 0, limits = {}, prefs = null) {
     check: { ok: check.ok, errors: check.errors.slice(0, 12), warnings: check.warnings },
     blueprint: withPrefs(r.str, prefs),
     stationCfg: stationCfg(withPrefs(r.str, prefs)),
-    array: { notes: r.rotated ? [...r.notes, '横着放的阵列在几条纬度带贴不上（东西向格子变窄，分馏塔会撞：约 26.5°~28.8°、44°~47°、63°~65° 等）。贴不上就打开「化工厂、精炼厂高纬度间距展开」，阵列会照原图竖着出。'] : r.notes, plan: r.plan, fracs: r.fracs },
+    array: { notes: r.notes, plan: r.plan, fracs: r.fracs },
     energy: fracEnergy(r),
   };
 }

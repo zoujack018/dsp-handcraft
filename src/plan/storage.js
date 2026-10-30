@@ -19,7 +19,7 @@ import { translateLayout } from './coordinates.js';
 import { SORTER_SPEED } from './sorters.js';
 import { contentBox, burnable } from './burn.js';
 import { chainTiles } from '../emit/blueprint.js';
-import { portRays } from './layout/shared.js';
+import { gapEnd, portRays } from './layout/shared.js';
 
 export const SMALL_BOX = 2101;
 export const BIG_BOX = 2102;
@@ -304,6 +304,13 @@ export function addStores(L, { supply, sorter = 2013, maxLayers = 15, maxWidth =
   // 以前不留：先接的组（多是储液罐那组）的接线正好走过另一个原料段头前面那一格，那组怎么找路都进不去，照旧从边缘送入；
   // 2026/10/19 量的：考卷 6 条线 × 小型仓 / 大型仓配送器，快速搜 120 张有 10 张这样，网页快档 60 张有 1 张，留了之后都接上
   for (const q of plans) {
+    const gl = L.legs[q.p.leg];
+    if (gl.gap != null) {
+      // 研究站夹带：终点是带尾那格、链在那里往北流（layout/shared.js 的 gapEnd），门是它北边那格
+      const e = gapEnd(L, gl);
+      q.door = `${e.x + e.dx},${e.y + e.dy}`;
+      continue;
+    }
     const seg = L.segments[q.p.kind === 'in' ? L.legs[q.p.leg].to : L.legs[q.p.leg].from];
     q.door = q.p.kind === 'in' ? `${seg.entryX - seg.dir},${seg.y}` : `${seg.exitX + seg.dout},${seg.y}`;
   }
@@ -311,9 +318,10 @@ export function addStores(L, { supply, sorter = 2013, maxLayers = 15, maxWidth =
     const { p, side, size, shape } = q;
     q.tried = true;
     const leg = L.legs[p.leg];
-    const seg = L.segments[p.kind === 'in' ? leg.to : leg.from];
-    const target = p.kind === 'in' ? [seg.entryX, seg.y, 0] : [seg.exitX, seg.y, 0];
-    const endDir = p.kind === 'in' ? dirIndex(seg.dir, 0) : dirIndex(-seg.dout, 0);
+    const gend = leg.gap != null ? gapEnd(L, leg) : null;
+    const seg = gend ? null : L.segments[p.kind === 'in' ? leg.to : leg.from];
+    const target = gend ? [gend.x, gend.y, 0] : p.kind === 'in' ? [seg.entryX, seg.y, 0] : [seg.exitX, seg.y, 0];
+    const endDir = gend ? dirIndex(-gend.dx, -gend.dy) : p.kind === 'in' ? dirIndex(seg.dir, 0) : dirIndex(-seg.dout, 0);
     const gx = side < 0 ? X0 - GAP_X : X1 + GAP_X;
     const ax = (rx) => gx + side * -rx; // 左边那侧的相对 x → 这一侧的绝对 x（左边 gx + rx，右边 gx − rx）
     const own = new Set([...leg.cells.map((c) => c.join(',')), ...(leg.direct ? [] : [`${leg.edge},${leg.py},0`])]);

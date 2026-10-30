@@ -229,13 +229,21 @@ const FACTORY_GEOMETRY = {
     slots: { bottom: { [-1]: 6, 0: 7, 1: 8 }, top: { 1: 0, 0: 1, [-1]: 2 } },
     slotPos: {
       ...{ 0: [0.803, 1.828], 1: [0, 1.829], 2: [-0.803, 1.828], 6: [-0.8, -1.829], 7: [0, -1.829], 8: [0.8, -1.829] },
-      ...{ 3: [-1.844, 0.794], 4: [-1.843, 0], 5: [-1.842, -0.796], 9: [1.842, -0.796], 10: [1.843, 0], 11: [1.844, 0.794] }, // 左右两侧规划器不用
+      ...{ 3: [-1.844, 0.794], 4: [-1.843, 0], 5: [-1.842, -0.796], 9: [1.842, -0.796], 10: [1.843, 0], 11: [1.844, 0.794] }, // 左右两侧只有夹带用（LAB_GAP）
     },
     collider: [4.5, 4.5],
     levelZ: 3,
     supported: true,
   },
 };
+/**
+ * 研究站夹带（宇宙矩阵 6 进 1 出，上下两侧各 3 个位不够，用户 2026/10/30：「把传送带从两个研究站之间插进去」；plan/graph.js 的 sideItemOf、
+ * plan/layout/belts.js 的 labGaps）：两叠中心隔 6，中间那一列（离两边中心各 3 格）夹一条往北流的带，产物经长 1 的侧面分拣器（横着）放上去，
+ * 带在研究站那一行最上面那格原地升起，第一格在上方通道第一条轨头顶，之后和普通高架一样走到出口。
+ * 左边那叠用右侧 11 号（槽位 y +0.794，接 cy + 1 那格），右边那叠用左侧 4 号（y 0，接 cy 那格）：两台从两边接同一格会撞（推断），所以接相邻两格。
+ * 槽位位置照用户 2026/10/04 的参考蓝图（test/fixtures/ref-lab-collider.bp.txt：左右两侧都接了长 1 的分拣器，带在中心左右 3 格）
+ */
+export const LAB_GAP = { left: 11, right: 4 };
 /**
  * 同类里比基础款大的高级款（按建筑 ID 覆盖 FACTORY_GEOMETRY）。
  * 量子化工厂：2026/10/07 第五张体积测试 J1（两台隔 7）、J2（化工厂和它隔 7）、J6（它和制造台 Mk.III 隔 5）都变红，
@@ -363,8 +371,61 @@ export const SLOT_DEPTH = { 2303: 0.8745, 2304: 0.8745, 2305: 0.8745, 2318: 0.87
  *   都能建，直线距离 23.09~23.60 格。
  * 和「直线距离 ≥ 29 m」吻合：29 m ÷ 1.2566 m/格 = 23.08 格。但东西方向的格子越往高纬度越窄（同样的格数米数更少），
  * 斜着相对时尤其拿不准，所以再加 1 格余量（玩家 2026/10/04）：24.08。
+ * 这个数只对南北向准：东西向的格数先按最窄的格宽折算再比（stationSpan，第 41 条）。
  */
 export const STATION_GAP = 24.08;
+/**
+ * 两座物流站（第 41 条）：游戏量两座站底座中心（离地 0.2 m）的三维直线距离，有星际站的一对要 ≥ 29 m，两座行星内物流站 ≥ 15 m（代码）。
+ * 东西向格子随纬度变窄（第 26 条；用户 2026/10/30 实测两座星际站东西隔 25 在高纬度报太近），所以东西向的格数先乘最窄的格宽：
+ * 规划器统一按 STATION_EW_RATIO（高于 15 行的蓝图最远贴到 64.8° 那条纬度带，格宽 0.8516；接站的图都比这高），
+ * 独立检查按蓝图自己的行数算能贴到的最坏纬度（stationWorstM）
+ */
+export const STATION_M = 29;
+export const STATION_PLS_M = 15;
+export const STATION_GAP_PLS = 12.94; // 两座行星内物流站（2103）：15 m ÷ 1.2566 + 1 格余量，同 STATION_GAP 的算法
+/**
+ * 纬度带（第 26 条，PlatformSystem.segmentTable 算出来的，半径 200 的星球）：起止格行（一行 0.36°，赤道带连南半球）、东西向一圈几格。
+ * 一张蓝图要整张落在同一条带里（不然游戏报「非法跨越回归线」），所以高 H 行的蓝图只贴得进行数 ≥ H 的带；
+ * 带里越往北东西向格子越窄，最北一行最窄（格宽 = cos 纬度 × 1000 ÷ 格数，赤道的几分之几）
+ */
+export const LAT_BANDS = [
+  { lo: -80, hi: 80, cells: 1000 }, // 南北纬 28.8° 以内，161 行，最窄 0.876
+  { lo: 81, hi: 130, cells: 800 }, // 到 46.8°，50 行，0.856
+  { lo: 131, hi: 155, cells: 600 }, // 到 55.8°，25 行，0.937
+  { lo: 156, hi: 180, cells: 500 }, // 到 64.8°，25 行，0.852
+  { lo: 181, hi: 195, cells: 400 }, // 到 70.2°，15 行，0.847
+  { lo: 196, hi: 210, cells: 300 }, // 到 75.6°，15 行，0.829
+  { lo: 211, hi: 220, cells: 200 }, // 到 79.2°，10 行，0.937
+  { lo: 221, hi: 230, cells: 160 }, // 到 82.8°，10 行，0.783
+];
+const ROW_RAD = (2 * Math.PI) / 1000;
+const bandRatio = (b) => (Math.cos(b.hi * ROW_RAD) * 1000) / b.cells;
+/** 高 rows 行的蓝图能贴到的最窄东西向格宽（赤道的几分之几） */
+export function narrowestEW(rows) {
+  let r = 1;
+  for (const b of LAT_BANDS) if (b.hi - b.lo + 1 >= rows) r = Math.min(r, bandRatio(b));
+  return r;
+}
+export const STATION_EW_RATIO = narrowestEW(16);
+/** 两座站中心偏 (dx, dy) 格（dx 东西）按最窄格宽折算后的格数，和 STATION_GAP 比（规划器、拼接用） */
+export const stationSpan = (dx, dy, ew = STATION_EW_RATIO) => Math.hypot(dx * ew, dy);
+/**
+ * 两座站中心偏 (dx, dy) 格（dx 东西），贴在高 rows 行的蓝图能到的最坏纬度时的三维直线距离（m）和那条带的北沿纬度（°）：
+ * 每条够高的带都把北边那座放在带的最北一行（东西向最窄），底座离地 0.2 m（独立检查用）
+ */
+export function stationWorstM(dx, dy, rows) {
+  const R = 200.2;
+  const dir = (lon, lat) => [Math.cos(lat) * Math.sin(lon), Math.sin(lat), -Math.cos(lat) * Math.cos(lon)];
+  let best = { m: Infinity, deg: 0 };
+  for (const b of LAT_BANDS) {
+    if (b.hi - b.lo + 1 < Math.max(rows, Math.abs(dy) + 1)) continue;
+    const p = dir(0, b.hi * ROW_RAD);
+    const q = dir((Math.abs(dx) * 2 * Math.PI) / b.cells, (b.hi - Math.abs(dy)) * ROW_RAD);
+    const m = R * Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]);
+    if (m < best.m) best = { m, deg: +(b.hi * 0.36).toFixed(1) };
+  }
+  return best;
+}
 /**
  * 物流站身（7×7）外面还有 1 格碰撞圈（玩家 2026/10/04 的「真实体积 / 碰撞体积」模型）：站在 (−381,−4) 时卫星配电站（3×3）
  * 要到 (−381,−10) 才能建、(−381,−9) 不行，也就是配电站和站身之间要空 1 格。按 9×9 的方形算：斜对着的 (5,5) 在那次实测里能放，
@@ -374,6 +435,12 @@ export const STATION_GAP = 24.08;
  * 这里是站中心到这一圈外沿的格数（站身是 3）。
  */
 export const STATION_CLEAR = 4;
+/**
+ * 东西向（蓝图 x）再让一截：卫星配电站的格子也不进站心左右第 STATION_EW.x 列、上下 STATION_EW.y 行以内，即配电站中心要东西隔 7 格以上或南北隔 6 格以上
+ * （用户 2026/10/30：站和配电站在不同纬度挨得近时会撞）。离赤道远了东西向格子变窄（第 26 条），正好隔 6 格的在 16° 以外就压上了；
+ * 用户同一天实测（回归线下）：(6, 0)、(6, 2)、(−6, 0)、(5, 5) 撞，(7, 0)、(0, 6)、(6, 5) 能放，所以禁区只到南北错开 4 行（docs/game-rules.md 第 39 条）
+ */
+export const STATION_EW = { x: 5, y: 3 };
 /**
  * 判物流站和工厂碰撞时站身的半宽（格）。站身占 7×7，但制造台本体紧贴站身（中心隔 5）实测能放（体积测试 D6），
  * 而制造台碰撞体确实大于 3 格（C3、C4 两台隔 3 变红，按 3.2 算），按 3.5 + 1.6 > 5 会误报，所以站这边取 3.4。
@@ -389,10 +456,22 @@ export const STATION_HALF = 3.4;
  * 按中心直线距离算，取实测能放的最小值：
  */
 export const SUBSTATION_GAP = 6;
-/** 两座供电设施中心的最小直线距离（格）：配电站之间 6、配电站和塔 2√2、塔之间 2√2（2.24 不行、2.83 能放） */
+/**
+ * 两座卫星配电站（第 41 条）：顶盘 5.49 格见方、离地 6~7 m，比底座宽，两座的顶盘碰上就撞（游戏只按碰撞体判，3.5 m 的供电设施间距这么远用不上）。
+ * 中心要东西或南北隔 SUBSTATION_GAP 以上：斜着 (4,5)、(5,4)、(5,5) 直线够 6 格，但任何纬度都碰（用户 2026/10/30 实测 (4,−5) 撞）；
+ * 东西隔 6 在纬度带靠北那头会碰（东西向格子变窄，碰撞体推算），按最坏纬度要东西隔 SUBSTATION_EW 或南北隔 SUBSTATION_GAP
+ * （高于 10 行的蓝图任何纬度都不碰；10 行以内的贴到 79.6°~82.8° 那条带时东西隔 7、南北错开 1 行以内的也碰，不管）
+ */
+export const SUBSTATION_EW = 7;
+/** 两座供电设施中心的最小直线距离（格）：配电站和塔 2√2、塔之间 2√2（2.24 不行、2.83 能放）；两座配电站不按直线距离，见 powerApart */
 export function powerGap(a, b) {
   if (a === 2212 && b === 2212) return SUBSTATION_GAP;
   return Math.SQRT2 * 2;
+}
+/** 两座供电设施中心偏 (dx, dy) 格（dx 东西）能不能这样放（规划器、拼接用，按最坏纬度）：两座配电站要南北隔 6 或东西隔 7，别的按直线距离 powerGap */
+export function powerApart(a, b, dx, dy) {
+  if (a === 2212 && b === 2212) return Math.abs(dy) >= SUBSTATION_GAP || Math.abs(dx) >= SUBSTATION_EW;
+  return dx * dx + dy * dy >= powerGap(a, b) ** 2 - 1e-9;
 }
 /** 供电设施中心在 (x, y) 时占的格子：电力感应塔 1 格，卫星配电站 3×3 */
 export function powerCells(itemId, x, y) {

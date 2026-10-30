@@ -26,7 +26,7 @@ import { chainTiles } from '../emit/blueprint.js';
 export const TARGET_SPACE = 0.8;
 /** 为了利用率达标，传送带最多比代价最小的候选多这么多 */
 export const BELT_SLACK = 0.1;
-/** 内核 'auto'：排版内核搜完这么多段、最好那张还不可行，就换主干内核从头排（planCore） */
+/** 内核 'auto'：排版内核搜完这么多段、最好那张还不可行，就换主干内核、从那张热启动（planCore） */
 export const AUTO_SEGMENTS = 2;
 
 /**
@@ -275,10 +275,12 @@ export function* planSteps(calc, options = {}) {
 /**
  * 用哪个内核：routeOptions.core 写明的为准，没写用 options.core（网页档位 EFFORT 给的默认，web/src/worker.js；考卷外壳照抄），
  * 都没写是主干内核。'master' 主干内核（等于不写）；'typeset' 排版内核（src/plan/typeset.js）；
- * 'auto'（用户 2026/10/27）：先用排版内核排，搜完第 AUTO_SEGMENTS 段最好那张还不可行，就换主干内核从头再排一遍，
- * 和直接用主干内核一样（同一个种子），只是整次规划的时间（untilTarget.maxMs）、段数上限扣掉排版内核用掉的（至少留一半，
- * 退回站列也是这么给的）；每段搜索的 timeLimit 是保险丝，照档位原样给，换过的就和只用主干内核排出来的一样。
- * 换过的在返回值的 coreSwitch 里记着排版内核搜了几段，网页打到控制台的「规划细节」；searchRounds、ms 是两次合计。
+ * 'auto'（用户 2026/10/27）：先用排版内核排，搜完第 AUTO_SEGMENTS 段最好那张还不可行，就换主干内核再排一遍（同一个种子），
+ * 整次规划的时间（untilTarget.maxMs）、段数上限扣掉排版内核用掉的（至少留一半，退回站列也是这么给的）；每段搜索的 timeLimit 是保险丝，照档位原样给。
+ * 主干内核从排版内核最好那张热启动（2026/10/29）：那张的行、块、空列交给它（options.masterWarm，place.js 的 prepare），
+ * 各段的偶数轮从它出发、起始温度低十倍（同排版内核的接力），奇数轮照旧从主干内核的初始解；这一次按排版内核的口径评估（planFrame 的 tsRules）。
+ * 以前是从头排：考卷 3 的大线排版内核排到 71%~79%、只差几处超轨、太慢，主干内核从头排只到 49%~69%。
+ * 换过的在返回值的 coreSwitch 里记着排版内核搜了几段、热启动没有（warm），网页打到控制台的「规划细节」；searchRounds、ms 是两次合计。
  * 依据（考卷 2 标准档 3 个种子）：排版内核不可行的 5 份第 2 段搜完都还不可行、再搜十几段也没救回来，可行的 25 份最多用 2 段
  */
 function* planCore(calc, options) {
@@ -289,14 +291,17 @@ function* planCore(calc, options) {
   // 往下传的不带 options.core（搜索的活里只看 routeOptions.core），主干内核就是不写
   const base = { ...options };
   delete base.core;
+  delete base.autoSegments;
   const pin = (c) => {
     const r = { ...ro };
+    delete r.autoSegments;
     if (c == null || c === 'master') delete r.core;
     else r.core = c;
     return r;
   };
   if (core !== 'auto') return yield* planFrame(calc, { ...base, routeOptions: pin(core) });
-  const a = yield* planFrame(calc, { ...base, routeOptions: pin('typeset'), giveUpAfter: AUTO_SEGMENTS });
+  // 排版内核搜几段还不可行才换：档位给的 options.autoSegments（美观档），routeOptions.autoSegments 写明的为准（考卷用），都没写 AUTO_SEGMENTS
+  const a = yield* planFrame(calc, { ...base, routeOptions: pin('typeset'), giveUpAfter: Number(ro.autoSegments ?? options.autoSegments ?? AUTO_SEGMENTS) });
   if (!a.gaveUp) return a;
   const master = pin('master');
   const left = (cap, used) => Math.max(cap * 0.5, cap - used);
@@ -304,10 +309,11 @@ function* planCore(calc, options) {
   const b = yield* planFrame(calc, {
     ...base,
     routeOptions: master,
+    ...(a.warm ? { masterWarm: a.warm } : {}),
     ...(ut ? { untilTarget: { ...ut, ...(ut.maxMs != null ? { maxMs: left(ut.maxMs, a.ms) } : {}), ...(ut.maxSegments != null ? { maxSegments: Math.ceil(left(ut.maxSegments, a.searchRounds)) } : {}) } } : {}),
     ...(options.onRound ? { onRound: (r) => options.onRound({ ...r, round: r.round + a.searchRounds }) } : {}),
   });
-  return { ...b, searchRounds: a.searchRounds + b.searchRounds, ms: a.ms + b.ms, coreSwitch: { from: 'typeset', segments: a.searchRounds } };
+  return { ...b, searchRounds: a.searchRounds + b.searchRounds, ms: a.ms + b.ms, coreSwitch: { from: 'typeset', segments: a.searchRounds, warm: !!a.warm } };
 }
 
 /** 在一个方向上规划（宽、长上限按给定的算） */
@@ -329,6 +335,13 @@ function* planFrame(calc, options) {
   if (options.heightTax && routeOptions.heightTax == null) routeOptions.heightTax = true; // 线性超高税代替金字塔（layout/score.js，细档开；routeOptions 里写明的为准）
   if (options.bundleFee && routeOptions.bundleFee == null) routeOptions.bundleFee = options.bundleFee; // 开路费（layout/positions.js 的 bestColumn，细档 8；routeOptions 里写明的为准）
   if (options.openFee && routeOptions.openFee == null) routeOptions.openFee = options.openFee; // 走空地费（layout/positions.js 的 bestColumn，细档 2；routeOptions 里写明的为准）
+  // 目标长宽比（排版内核把行宽收到 √(长宽比 × 6.5 × 总宽) 附近，typeset.js 的 widthRange；主干内核不看）：档位给的 options.aspectTarget（美观档 16:9，
+  // 用户 2026/10/28 要横着的屏幕形状），宽、长上限都没写时才交给 routeOptions；长宽比上限比它小时按上限；竖排（orient 'v'：这一帧横着排、
+  // 出蓝图整张转 90°）取倒数，转完还是横的。宽、长上限都没写时 planSteps 的 'auto' 只排横的，碰不到转 90° 的那一帧。routeOptions 里写明的为准（竖排也不取倒数）
+  if (options.aspectTarget > 0 && routeOptions.aspectTarget == null && routeOptions.maxWidth == null && routeOptions.maxHeight == null) {
+    const a = routeOptions.maxAspect > 0 ? Math.min(options.aspectTarget, routeOptions.maxAspect) : options.aspectTarget;
+    routeOptions.aspectTarget = options.orient === 'v' ? 1 / a : a;
+  }
   // 喷增产剂：走线要给要喷的带留喷涂机的空当（layout/belts.js 的 sprayAll），不喷时几何一字不动。
   // 只喷最终产物的直接原料（calc.spray.items），喷涂机在这几种带上放在最终那几组（calc.spray.to）取料之前、别的工厂取完之后
   if (calc.spray) {
@@ -337,16 +350,22 @@ function* planFrame(calc, options) {
   }
   // 喷涂时放开第 4 条轨（route.js 的 fourthTrack：每根分拣器都够得着才算数）；不喷的照旧最多 3 条
   if (calc.spray && routeOptions.fourthTrack == null) routeOptions.fourthTrack = true;
+  // 下面五项是排版内核的口径：排版内核自己，和内核 auto 换主干内核时从排版内核最好那张热启动的那一次（options.masterWarm，见 planCore）。
+  // 热启动按同一个口径评估，那张图的代价、罚分和排版内核看到的一样；按主干内核的口径，排版内核排满的行上通道要 4~6 条轨，
+  // 同一张图罚分多好几倍（考卷 3 五种矩阵 60、黄棒 60 全珍奇快搜 1 段：超轨 + 太慢 33 → 180、45 → 143 处，代价 4.0、7.2 倍）
+  const tsRules = routeOptions.core === 'typeset' || !!options.masterWarm;
   // 排版内核（分支 explore/typeset）也放开：行都铺满，大线的通道常要 4 条轨（引力矩阵 180 塔：放开后分拣器太慢、超轨都没了），
   // 考卷 6 条 + 放大 3 倍里 4 条塔模式合计 +0.2%（种子 1）
-  if (routeOptions.core === 'typeset' && routeOptions.fourthTrack == null) routeOptions.fourthTrack = true;
+  if (tsRules && routeOptions.fourthTrack == null) routeOptions.fourthTrack = true;
   // 宽通道（route.js 的 wideTracks：5~6 条轨，每根分拣器都够得着才算数）也只在排版内核开
-  if (routeOptions.core === 'typeset' && routeOptions.wideTracks == null) routeOptions.wideTracks = true;
-  if (routeOptions.core === 'typeset' && routeOptions.sideSplit == null) routeOptions.sideSplit = true;
-  if (routeOptions.core === 'typeset' && routeOptions.exactSplit == null) routeOptions.exactSplit = true;
+  if (tsRules && routeOptions.wideTracks == null) routeOptions.wideTracks = true;
+  if (tsRules && routeOptions.sideSplit == null) routeOptions.sideSplit = true;
+  // 热启动那次不限主干内核的合并、挪台超运力（place.js 的 capMoves）：从头排时限了快速档考卷 4 可行 21 → 26，热启动接着排版内核那张修时限了美观档考卷 4 换内核的 6 格可行 11 → 9（2026/10/30）
+  if (options.masterWarm && routeOptions.capMoves == null) routeOptions.capMoves = false;
+  if (tsRules && routeOptions.exactSplit == null) routeOptions.exactSplit = true;
   // 排版内核：够不着电每个目标按 2000 罚（master 300）。行都铺满，大线最后常剩十来个够不着电的目标，300 一个时搜索宁可留着它们换面积
   // （引力矩阵 360 塔：只剩 1~18 个目标够不着电）；后处理放不下塔照样不可行，和供给顺序、超轨（2000~3000）一样当硬约束
-  if (routeOptions.core === 'typeset') routeOptions.penalty = { power: 2000, ...routeOptions.penalty };
+  if (tsRules) routeOptions.penalty = { power: 2000, ...routeOptions.penalty };
   const deadline = options.timeLimit ? t + options.timeLimit : null;
   const searchOpts = (ro, timeLimit) => {
     const o = { ...options, routeOptions: ro, timeLimit };
@@ -435,8 +454,9 @@ function* planFrame(calc, options) {
   const retries = options.adaptive === false ? 0 : options.retries ?? 1;
   let aw = routeOptions.areaWeight ?? 1;
   let rounds = 1;
-  // planCore 的内核 'auto' 用：搜完第 giveUpAfter 段（≥ 2）最好那张还不可行就不往下搜了，交回去换主干内核
+  // planCore 的内核 'auto' 用：搜完第 giveUpAfter 段最好那张还不可行就不往下搜了，交回去换主干内核，带上这张的行、块、空列给主干内核热启动
   const giveUp = () => rounds >= (options.giveUpAfter ?? Infinity) && !pick.layout.feasible;
+  const handBack = () => ({ gaveUp: true, searchRounds: rounds, ms: Date.now() - t, warm: pick.rows?.length ? { rows: pick.rows, blocks: pick.blocks, pads: pick.pads } : null });
   // 利用率只看地面占得满不满：一长条单行（比如 152×10）利用率也能有 75%，面积却大一倍多。
   // 所以没设宽 / 长 / 长宽比上限时，搜出来比 4:1 还瘦长的也加重面积再搜一轮
   const free = !routeOptions.maxWidth && !routeOptions.maxHeight && !routeOptions.maxAspect;
@@ -457,7 +477,7 @@ function* planFrame(calc, options) {
     pick = choose(finished);
     rounds++;
     options.onRound?.({ round: rounds, space: pick.layout.space.space, feasible: !!pick.layout.feasible, target });
-    if (giveUp()) return { gaveUp: true, searchRounds: rounds, ms: Date.now() - t };
+    if (giveUp()) return handBack();
   }
   // 没达标接着搜（用户 2026/10/07，网页的三档用）：照上面搜完还没达标（不可行或利用率不到目标），换种子、面积权重继续加倍（封顶 16）再搜，
   // 直到达标或到 untilTarget.maxMs；每轮的时间上限照旧。达没达标写在 targetMet 里，到点没达标页面照常显示最好那张、说明没到这一档
@@ -467,8 +487,13 @@ function* planFrame(calc, options) {
   let stalled = false;
   if (options.untilTarget) {
     const stopAt = t + options.untilTarget.maxMs;
-    const patience = (L) => (L.feasible ? options.untilTarget.patience ?? 3 : options.untilTarget.patienceInfeasible ?? (ff ? 12 : 6));
-    let best = { feasible: !!pick.layout.feasible, space: pick.layout.space.space };
+    // 还不可行时「进步」看罚分合计降没降（降 2% 以上），不看利用率——不可行的图越排越密没用；耐心 6 段（routeOptions.stallPen 写 false 回到老规则：
+    // 利用率涨 1 个点也算、先求可行时耐心 12 段）。2026/10/30 考卷：快速档考卷 2、3、4 总用时省 23%~36%，68 份里丢了 1 份到第 9 段才排出的
+    // （粒子容器 840 高配种子 1），排得出的逐字一样；美观档考卷 4 全部逐字一样，考卷 3 换内核的格省 13%（宇宙矩阵那两格白搜的）
+    const stallPen = routeOptions.stallPen !== false;
+    const penOf = (L) => L.penalties.reduce((a, x) => a + (x.amount ?? 0), 0);
+    const patience = (L) => (L.feasible ? options.untilTarget.patience ?? 3 : options.untilTarget.patienceInfeasible ?? (ff && !stallPen ? 12 : 6));
+    let best = { feasible: !!pick.layout.feasible, space: pick.layout.space.space, pen: stallPen ? penOf(pick.layout) : 0 };
     let still = 0;
     // maxSegments：整次规划最多搜几段（含第一段），按段数收手、和机器快慢无关（考卷 tools/exam 用；网页不传，照旧按时间）
     const segCap = options.untilTarget.maxSegments ?? Infinity;
@@ -487,9 +512,10 @@ function* planFrame(calc, options) {
       pick = choose(finished);
       rounds++;
       options.onRound?.({ round: rounds, space: pick.layout.space.space, feasible: !!pick.layout.feasible, target });
-      if (giveUp()) return { gaveUp: true, searchRounds: rounds, ms: Date.now() - t };
-      const now = { feasible: !!pick.layout.feasible, space: pick.layout.space.space };
-      if ((now.feasible && !best.feasible) || (now.feasible === best.feasible && now.space >= best.space + 0.01)) {
+      if (giveUp()) return handBack();
+      const now = { feasible: !!pick.layout.feasible, space: pick.layout.space.space, pen: stallPen ? penOf(pick.layout) : 0 };
+      const better = stallPen && !now.feasible && !best.feasible ? now.pen <= best.pen * 0.98 - 1e-9 : (now.feasible && !best.feasible) || (now.feasible === best.feasible && now.space >= best.space + 0.01);
+      if (better) {
         best = now;
         still = 0;
       } else still++;
@@ -497,14 +523,26 @@ function* planFrame(calc, options) {
   }
   // 后处理重走只做挑中的那张（routeOptions.reroute 的 mode 'pick'，默认）：搜索、每个候选的后处理、挑法都和不重走时一字不差，
   // 挑完拿这张供电之前的那份布局、照它那份 ctx 接着做后半段（finishTail，中间加重走），哪一项都不比原来差才换上（plan/reroute.js 的 rerouteWorse）；
-  // 差了就把相遇、叠格的代价加重再试一次，还差就留原来那张。就在这里做、不交给线程池（只有一张，排在别的活后面等线程反而慢）；
+  // 差了就把相遇、叠格的代价加重再试一次（这一次重走完相遇还多，先把引起相遇的几截退回原来的路，plan/reroute.js 的相遇修补），
+  // 再差就照第二次、但原料接线不换站口、段不掉头再试一次（也修补），还差就留原来那张。
+  // 就在这里做、不交给线程池（只有一张，排在别的活后面等线程反而慢）；
   // 用时记在 layout.rerouteGuard（ms 合计、tryMs 每次）
   if (rrPick && pick?.pre && station?.place !== 'side') {
     const t0 = Date.now();
     const base = beltStats(pick.layout);
     // 拐弯守门（实验开关 turnGuard）：拐弯也比；第一次换不上，先把拐弯的代价加重再试，再不行拐弯、相遇、叠格一起加重
     const heavyTurn = { ...rrPick, turn: rrPick.turn * rrPick.turnMul, slopeTurn: rrPick.slopeTurn * rrPick.turnMul };
-    const tries = rrPick.turnGuard ? [rrPick, heavyTurn, { ...heavyTurn, meet: rrPick.meet * 3, over: rrPick.over * 1.5 }] : [rrPick, { ...rrPick, meet: rrPick.meet * 3, over: rrPick.over * 1.5 }];
+    // 第三次原料接线不换站口、段不掉头（resource、flip 关）：每截两头都不动，相遇修补哪截都能退。修补跳过换了站口、掉了头的截，
+    // 而被相遇拦住的多半是从站里出来的原料接线换了口（粒子容器 60 高配：水那条带换口以后沿一条地面带走 3 格）
+    const heavy = { ...rrPick, meet: rrPick.meet * 3, over: rrPick.over * 1.5 };
+    const tries = rrPick.turnGuard ? [rrPick, heavyTurn, { ...heavyTurn, meet: rrPick.meet * 3, over: rrPick.over * 1.5 }] : [rrPick, heavy, { ...heavy, resource: false, flip: false }];
+    // 相遇修补（reroute.js 的「五、相遇修补」）第一次不做：第一次换得上的和没有修补时一字不差。每次都修补时，第一次修补完就换上，
+    // 本来第二次（相遇、叠格加重）就换得上、原地升降更少的不再试（2026/10/30 小线 9 条 × 种子 4 × 5 种设置、150 轮共 180 份：换上的 127 → 136 三种做法一样，
+    // 原地升降合计不修补 620、每次都修 566、只修最后一次 544；两次都不修补换不上再修补着重走一遍也是 544，还要多重走）。
+    // 第二次、第三次都修补（macmini 美观档同一份搜索 34 份，对只在第二次修补：再救回 2 份——粒子容器 60 高配原地升降 10 → 0、
+    // 粒子容器 840 高配 79 → 11，面积不变——其余 32 份逐字一样）；拐弯守门（实验开关）照旧只修最后一次
+    if (rrPick.repair) tries[0] = { ...tries[0], repair: false };
+    if (rrPick.repair && rrPick.turnGuard) for (let i = 1; i < tries.length - 1; i++) tries[i] = { ...tries[i], repair: false };
     const guard = { tried: 0, used: 0, why: [], ms: 0, tryMs: [] };
     for (const o of tries) {
       guard.tried++;
@@ -516,8 +554,8 @@ function* planFrame(calc, options) {
         break;
       }
       const why = rerouteWorse(pick.layout, base, alt, beltStats(alt), { turns: rrPick.turnGuard });
-      // 带子少了利用率会跟着降一点：原来达标、换上以后不达标（网页会说没到这一档）也不换
-      if (met(pick.layout) && !met(alt)) why.push('没达标');
+      // 利用率不比：重走省下地面带子，利用率（地面带子也算占用）跟着降一点，刚到这一档的就掉下去；以前按「没达标」不换，
+      // 美观档两批考卷 34 份里拦掉 2 份本来更好的（原地升降 6 → 0、带 4300 → 4033），2026/10/30 用户点头去掉。达没达标照换上的那张报
       if (!why.length) {
         guard.used = guard.tried;
         pick = { ...pick, layout: alt };

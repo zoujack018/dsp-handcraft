@@ -1,7 +1,7 @@
 // 出蓝图后的独立检查：只看解码后的蓝图记录本身，不看规划器的任何中间数据。
 // 这是在进游戏之前能做到的最接近实测的检查。
 import { fromStr } from '../codec/parser.js';
-import { RECIPES, ITEMS, factory, OVERPASS_ZMAX, STATION_GAP, STATION_CLEAR, STATION_HALF, powerCells, powerGap, slotPoint, substationPad, THERMAL_PLANT, THERMAL_BANK, FUEL_MJ, BOX_SLOT, TANK_PORT, STORE_BODY, DISTRIBUTOR_LIFT, RAMP_STEP, STEEP_DZ, CELL_M, LEVEL_M, BELT_LINK_M, NARROW_EW, NO_TECH_MAX_DZ, OVER_MIN_Z, CHEM_TOWER, POWER_OVER_Z, SUBSTATION_DISK, STORE_OVER_Z, STATION_PORT_M, SORTER_MAX_TILT, SORTER_REACH_M, SLOT_DEPTH } from '../gamedata.js';
+import { RECIPES, ITEMS, factory, OVERPASS_ZMAX, STATION_GAP, STATION_GAP_PLS, STATION_M, STATION_PLS_M, stationWorstM, STATION_CLEAR, STATION_EW, STATION_HALF, powerCells, powerGap, SUBSTATION_GAP, SUBSTATION_EW, slotPoint, substationPad, THERMAL_PLANT, THERMAL_BANK, FUEL_MJ, BOX_SLOT, TANK_PORT, STORE_BODY, DISTRIBUTOR_LIFT, RAMP_STEP, STEEP_DZ, CELL_M, LEVEL_M, BELT_LINK_M, NARROW_EW, NO_TECH_MAX_DZ, OVER_MIN_Z, CHEM_TOWER, POWER_OVER_Z, SUBSTATION_DISK, STORE_OVER_Z, STATION_PORT_M, SORTER_MAX_TILT, SORTER_REACH_M, SLOT_DEPTH } from '../gamedata.js';
 import { POWER, powerReach } from '../plan/power.js';
 
 const isBelt = (id) => id >= 2001 && id <= 2003;
@@ -426,8 +426,16 @@ export function checkBlueprint(str, opt = {}) {
     for (const o of stations) {
       if (o.index <= st.index) continue;
       const d = Math.hypot(P(o).x - c.x, P(o).y - c.y);
+      // 两座都是行星内物流站时游戏要 15 m，有星际站的要 29 m（三维直线，第 41 条）
+      const pls = st.itemId === 2103 && o.itemId === 2103;
+      const [gap, need] = pls ? [STATION_GAP_PLS, STATION_PLS_M] : [STATION_GAP, STATION_M];
       if (Math.abs(P(o).x - c.x) < 7 && Math.abs(P(o).y - c.y) < 7) err(`物流站 ${st.index} 与 ${o.index} 碰撞`);
-      else if (d < STATION_GAP - 1e-9) err(`物流站 ${st.index} 与 ${o.index} 相距 ${d.toFixed(2)} 格，游戏里两站中心至少要隔 ${STATION_GAP} 格（约 29 m）`);
+      else if (d < gap - 1e-9) err(`物流站 ${st.index} 与 ${o.index} 相距 ${d.toFixed(2)} 格，游戏里两站中心至少要隔 ${gap} 格（约 ${need} m）`);
+      else {
+        // 赤道上够、离赤道远了东西向格子变窄不够的：不知道贴在哪个纬度，记提醒（同第 39 条）。这张图高几行决定它最远能贴到哪条纬度带
+        const w = stationWorstM(P(o).x - c.x, P(o).y - c.y, bp.dragBoxSize.y);
+        if (w.m < need) warnings.push(`物流站 ${st.index} 和 ${o.index} 东西向离得近：这张图贴到 ${w.deg}° 附近时两站只隔 ${w.m.toFixed(1)} m，游戏要 ${need} m（离赤道远了东西向格子变窄）`);
+      }
     }
     // 接在这座站口上的带子，和顺着它往外两节以内的（游戏里带子接着的建筑往前往后 3 节以内不算撞，站口那几节可以在站身里抬高：
     // 用户 2026/10/28 实测站口那节在 0.5、1、2 层都能接，测试 5 的 F2 F3 F5 F6 F8 F9）；站口那节离站中心不能超过 4 m（z 2.5 太远，F7）
@@ -817,6 +825,7 @@ export function checkBlueprint(str, opt = {}) {
     }
     // 卫星配电站 3×3，电力感应塔 1 格
     for (const d of [...pilers, ...coaters]) taken.add(`${P(d).x},${P(d).y}`);
+    const warnNear = new Set(); // 配电站东西向离物流站太近的（每座配电站、每座站只记一次）
     for (const n of nodes) {
       const s = SPEC.get(n.itemId);
       for (const [x, y] of powerCells(n.itemId, P(n).x, P(n).y)) {
@@ -826,6 +835,8 @@ export function checkBlueprint(str, opt = {}) {
         for (const st of stations) if (Math.abs(P(st).x - x) <= 3 && Math.abs(P(st).y - y) <= 3) err(`${what}压在物流站 ${st.index} 上`);
         // 站身外 1 格碰撞圈（按 9×9）只挡卫星配电站，电力感应塔可以贴着站身（体积测试 D2 D3 变红、D4 能放）
         else if (n.itemId === 2212 && Math.abs(P(st).x - x) <= STATION_CLEAR && Math.abs(P(st).y - y) <= STATION_CLEAR) err(`${what}离物流站 ${st.index} 太近（站身外还有 1 格碰撞圈）`);
+        // 东西向隔 6 格这种：赤道附近能放（用户实测过），离赤道远了东西向格子变窄会撞（用户 2026/10/30）；不知道贴在哪个纬度，同东西向分拣器太斜记提醒（规划器不这么摆，gamedata.js 的 STATION_EW）
+        else if (n.itemId === 2212 && Math.abs(P(st).x - x) <= STATION_EW.x && Math.abs(P(st).y - y) <= STATION_EW.y) warnNear.add(`${what}离物流站 ${st.index} 东西向太近：离赤道远了东西向格子变窄会撞（用户实测回归线下东西隔 6、南北错开 4 行以内的撞）`);
         for (const f of solids) if (inside(f, x, y, P)) err(`${what}与工厂 ${f.index} 碰撞`);
         for (const b of stores) {
           if (b.inputObjIdx >= 0) continue;
@@ -864,12 +875,22 @@ export function checkBlueprint(str, opt = {}) {
         }
       }
     }
-    // 供电设施之间的最小间距（2026/10/05 实测：配电站之间 6、配电站和塔 2√2、塔之间紧挨着不行）
+    warnings.push(...warnNear);
+    // 供电设施之间的最小间距（2026/10/05 实测：配电站和塔 2√2、塔之间紧挨着不行）。两座配电站按顶盘（第 41 条）：东西、南北都不到 6 格的任何纬度都碰，
+    // 记错；东西隔 6 的赤道上能放、离赤道远了会碰，记提醒（规划器要南北隔 6 或东西隔 7，gamedata.js 的 powerApart）
     for (let i = 0; i < nodes.length; i++)
       for (let j = i + 1; j < nodes.length; j++) {
         const [a, b] = [nodes[i], nodes[j]];
+        const dx = Math.abs(P(a).x - P(b).x);
+        const dy = Math.abs(P(a).y - P(b).y);
+        const who = `${SPEC.get(a.itemId).name} ${a.index} 和 ${SPEC.get(b.itemId).name} ${b.index}`;
+        if (a.itemId === 2212 && b.itemId === 2212) {
+          if (dx < SUBSTATION_GAP && dy < SUBSTATION_GAP) err(`${who} 离得太近（顶盘相碰：中心要东西或南北隔 ${SUBSTATION_GAP} 格以上）`);
+          else if (dx < SUBSTATION_EW && dy < SUBSTATION_GAP) warnings.push(`${who} 东西向离得近：离赤道远了东西向格子变窄，顶盘会碰（东西隔 ${SUBSTATION_EW} 或南北隔 ${SUBSTATION_GAP} 格才保险）`);
+          continue;
+        }
         const g = powerGap(a.itemId, b.itemId);
-        if ((P(a).x - P(b).x) ** 2 + (P(a).y - P(b).y) ** 2 < g * g - 1e-9) err(`${SPEC.get(a.itemId).name} ${a.index} 和 ${SPEC.get(b.itemId).name} ${b.index} 离得太近（中心至少隔 ${+g.toFixed(2)} 格）`);
+        if (dx * dx + dy * dy < g * g - 1e-9) err(`${who} 离得太近（中心至少隔 ${+g.toFixed(2)} 格）`);
       }
     const covered = (pt) => nodes.some((n) => (P(n).x - pt.x) ** 2 + (P(n).y - pt.y) ** 2 <= SPEC.get(n.itemId).cover ** 2);
     for (const f of factories) if (!covered(P(f))) err(`工厂 ${f.index} 不在供电范围内`);

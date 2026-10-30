@@ -82,7 +82,7 @@ const CEN_B = [];
 
 /** route() 的一步：读写共享的布局上下文 c */
 export function placePorts(c) {
-  const { P, addPenalty, atPort, corridor, legs, opt, segments, side, stationX, xL, xR } = c;
+  const { P, addPenalty, atPort, corridor, labGaps, legs, opt, segments, side, stationX, xL, xR } = c;
   let { height } = c; // 物流站靠左侧时，站叠起来比生产区高，要把布局加高
   // ---------- E. 高架段与出入口 ----------
   // 地面上已占用的带子格：按 (x, y) 编成一维下标的 Int32Array（代替数字键的 Set，退火里每次 route() 都要把所有段的格子记一遍）。
@@ -108,6 +108,10 @@ export function placePorts(c) {
     const s = segments[i];
     for (let x = s.a; x <= s.b; x++) putGround(x, s.y);
   }
+  // 研究站夹带（layout/belts.js 的 labGaps）：那一列的地面格；它的高架从带尾原地升起、往北一格到上方通道第一条轨头顶（gapOut 那一行）再拐向出口
+  if (labGaps) for (let i = 0; i < labGaps.length; i++) for (let y = labGaps[i].y0; y <= labGaps[i].y1; y++) putGround(labGaps[i].x, y);
+  /** 夹带那段高架水平走的那一行（当段尾所在的行用） */
+  const gapRow = (leg) => labGaps[leg.gap].y1 + 1;
   const ports = [];
   // 出入口这一格和它竖直方向上斜坡顶那一格的地面都要空着（原来写在 portY 里，每次调用新建一个；height 照样按调用时的值读）
   const portOk = (xe, y0, yy) => {
@@ -133,8 +137,9 @@ export function placePorts(c) {
     for (let x = endX + d; x !== col + step; x += step) if (onGround(x, y)) return false;
     return true;
   };
-  /** 把段的端头沿地面一直接到 col（这一行地面都空着时），返回是否接上了 */
+  /** 把段的端头沿地面一直接到 col（这一行地面都空着时），返回是否接上了；夹带的高架不落地接（它是竖着进上方通道的） */
   const groundTo = (leg, s, col) => {
+    if (leg.gap != null) return false;
     let endX = leg.kind === 'in' ? s.entryX : s.exitX;
     const d = leg.kind === 'in' ? -s.dir : s.dout;
     if (atPort(endX, col)) return true;
@@ -165,7 +170,7 @@ export function placePorts(c) {
     }
     for (let i = 0; i < legs.length; i++) {
       const leg = legs[i];
-      if (leg.kind === 'link' || leg.bus != null) continue;
+      if (leg.kind === 'link' || leg.bus != null || leg.gap != null) continue; // 夹带的在下面最后排
       const s = segments[leg.kind === 'in' ? leg.to : leg.from];
       if (opt.freeEnds) {
         // 边缘放站：不接到边缘，段的端头就是出入口，站排好之后直接用 A* 接到这里
@@ -188,6 +193,38 @@ export function placePorts(c) {
         if (leg.py !== s.y) putGround(leg.edge, leg.py + Math.sign(s.y - leg.py));
       }
       ports.push({ kind: leg.kind, itemId: leg.itemId, x: leg.edge, y: leg.py, rate: leg.rate, leg: leg.id, direct: !!leg.direct });
+    }
+    // 研究站夹带：边缘放站时出入口就是带尾那格（原地升起那格，站的接线从上方接进来，plan/stations.js），否则在边缘列上找口。
+    // 放在别的口后面：它沿上方通道第一条轨那一行走到边缘，先占了口的话，那条轨上本来能沿地面直接接到边缘的段就得升起来，两头互相压着升降叠排不开
+    if (labGaps) {
+      for (let i = 0; i < legs.length; i++) {
+        const leg = legs[i];
+        if (leg.gap == null) continue;
+        const gp = labGaps[leg.gap];
+        if (opt.freeEnds) {
+          leg.direct = true;
+          leg.py = gp.y1;
+          leg.edge = gp.x;
+        } else {
+          // 同一行几条夹带都往近的那边出时，那一列边缘可能没有空格了（portY 找不到会退回压在别的口上）：换到另一边试，
+          // 两边都没有就按走不通罚（出入口都在左边时只试左边）
+          const y = gapRow(leg);
+          let py = portY(leg.edge, y);
+          if (!portOk(leg.edge, y, py) && !opt.leftPorts) {
+            const other = leg.edge === xL ? xR : xL;
+            const q = portY(other, y);
+            if (portOk(other, y, q)) {
+              leg.edge = other;
+              gp.dout = -gp.dout;
+              py = q;
+            } else addPenalty('route', P.route, `${c.graph.items.get(leg.itemId).name} 的夹带在边缘找不到出口`, c.itemBids(leg.itemId));
+          } else if (!portOk(leg.edge, y, py)) addPenalty('route', P.route, `${c.graph.items.get(leg.itemId).name} 的夹带在边缘找不到出口`, c.itemBids(leg.itemId));
+          leg.py = py;
+          putGround(leg.edge, leg.py);
+          if (leg.py !== y) putGround(leg.edge, leg.py + Math.sign(y - leg.py));
+        }
+        ports.push({ kind: leg.kind, itemId: leg.itemId, x: leg.edge, y: leg.py, rate: leg.rate, leg: leg.id, direct: !!leg.direct });
+      }
     }
   } else sideStations();
   // 逐个写回（和 Object.assign(c, { ports, stations, height }) 按同样的先后写同样的字段）
@@ -258,7 +295,7 @@ export function placePorts(c) {
       const leg = legs[i];
       if (leg.kind === 'link' || leg.edge !== xe) continue;
       if (leg.kind === 'in' && cnt[of[i]] > 1) continue;
-      const y = segments[leg.kind === 'in' ? leg.to : leg.from].y;
+      const y = leg.gap != null ? gapRow(leg) : segments[leg.kind === 'in' ? leg.to : leg.from].y;
       if (isRow(y)) RA0[y] = rst;
       else (avoidOdd ??= new Set()).add(y);
     }
@@ -379,8 +416,9 @@ export function placePorts(c) {
     //   下侧 8/7/6 号口同样往下（上下侧的口号是按逆时针编号推断的，待实测）。
     // 车道右拐不能互相交叉：往上的车道里最靠右的服务最低的行，往左依次更高；往下的同理。
     // 左侧的口朝着蓝图外面，不用。
-    const yOf = (l) => segments[l.kind === 'in' ? l.to : l.from].y;
-    const segOf = (l) => segments[l.kind === 'in' ? l.to : l.from];
+    // 夹带（labGaps）的高架从带尾升起后在上方通道第一条轨头顶那一行走：当成段尾在那一行（groundTo、pathFree 对它都不落地接）
+    const yOf = (l) => (l.gap != null ? gapRow(l) : segments[l.kind === 'in' ? l.to : l.from].y);
+    const segOf = (l) => (l.gap != null ? { y: gapRow(l) } : segments[l.kind === 'in' ? l.to : l.from]);
     // 按真实物品和进出分（同 stations.js 的 stationGroups）：送出去的设为供应，要进的设为需求；副产物和产线自己要用的同种物品
     // 各占一格、不进同一座站（下面 groupBy；用户 2026/10/27：同一格里需求运来的料装满后副产物送不进去，那组工厂就停了）。
     // （原来先 filter 出非 link 的带再逐条放进 Map，再 [...entries()].map(…).sort(…)；现在按同样的先后直接放，
@@ -419,6 +457,7 @@ export function placePorts(c) {
     const col = corridor;
     const sx = stationX;
     const pathFree = (leg, s) => {
+      if (leg.gap != null) return false;
       const endX = leg.kind === 'in' ? s.entryX : s.exitX;
       const d = leg.kind === 'in' ? -s.dir : s.dout;
       if (atPort(endX, col)) return true;

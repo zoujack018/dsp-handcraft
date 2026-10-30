@@ -532,6 +532,8 @@ body.viewer-expanded { overflow: hidden; }
 .spec > [data-name="supply"][hidden], .spec > [data-name="dist"][hidden] { display: none !important; }
 .spec > [data-name="power"] { order: 7; }
 .spec > [data-name="spray"] { order: 8; }
+.spec > [data-name="fracengine"] { order: 9; }
+.spec > [data-name="fracengine"][hidden] { display: none !important; }
 .spec > [data-name="chemwide"], .spec > .field.labstack { order: 13; }
 .spec > [data-name="pile"], .spec > [data-name="proslot"], .spec > [data-name="warper"] { order: 12; } /* 物流站的三项（不再折叠，用户 2026/10/26） */
 .spec > [data-name="proslot"][hidden], .spec > [data-name="warper"][hidden] { display: none !important; }
@@ -609,7 +611,6 @@ body.viewer-expanded { overflow: hidden; }
       <fieldset class="seg" data-name="effort">
         <legend>搜索力度</legend>
         <div class="opts">
-          <label><input type="radio" name="effort" value="quick"><span>快速</span></label>
           <label><input type="radio" name="effort" value="normal"><span>标准</span></label>
           <label><input type="radio" name="effort" value="fine"><span>美观</span></label>
         </div>
@@ -748,6 +749,14 @@ body.viewer-expanded { overflow: hidden; }
           <label><input type="radio" name="spray" value="2"><span data-pill="Mk.II 增产">Mk.II</span></label>
           <label><input type="radio" name="spray" value="3"><span data-pill="Mk.III 增产">Mk.III</span></label>
         </div>
+      </fieldset>
+      <fieldset class="seg" data-name="fracengine" id="fracengine-field" hidden>
+        <legend>分馏阵列排法</legend>
+        <div class="opts">
+          <label><input type="radio" name="fracengine" value="template"><span>照原图裁剪</span></label>
+          <label><input type="radio" name="fracengine" value="anneal"><span>站在上、方形（新）</span></label>
+        </div>
+        <p class="hint">新排法还没进游戏验过。</p>
       </fieldset>
       <fieldset class="seg" data-name="pile" id="pile-field">
         <legend>物流站出货叠几层</legend>

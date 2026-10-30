@@ -211,7 +211,9 @@ export function sprayGuards(segments, legs = null, placing = false) {
  * 分配高度（liftLegs）和快速评估（estimateLegs）共用。
  */
 function makeCellsFor(c) {
-  const { legs, segments, side } = c;
+  const { labGaps, legs, segments, side } = c;
+  // 研究站夹带（layout/belts.js 的 labGaps）的高架当成段尾在夹带那一列、上方通道第一条轨那一行（layout/ports.js 的 gapRow）
+  const gapEnd = (l) => ({ exitX: labGaps[l.gap].x, y: labGaps[l.gap].y1 + 1 });
   // 靠左侧站列时，站的车道从左边水平进到走廊口；口上直接升起去走廊，就是一边转弯一边升降（游戏里会拧成麻花）。
   // 走廊里口的上一格或下一格地面空着时，先在地面拐进走廊走一格，再在那一格直着升起（落下时反过来）。
   // 走廊地面上只有各段的出入口格，按段的顺序先到先得，定下来以后整个分配过程不变。
@@ -220,7 +222,7 @@ function makeCellsFor(c) {
     const used = new Set(legs.filter((l) => l.kind !== 'link').map((l) => gk(l.edge, l.py)));
     for (const l of legs) {
       if (l.direct || l.kind === 'link') continue;
-      const s = segments[l.kind === 'in' ? l.to : l.from];
+      const s = l.gap != null ? gapEnd(l) : segments[l.kind === 'in' ? l.to : l.from];
       if (l.edge === (l.kind === 'in' ? s.entryX : s.exitX)) continue;
       const dy = l.kind === 'in' ? Math.sign(s.y - l.py) : Math.sign(l.py - s.y);
       if (!dy || Math.abs(s.y - l.py) < 2) continue;
@@ -284,6 +286,26 @@ function makeCellsFor(c) {
       }
       const last = cells[cells.length - 1];
       ramp(r, L, last[0], last[1], s.entryX, s.y, 1);
+    } else if (leg.kind === 'out' && leg.gap != null) {
+      // 研究站夹带：带尾那格（研究站本体最上面一行、两台中间那一列）原地升 L 层，往北一格到上方通道第一条轨头顶，
+      // 再拐向出口：沿这一行走到边缘那一列，竖着走到口那一行落下（走廊里多走一格同下面普通段尾的写法）
+      const gp = labGaps[leg.gap];
+      const y = gp.y1 + 1;
+      const d = Math.sign(leg.edge - gp.x) || 1;
+      cells.push([gp.x, y, L]);
+      const step = leg.py === y ? null : corridorStep.get(leg.id);
+      if (leg.py === y) runX(cells, gp.x + d, leg.edge - d, d, y, L);
+      else {
+        const dy = Math.sign(leg.py - y);
+        runX(cells, gp.x + d, leg.edge, d, y, L);
+        runY(cells, y + dy, leg.py - dy * (step ? 2 : 1), dy, leg.edge, L);
+      }
+      ramp(r, L, gp.x, gp.y1, gp.x, y);
+      const last = cells[cells.length - 1];
+      if (step) {
+        ramp(r, L, last[0], last[1], step[0], step[1], 1);
+        r.post = [[step[0], step[1], 0]];
+      } else ramp(r, L, last[0], last[1], leg.edge, leg.py, 1);
     } else if (leg.kind === 'out') {
       const s = segments[leg.from];
       const d = s.dout;
@@ -1084,6 +1106,7 @@ export function rampLegs(c) {
     if (s.y < y0 || s.y > y1) continue;
     for (let x = Math.max(s.a, x0); x <= Math.min(s.b, x1); x++) blockAt(x, s.y, 1);
   }
+  for (const gp of c.labGaps ?? []) for (let y = gp.y0; y <= gp.y1; y++) blockAt(gp.x, y, 1); // 研究站夹带的地面格
   for (const q of ports) blockAt(q.x, q.y, 1);
   for (const [x, y] of portRays({ ports, width: c.xR + 1 })) if (x >= x0 && x <= x1) blockAt(x, y, 1);
   for (const t of todo) for (const q of [t.r.rise, t.r.drop, ...t.r.pre, ...t.r.post]) if (q) blockAt(q[0], q[1], 1); // 各段两头接地面的那一格、走廊里多走的那一格

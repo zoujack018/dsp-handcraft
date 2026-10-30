@@ -2,6 +2,8 @@
 // 落地、翘曲器带、喷涂机、增产剂带、集装机都照旧放完以后、放供电之前（plan/index.js 的 finishTail），工厂、分拣器、地面段、站、
 // 喷涂机、集装机、增产剂带都不动，把每条带上两个固定格之间的那几截（段与段之间的高架、站的接线、出入口的接线、翘曲器带）拆了重走。
 // 默认只重走最后挑中的那张，哪一项都不比原来差才换上（plan/index.js 的 planFrame 最后，守门是这里的 rerouteWorse）。
+// 重走完相遇（beltStats 的 meet）比进门时多的，先把引起相遇的几截一截截退回原来的路，退到不比原来多再交给守门（rerouteBelts 的「五、相遇修补」；
+// 守门第二次起这样做，第一次照旧；第三次原料接线不换站口、段不掉头，修补哪截都能退，见 plan/index.js 的 planFrame）。
 //
 // 每截在（格、高度档 h、朝向）上做 A*：h = 0 地面、1 半层、2 第 1 层……（z = h / 2，docs/game-rules.md 第 38 条）。代价（越小越好）：
 //   水平走一格 1 + a[h′]；高度变一档 tau，一格变两档是陡坡（要超级磁场）另加 steep；拐弯 turn（拐进终点那格也算），变高的那一步同时拐弯另加 slopeTurn；
@@ -38,9 +40,11 @@ import { powerCells, realItem, SUBSTATION_DISK } from '../gamedata.js';
  * budget 每次 A* 最多出堆几次（超了这一截留着原来的路）；pad 布局四周多给几格绕路；resource、flip、trim 见文件开头；power 先选供电设施位；
  * mode：'pick'（默认）只重走最后挑中的那张、哪一项都不比原来差才换上（plan/index.js 的 planFrame）；'all' 每个候选都重走、重走后的代价参与挑选；
  * turnGuard（实验开关，默认关，考卷写 ro.rrTurnGuard=1）：守门也比拐弯（拐弯不比原来多才换上），换不上时先把拐弯的代价（turn、slopeTurn）乘 turnMul 再试一次
- * （turnMul 5：2026/10/29 在引力矩阵 30 不用原地升降、考卷 2 快速档上比过 2、3、5 倍，2 倍几乎换不上，3、5 倍差不多，5 倍换上的多一点）
+ * （turnMul 5：2026/10/29 在引力矩阵 30 不用原地升降、考卷 2 快速档上比过 2、3、5 倍，2 倍几乎换不上，3、5 倍差不多，5 倍换上的多一点）；
+ * repair：重走完相遇比进门时多，把引起相遇的几截退回原来的路（见 rerouteBelts 的「五、相遇修补」；mode 'pick' 守门第二次起做，
+ * 见 plan/index.js 的 planFrame；考卷写 ro.rrRepair=0 关掉对照）
  */
-export const REROUTE = { a: [0, 0.8, 0.4, 2, 4], tau: 3, steep: 1.5, lift: 6, turn: 5, slopeTurn: 0.5, over: 1, meet: 2, outer: 2, ring: 0.5, ringWarper: 1, exit: 1, newSlot: 2, passes: 3, maxH: 12, budget: 40000, pad: 4, resource: true, flip: true, power: true, trim: true, mode: 'pick', turnGuard: false, turnMul: 5 };
+export const REROUTE = { a: [0, 0.8, 0.4, 2, 4], tau: 3, steep: 1.5, lift: 6, turn: 5, slopeTurn: 0.5, over: 1, meet: 2, outer: 2, ring: 0.5, ringWarper: 1, exit: 1, newSlot: 2, passes: 3, maxH: 12, budget: 40000, pad: 4, resource: true, flip: true, power: true, trim: true, mode: 'pick', turnGuard: false, turnMul: 5, repair: true };
 const KEYS = Object.keys(REROUTE);
 
 /** routeOptions → 重走的参数；没开时 null。ro.reroute 可以是 true 或参数对象，ro.rrXxx（考卷 --trees 名字=.:ro.rrTau=2）也认 */
@@ -123,7 +127,11 @@ function chainSpans(L, chain) {
   const spans = [];
   for (const part of chain.parts) {
     const i = main.length;
-    if (part.leg != null) {
+    if (part.gap != null) {
+      // 研究站夹带（layout/belts.js 的 labGaps）那一列，同 chainTiles
+      const g = L.labGaps[part.gap];
+      for (let y = g.y0; y <= g.y1; y++) main.push([g.x, y, 0]);
+    } else if (part.leg != null) {
       const l = L.legs[part.leg];
       if (l.kind === 'in') {
         if (l.stub) main.push(...l.stub);
@@ -157,7 +165,8 @@ function chainSpans(L, chain) {
 /**
  * 后处理重走：直接改 L（各截的格子、站的接线和存储、翻过来的段），最后裁边、重数带子（cropToContent）。
  * ctx：{ opts（rerouteOptions 的结果）, power, powerOptions, maxWidth, maxHeight, slots（物流站的额外格子：keepFree 留增产剂的空格） }。
- * 结果统计记在 L.reroute：{ nets 截数, kept 留着原来的路的, switched 换了站或口的原料接线, flipped 翻过来的段, pops A* 出堆合计, ms }
+ * 结果统计记在 L.reroute：{ nets 截数, kept 留着原来的路的, switched 换了站或口的原料接线, flipped 翻过来的段, pops A* 出堆合计,
+ *   meets 相遇 [进门时, 重走完, 修补完（修补跑了才有）], reverted 相遇修补退回原来的路的截数, ms }
  */
 export function rerouteBelts(L, { opts = REROUTE, power = null, powerOptions = null, maxWidth = null, maxHeight = null, slots = null } = {}) {
   const t0 = performance.now();
@@ -244,6 +253,7 @@ export function rerouteBelts(L, { opts = REROUTE, power = null, powerOptions = n
       if (part.leg == null) continue;
       const l = L.legs[part.leg];
       if (l.broken || l.spray || l.bridge || l.store != null || l.burn != null || l.pre) continue;
+      if (l.gap != null) continue; // 研究站夹带接出去的那截（第一版不重走，照原来的路）
       if (l.bus != null && !l.stub) continue; // 侧边总线整条留着（几条并排走得整齐）
       if (l.kind === 'in' && l.stub && !edgeStations) continue;
       if (l.kind === 'out' && l.stub && !edgeStations) continue;
@@ -458,6 +468,8 @@ export function rerouteBelts(L, { opts = REROUTE, power = null, powerOptions = n
     for (let y = Math.min(edge, belt) + 1; y < Math.max(edge, belt); y++) if (inb(s.col, y)) arm[cid(s.col, y)] |= 0b11;
     block(s.col, belt, 0b10);
   }
+  // 研究站夹带的侧面分拣器（横着，手臂压着研究站本体和夹带那格）：接的那格的半层
+  for (const g of L.labGaps || []) for (const t of g.taps) block(g.x, t.y, 0b10);
   // 喷涂空当的保护区：候选格到 2.5 层、取料格两侧的地面到 1.5 层；高架上的窗口按那一层上下各半层
   const guards = sprayGuards(L.segments, L.legs);
   for (const [x, y] of guards.guard2) block(x, y, bits(0, 5));
@@ -574,6 +586,7 @@ export function rerouteBelts(L, { opts = REROUTE, power = null, powerOptions = n
     n.id = k;
     n.route = n.old;
     n.marks = lay(full(n, n.old), k, true, true);
+    n.from = { start: n.start, goal: n.goal, portCell: n.portCell ?? null }; // 裁段以后的两头（相遇修补看两头变没变）
   });
 
   // 同一格里有没有别的链（自己这条链的固定格、同一条链别的截不算）：叠格、相遇的代价只按别的链算
@@ -1184,7 +1197,243 @@ export function rerouteBelts(L, { opts = REROUTE, power = null, powerOptions = n
   }
 
   const passMs = performance.now() - t0 - setupMs;
-  // —— 五、写回 ——
+  // —— 五、相遇修补 ——
+  // 每截各自最省，合起来交叠反而多了：粒子容器 60 高配，水那条带在 1 层沿一条地面带走 3 格，另一条重走过的带在那里从它底下半层穿过，
+  // 相遇 4 → 5，守门就连 10 节原地升降一起留原图（相遇、叠格的代价加到 10 倍、3 倍也没用，2026/10/30 美观档 34 份一份没救回）。
+  // 这里按 beltStats 的口径（每条链的主链、劈开的每一半、翘曲器带、增产剂带各算一条，每两条共用的格按相邻连成一处处）数进门时和重走完的相遇，
+  // 重走完多了就一截截退回原来的路：每次只看相遇变多的那几对、新路和对方有共用格的截，挑退回以后全图相遇少得最多的那截
+  // （一样多先挑原地升降回来得少的、再挑带节回来得少的、再按编号），退到不比进门时多为止；没有哪截退回能再少、还是多，就一截也不退
+  // （守门照样拦，和没有这一步一字不差）；退完变了的截全退了（和原图一样）也不退，免得守门照单全收、不再试第二次。
+  // 相遇没变多时什么都不动。放供电不动带子、裁边只是平移，这里数的和守门比的是同一个数。
+  // 只退两头没变的截：换了站或口的原料接线、翻过来的段不退（原来的路接不上现在的两头）；裁段并进来的那几格本来就在原来的路里，
+  // 退回去还是原来那几格。退回的路守 A* 同样的规矩（search 里那几条）：别的带子占着的（格、档）、原地升降那一叠的中间几档、
+  // 分拣器手臂和接的那格的半层、挡路的那些、同一条边上上下对调，哪一格不行这一截就不退
+  let meets = null; // [进门时, 重走完]，修补跑了再加一个修补完的
+  let reverted = 0;
+  const tRepair = performance.now();
+  if (opts.repair) {
+    const KW = GW + 2; // 格的编号左右各多留一列，±1 不会绕到别的行
+    let bad = false; // 有不在网格里或不是整数的格（不会）：不修
+    const keyOf = (x, y) => {
+      if (Number.isInteger(x) && Number.isInteger(y) && inb(x, y)) return (y - Y0 + 1) * KW + (x - X0 + 1);
+      bad = true;
+      return -1;
+    };
+    const warpers = L.warperLinks || [];
+    const pros = L.proLines || [];
+    let NR = 0;
+    const chainRun = []; // 第 ci 条链的主链是第几条，劈开的几半接着排
+    for (const info of chainInfo) {
+      chainRun.push(NR);
+      NR += 1 + info.extra.length;
+    }
+    const warpRun = NR;
+    NR += warpers.length;
+    const proRun = NR;
+    NR += pros.length;
+    const runOf = (n) => (n.type === 'warper' ? warpRun + n.chain - L.chains.length : chainRun[n.chain]);
+    const pkOf = (a, b) => (a < b ? a * NR + b : b * NR + a);
+    // 每条带各格走过几次（cnt），每格有哪几条（at）
+    const cnt = Array.from({ length: NR }, () => new Map());
+    const at = new Map();
+    const put = (r, t, d) => {
+      const k = keyOf(t[0], t[1]);
+      if (k < 0) return;
+      const m = cnt[r];
+      const v = (m.get(k) ?? 0) + d;
+      if (v < 0) {
+        bad = true;
+        return;
+      }
+      if (v) m.set(k, v);
+      else m.delete(k);
+      if (d > 0 && v === 1) {
+        const l = at.get(k);
+        if (l) l.push(r);
+        else at.set(k, [r]);
+      } else if (d < 0 && !v) {
+        const l = at.get(k);
+        l.splice(l.indexOf(r), 1);
+        if (!l.length) at.delete(k);
+      }
+    };
+    // 一组格按相邻连成几处
+    const comps = (keys) => {
+      const left = new Set(keys);
+      let m = 0;
+      for (const k0 of keys) {
+        if (!left.delete(k0)) continue;
+        m++;
+        const q = [k0];
+        while (q.length) {
+          const k = q.pop();
+          for (const k2 of [k + 1, k - 1, k + KW, k - KW]) if (left.delete(k2)) q.push(k2);
+        }
+      }
+      return m;
+    };
+    // 每一对的相遇（对 → 几处）
+    const pairMeets = () => {
+      const lists = new Map();
+      for (const [k, rs] of at) {
+        if (rs.length < 2) continue;
+        for (let i = 0; i < rs.length; i++)
+          for (let j = i + 1; j < rs.length; j++) {
+            const pk = pkOf(rs[i], rs[j]);
+            const l = lists.get(pk);
+            if (l) l.push(k);
+            else lists.set(pk, [k]);
+          }
+      }
+      const pm = new Map();
+      for (const [pk, keys] of lists) pm.set(pk, comps(keys));
+      return pm;
+    };
+    const sum = (pm) => {
+      let s = 0;
+      for (const v of pm.values()) s += v;
+      return s;
+    };
+    // 进门时：链还是原来的格子（chainSpans 列的，和 chainTiles 一样）
+    chainInfo.forEach((info, ci) => {
+      for (const t of info.main) put(chainRun[ci], t, 1);
+      info.extra.forEach((e, k) => {
+        for (const t of e) put(chainRun[ci] + 1 + k, t, 1);
+      });
+    });
+    warpers.forEach((w, k) => {
+      for (const t of w.cells) put(warpRun + k, t, 1);
+    });
+    pros.forEach((p, k) => {
+      for (const t of p.cells) put(proRun + k, t, 1);
+    });
+    const pm0 = pairMeets();
+    const meet0 = sum(pm0);
+    // 重走完：每截原来的格子换成新路；换了站的原料接线，站口和站身边那格也换（同下面写回的 stub）
+    for (const n of nets) {
+      const r = runOf(n);
+      for (const t of n.old) put(r, t, -1);
+      for (const t of n.route) put(r, t, 1);
+      if (n.type === 'feed') {
+        put(r, n.from.portCell, -1);
+        put(r, n.from.start, -1);
+        put(r, n.portCell, 1);
+        put(r, n.start, 1);
+      }
+    }
+    const pm = pairMeets();
+    const meet1 = sum(pm);
+    if (!bad) meets = [meet0, meet1];
+    if (!bad && meet1 > meet0) {
+      const byRun = new Map();
+      for (const n of nets) {
+        const r = runOf(n);
+        if (!byRun.has(r)) byRun.set(r, []);
+        byRun.get(r).push(n);
+      }
+      const same2 = (a, b) => a[0] === b[0] && a[1] === b[1];
+      const pure = (n) => !sameRoute(n.route, n.old) && same2(n.start, n.from.start) && same2(n.goal, n.from.goal) && !((n.flips ?? 0) % 2) && (n.type !== 'feed' || same2(n.portCell, n.from.portCell));
+      const liftsOf = (n, route) => {
+        const P = full(n, route);
+        let k = 0;
+        for (let i = 1; i < P.length; i++) if (same2(P[i], P[i - 1]) && P[i][2] !== P[i - 1][2]) k++;
+        return k;
+      };
+      // 两条带共用的格连成几处（A、B：格 → 次数）
+      const shared = (A, B) => {
+        const [S, T] = A.size <= B.size ? [A, B] : [B, A];
+        const keys = [];
+        for (const k of S.keys()) if (T.has(k)) keys.push(k);
+        return keys.length ? comps(keys) : 0;
+      };
+      // 这一截换成 route（[x, y, h]，两头之间）在现在的占用里行不行：先把它自己拆掉（边换版），逐格按 search 的规矩查，查完照原样放回去
+      const fits = (n, route) => {
+        unlay(n.marks);
+        ver[n.id]++;
+        markOld(n);
+        const P = full(n, route);
+        let ok = true;
+        for (let k = 1; ok && k < P.length; k++) {
+          const p = P[k - 1];
+          const [x, y, h] = P[k];
+          const c = cid(x, y);
+          const same = p[0] === x && p[1] === y;
+          let m = k < P.length - 1 ? 1 << h : 0; // 终点是固定格，它那一档按固定的记过（同 lay 的 skipLast）
+          if (same && p[2] !== h) m |= bits(Math.min(p[2], h) + 1, Math.max(p[2], h) - 1); // 原地升降那一叠的中间几档
+          if ((blk[c] | occ[c] | armAt(c)) & m) ok = false;
+          else if (!same && !edgeOk(cid(p[0], p[1]), p[2], c, h)) ok = false;
+        }
+        n.marks = lay(full(n, n.route), n.id, true, true);
+        return ok;
+      };
+      const relay = (n, route) => {
+        unlay(n.marks);
+        ver[n.id]++;
+        n.route = route;
+        n.marks = lay(full(n, route), n.id, true, true);
+      };
+      const undo = [];
+      let now = meet1;
+      while (now > meet0) {
+        // 候选：相遇变多的那几对里，新路和对方有共用格的截
+        const cand = new Set();
+        for (const [pk, v] of pm) {
+          if (v <= (pm0.get(pk) ?? 0)) continue;
+          const a = Math.floor(pk / NR);
+          const b = pk - a * NR;
+          for (const [r, s] of [[a, b], [b, a]]) for (const n of byRun.get(r) ?? []) if (!cand.has(n) && pure(n) && n.route.some((t) => cnt[s].has(keyOf(t[0], t[1])))) cand.add(n);
+        }
+        let best = null;
+        for (const n of [...cand].sort((p, q) => p.id - q.id)) {
+          // 退回以后全图相遇变多少：只有这一截所在那条带和这一截新旧格子上的那几条配的对会变
+          const r = runOf(n);
+          const A = new Map(cnt[r]);
+          const bump = (t, d) => {
+            const k = keyOf(t[0], t[1]);
+            const v = (A.get(k) ?? 0) + d;
+            if (v > 0) A.set(k, v);
+            else A.delete(k);
+          };
+          for (const t of n.route) bump(t, -1);
+          for (const t of n.old) bump(t, 1);
+          const near = new Set();
+          for (const t of [...n.route, ...n.old]) for (const s of at.get(keyOf(t[0], t[1])) ?? []) if (s !== r) near.add(s);
+          let d = 0;
+          const after = [];
+          for (const s of near) {
+            const v = shared(A, cnt[s]);
+            after.push([s, v]);
+            d += v - (pm.get(pkOf(r, s)) ?? 0);
+          }
+          if (d >= 0) continue;
+          const dl = liftsOf(n, n.old) - liftsOf(n, n.route);
+          const dn = n.old.length - n.route.length;
+          if (best && (d > best.d || (d === best.d && (dl > best.dl || (dl === best.dl && dn >= best.dn))))) continue;
+          if (!fits(n, n.old)) continue;
+          best = { n, r, d, dl, dn, after };
+        }
+        if (!best) break;
+        const { n, r } = best;
+        undo.push([n, n.route]);
+        for (const t of n.route) put(r, t, -1);
+        for (const t of n.old) put(r, t, 1);
+        for (const [s, v] of best.after) {
+          if (v) pm.set(pkOf(r, s), v);
+          else pm.delete(pkOf(r, s));
+        }
+        relay(n, n.old);
+        now += best.d;
+      }
+      // 退不到进门时的数，或者退得一截都没变（和原图一模一样，守门会照单全收、第二次加重相遇的重走就不试了）：都换回新路
+      const moved = (n) => !sameRoute(n.route, n.old) || !same2(n.start, n.from.start) || !same2(n.goal, n.from.goal) || (n.flips ?? 0) % 2 || (n.type === 'feed' && !same2(n.portCell, n.from.portCell));
+      const back = bad || now > meet0 || !nets.some(moved);
+      if (back) for (const [n, route] of undo.reverse()) relay(n, route);
+      else reverted = undo.length;
+      meets.push(back ? meet1 : now);
+    }
+  }
+  const repairMs = performance.now() - tRepair;
+  // —— 六、写回 ——
   const Z = (tiles) => tiles.map(([x, y, h]) => [x, y, h / 2]);
   let switched = 0;
   for (const n of nets) {
@@ -1236,7 +1485,7 @@ export function rerouteBelts(L, { opts = REROUTE, power = null, powerOptions = n
   }
   const flipped = nets.reduce((a, n) => a + (n.flips ?? 0) % 2, 0);
   cropToContent(L);
-  L.reroute = { nets: nets.length, passes: passesRun, kept, switched, flipped, selfFix, pops, mapPops, mapMs: Math.round(mapMs), powMs: Math.round(powMs), setupMs: Math.round(setupMs), passMs: Math.round(passMs), ms: Math.round(performance.now() - t0) };
+  L.reroute = { nets: nets.length, passes: passesRun, kept, switched, flipped, selfFix, pops, mapPops, mapMs: Math.round(mapMs), powMs: Math.round(powMs), setupMs: Math.round(setupMs), passMs: Math.round(passMs), meets, reverted, repairMs: Math.round(repairMs), ms: Math.round(performance.now() - t0) };
   return L;
 }
 
@@ -1308,7 +1557,8 @@ export function beltStats(L) {
 
 /**
  * 卫星配电站顶盘那一圈（离中心正好 SUBSTATION_DISK.reach 格、4.18~5.27 层）里有几节带子：独立检查（emit/check.js）报「顶盘撞上高架带」，
- * 网页、考卷会换种子重排。搜索和放供电都不看带子的高度，主干的图偶尔会撞；重走的新路接卫星配电站时不上 4 层以上，不会撞
+ * 网页、考卷会换种子重排。放供电（plan/power.js 的 markDisk）从 2026/10/30 起让开这一圈里这种高度的带子，现放的不会撞（以前不看高度，主干的图偶尔会撞），
+ * 这里留着当守门的保险；重走的新路接卫星配电站时不上 4 层以上，不会撞
  */
 export function diskHits(L) {
   if (L.power?.itemId !== 2212 || !L.power.nodes?.length) return 0;

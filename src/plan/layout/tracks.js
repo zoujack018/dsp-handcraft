@@ -38,7 +38,10 @@ const rowsBids = (rows, c) => {
 
 /** route() 的一步：读写共享的布局上下文 c */
 export function placeTracks(c) {
-  const { P, R, addPenalty, extraBottom, extraTop, opt, pos, rowAbove, rowBelow, rows, segments } = c;
+  const { P, R, addPenalty, extraBottom, extraTop, labGaps, opt, pos, rowAbove, rowBelow, rows, segments } = c;
+  // 研究站夹带（layout/belts.js 的 labGaps）往上方通道升出去：最上面一行有夹带时，最上面那条通道没有段也留 1 行给它走
+  let gapTop = false;
+  if (labGaps) for (let i = 0; i < labGaps.length; i++) if (labGaps[i].row === R - 1) gapTop = true;
   // ---------- C. 轨道分配（左边缘算法；实测同轨首尾相接的两段不会被游戏自动连上，所以可以紧挨） ----------
   // 每个通道：c 通道号、tracks 各条轨道目前的末端、n 轨道数、h 占几行、base 第一条轨道的 y（属性先后和逐个加上时一样）。
   // 通道对象在下面 C 里排完这个通道的轨道再建（原来先建好、每个通道只在自己那一圈里读写，之前之后都不碰）
@@ -171,7 +174,7 @@ export function placeTracks(c) {
     if (ch.n > opt.maxTracks && !four && !ch.wide) addPenalty('tracks', P.tracks * (ch.n - opt.maxTracks), `通道${ch.c} 需要 ${ch.n} 条地面轨道，超过分拣器够得着的 ${opt.maxTracks} 条`, rowsBids(rows, ch.c));
     // 行与行之间至少留 1 格，防止制造台碰撞体（约 3.2 格）重叠。
     // （2026/10/06 曾让两行化工厂之间至少留 2 格，第四张体积测试 I1 I2 实测隔 1 行能放，撤回了）
-    ch.h = ch.c > 0 && ch.c < R ? Math.max(ch.n, 1) : ch.n;
+    ch.h = (ch.c > 0 && ch.c < R) || (gapTop && ch.c === R) ? Math.max(ch.n, 1) : ch.n;
   }
 
   // ---------- C2. 轨道重排：常用的轨道挪到离使用它的工厂更近的一侧，分拣器就短 ----------
@@ -252,6 +255,21 @@ export function placeTracks(c) {
   const rowCy = cy.slice(0, R);
   let height = y;
   for (let i = 0; i < segments.length; i++) segments[i].y = channels[segments[i].ch].base + segments[i].track;
+  // 夹带的纵向位置：带头是最下面那根分拣器接的那格，带尾（原地升起那格）是研究站本体最上面一行，再往上一格就是上方通道的第一条轨
+  if (labGaps) {
+    for (let i = 0; i < labGaps.length; i++) {
+      const gp = labGaps[i];
+      const cy = rowCy[gp.row];
+      let lo = Infinity;
+      for (let j = 0; j < gp.taps.length; j++) {
+        const t = gp.taps[j];
+        t.y = cy + t.dy;
+        lo = Math.min(lo, t.y);
+      }
+      gp.y0 = lo;
+      gp.y1 = cy + pos.get(gp.bid).g.bodyAbove;
+    }
+  }
 
   // 逐个写回（和 Object.assign(c, { channels, height, rowCy }) 按同样的先后写同样的字段）
   c.channels = channels;

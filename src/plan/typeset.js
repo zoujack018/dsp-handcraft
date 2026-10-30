@@ -9,6 +9,7 @@
 import { layers } from './graph.js';
 import { BELT_SPEED } from '../gamedata.js';
 import { DEFAULTS, STATION_SLOTS } from './route.js';
+import { pileCapOf } from './piling.js';
 
 /** 断开一个组（一组分到两行）的罚分，和「一行空 4 列」相当 */
 const SPLIT_COST = 16;
@@ -16,17 +17,20 @@ const SPLIT_COST = 16;
 /**
  * 每组一块最多几台（运力断块）：同一块的产物只上一条带、每种吃料也只从一条带取（layout/belts.js），
  * 块的流量超过一条带的运力就记「超运力」。前沿大线一行几百列，整行同组的一段常常超（引力矩阵 180 的铁块 45 台 × 60/分）。
- * 排版时一行里同组的一段超过这个台数就在行内切成几块（台数尽量平均），各挂各的带
+ * 排版时一行里同组的一段超过这个台数就在行内切成几块（台数尽量平均），各挂各的带。
+ * piled（只有主干内核传，place.js）：开自动集装机时产物和不是原料的进料按集装后的运力算（layout/belts.js 的 pileCap，plan/piling.js 的 pileCapOf：
+ * 不写 pileModel 是单条带的 4 倍），原料照旧
  */
-export function blockCaps(graph, ro = {}) {
+export function blockCaps(graph, ro = {}, piled = false) {
   const beltCap = BELT_SPEED[ro.belt ?? DEFAULTS.belt] * (ro.stack ?? DEFAULTS.stack) * 60;
   const rawCap = beltCap * Math.max(1, ro.station?.stack ?? ro.externalStack ?? DEFAULTS.externalStack);
+  const itemCap = piled && (ro.pilers ?? DEFAULTS.pilers) ? Math.max(beltCap, pileCapOf(BELT_SPEED[ro.belt ?? DEFAULTS.belt] * 60, ro.pileModel ?? DEFAULTS.pileModel)) : beltCap;
   const caps = new Map();
   for (const g of graph.groups) {
     let n = Infinity;
-    for (const o of g.outputs) if (o.perFactory > 0) n = Math.min(n, beltCap / o.perFactory);
+    for (const o of g.outputs) if (o.perFactory > 0) n = Math.min(n, itemCap / o.perFactory);
     for (const it of graph.items.values())
-      for (const c of it.consumers) if (c.to === g.id && c.rate > 0) n = Math.min(n, (it.producer === 'RAW' ? rawCap : beltCap) / (c.rate / g.count));
+      for (const c of it.consumers) if (c.to === g.id && c.rate > 0) n = Math.min(n, (it.producer === 'RAW' ? rawCap : itemCap) / (c.rate / g.count));
     caps.set(g.id, Math.max(1, Math.floor(n + 1e-9)));
   }
   caps.beltCap = beltCap; // 分身单元按带切（unitsOf）要用

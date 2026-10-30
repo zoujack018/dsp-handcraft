@@ -1,5 +1,5 @@
 // 约束检查与计数：分拣器落位、各类惩罚、面积与带数、结构代价、最终代价
-import { assignSorters, sideCap } from '../sorters.js';
+import { assignSorters, sideCap, SORTER_SPEED } from '../sorters.js';
 import { powerBands } from '../power.js';
 import { stationHoles } from '../holes.js';
 import { STATION_COLS, TOL, busMinX, gk } from './shared.js';
@@ -107,6 +107,8 @@ export function nearLiftTurns(cells, k) {
 
 /** 劈开的段按继续走的那一半算 */
 const segLen = (s) => (s.split == null ? s.b - s.a + 1 : s.cont === 'L' ? s.split - s.a : s.cont === 'R' ? s.b - s.split + 1 : Math.max(s.split - s.a, s.b - s.split + 1));
+/** 研究站夹带（layout/belts.js 的 labGaps）那一列的地面格数 */
+const gapLen = (gp) => gp.y1 - gp.y0 + 1;
 const legLen = (l) => l.cells.length + (l.kind !== 'link' && !l.direct ? 1 : 0);
 /** 不影响可行的惩罚（只是提示或口味） */
 const softKind = (k) => k === 'aspect' || k === 'long' || k === 'fill' || k === 'spray';
@@ -388,7 +390,7 @@ export function preLegElevFloor(c, nDead) {
 // 退火里每一步都要打一次分：下面的循环都按下标走（不用 for…of、不解构、不拼临时数组），
 // 函数还没被优化编译时也不会每一步都造迭代结果和小数组；算出的数和以前逐项按同样的先后相加，一字不差
 export function scoreLayout(c) {
-  const { P, R, addPenalty, beltCap, blocks, blocksOf, chains, channels, corridor, graph, height, itemBids, legs, opt, pads, penalties, pileCap, ports, pos, powerHoles, rawCap, roads, rowAbove, rowBelow, rowCy, rows, segments, side, sides, stations, streetX, xR } = c;
+  const { P, R, addPenalty, beltCap, blocks, blocksOf, chains, channels, corridor, graph, height, itemBids, labGaps, legs, opt, pads, penalties, pileCap, ports, pos, powerHoles, rawCap, roads, rowAbove, rowBelow, rowCy, rows, segments, side, sides, stations, streetX, xR } = c;
   // ---------- F. 约束检查与计数 ----------
   // 每块上下两侧要接的物品种数不能超过分拣器位（Map.forEach：不造 [键, 值] 数组）
   sides.forEach((sd, bid) => {
@@ -402,7 +404,7 @@ export function scoreLayout(c) {
   });
   // 不依赖分拣器的部分先算（流量、尺寸、带数、结构、叠层、口味）；这几项的惩罚先存在 late 里，等分拣器的惩罚记完再按原来的次序记
   const late = [];
-  // 每条带（原料每个入口一条，产物一种一条）的流量不能超过单条带运力（产物带开集装机时是集装后的运力 pileCap，layout/belts.js）
+  // 每条带（原料每个入口一条，产物一种一条）的流量不能超过单条带运力（产物带开集装机时是集装后的运力 pileCap，layout/belts.js；route 选项 pileModel 定）
   for (let i = 0; i < chains.length; i++) {
     const ch = chains[i];
     const parts = ch.parts;
@@ -413,7 +415,7 @@ export function scoreLayout(c) {
     }
     const it = graph.items.get(ch.itemId);
     const cap = it.producer === 'RAW' ? rawCap : pileCap;
-    if (rate > cap + TOL) late.push(['belt', P.belt, `${it.name} 流量 ${rate.toFixed(0)}/分 超过${cap > beltCap && it.producer !== 'RAW' ? '一条带叠 4 层的' : '单条带'}运力 ${cap}/分`, itemBids(ch.itemId)]);
+    if (rate > cap + TOL) late.push(['belt', P.belt, `${it.name} 流量 ${rate.toFixed(0)}/分 超过${cap > beltCap && it.producer !== 'RAW' ? (opt.pileModel > 0 ? `一条带过 ${Math.floor(opt.pileModel)} 台集装机的` : '一条带叠 4 层的') : '单条带'}运力 ${opt.pileModel > 0 ? Math.round(cap) : cap}/分`, itemBids(ch.itemId)]);
   }
 
   let maxX = xR - 1;
@@ -510,7 +512,7 @@ export function scoreLayout(c) {
     let len = 0;
     for (let j = 0; j < parts.length; j++) {
       const p = parts[j];
-      len += p.seg != null ? segLen(segments[p.seg]) : legLen(legs[p.leg]);
+      len += p.seg != null ? segLen(segments[p.seg]) : p.gap != null ? gapLen(labGaps[p.gap]) : legLen(legs[p.leg]);
     }
     pathLenBuf[i] = len;
     if (len > longestLen) {
@@ -526,6 +528,7 @@ export function scoreLayout(c) {
   }
   let segCells = 0;
   for (let i = 0; i < segments.length; i++) segCells += segments[i].b - segments[i].a + 1;
+  if (labGaps) for (let i = 0; i < labGaps.length; i++) segCells += gapLen(labGaps[i]); // 研究站夹带的地面格
   let portCells = 0;
   for (let i = 0; i < ports.length; i++) if (!ports[i].direct) portCells++;
   const groundBelts = segCells + portCells + stubCells;
@@ -660,6 +663,17 @@ export function scoreLayout(c) {
     }
     addPenalty('slow', P.slow, lastMsg, [sl.bid]);
   }
+  // 研究站夹带的侧面分拣器（layout/belts.js 的 labGaps，每台一根、长 1）：速度不够时只能换更快的分拣器（侧面接不了第二根），按太慢罚
+  let nGapSorters = 0;
+  if (labGaps) {
+    const sp = SORTER_SPEED[opt.sorter]?.[1] ?? 0;
+    for (let i = 0; i < labGaps.length; i++) {
+      const gp = labGaps[i];
+      nGapSorters += gp.taps.length;
+      const g = pos.get(gp.bid).g;
+      if (g.perFactory * opt.headroom > sp + 1e-9) for (let j = 0; j < gp.taps.length; j++) addPenalty('slow', P.slow, `${g.item} 的「${graph.items.get(gp.itemId).name}」从侧面出，1 根 1 格长的分拣器不够快（每台需 ${g.perFactory.toFixed(0)}/分），换更快的分拣器`, [gp.bid]);
+    }
+  }
   // 喷涂机的空当要真能骑（opt.sprayAll）：压着的 3 格上不能有分拣器横穿，取料格两侧不能都是工厂
   // （增产剂带要在取料格上方第 1 层横穿，至少一侧要能进）。两个候选位置都被堵的按走不通罚，退火会把块挪开
   if (opt.sprayAll) {
@@ -749,7 +763,7 @@ export function scoreLayout(c) {
       else if (len === 3) n3++;
       else sorterLengths[len] = (sorterLengths[len] || 0) + 1;
     }
-    sorterLengths[1] = n1;
+    sorterLengths[1] = n1 + nGapSorters;
     sorterLengths[2] = n2;
     sorterLengths[3] = n3;
   }
@@ -763,7 +777,7 @@ export function scoreLayout(c) {
   // 供电可行性：附近没有空地插塔的工厂/分拣器只能靠外沿加地，加地面积计入成本
   let powerPlan = null;
   if (opt.power) {
-    powerPlan = powerBands({ pos, rowCy, chains, legs, segments, ports, stations, sorterList: sorterPlan.sorters, width, height, x0: minX }, opt.power, { ...opt.powerOptions, maxWidth: opt.maxWidth, maxHeight: opt.maxHeight });
+    powerPlan = powerBands({ pos, rowCy, chains, legs, segments, ports, stations, sorterList: sorterPlan.sorters, width, height, x0: minX, labGaps }, opt.power, { ...opt.powerOptions, maxWidth: opt.maxWidth, maxHeight: opt.maxHeight });
     if (powerPlan.unreachable) addPenalty('power', P.power * powerPlan.unreachable, `${powerPlan.unreachable} 个工厂/分拣器离任何能放供电设施的地方都太远`, [...new Set((powerPlan.lonely || []).map((t) => t.bid).filter(Boolean))]);
   }
   // 边缘放站：估算把站放进空地（或贴在边上）要多占的面积和接线长度，退火会主动留出空地
@@ -826,7 +840,7 @@ export function scoreLayout(c) {
     airBelts,
     longestBelt: longestLen,
     longestBeltItem: longestItem,
-    sorters: sorters.length,
+    sorters: sorters.length + nGapSorters,
     sorterList: sorters,
     sorterLengths,
     factories,
@@ -847,5 +861,7 @@ export function scoreLayout(c) {
     taste,
     quick: !!opt.quick,
   };
+  // 研究站夹带（宇宙矩阵那种组才有）：地面格、侧面分拣器，后处理、出蓝图、画图都从这里取。没有的线不加这个键
+  if (labGaps) result.labGaps = labGaps;
   return result;
 }

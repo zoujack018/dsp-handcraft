@@ -3,8 +3,8 @@
 import { chainTiles } from '../emit/blueprint.js';
 import { translateLayout } from './coordinates.js';
 import { sprayGuards } from './layout/elevation.js';
-import { STATION_CLEAR, STATION_GAP, STATION_HALF, realItem } from '../gamedata.js';
-import { WARPER, STATION_SLOTS, keepFreeSlot, stationItemCap } from './layout/shared.js';
+import { STATION_CLEAR, STATION_EW, STATION_GAP, STATION_HALF, stationSpan, realItem } from '../gamedata.js';
+import { WARPER, STATION_SLOTS, gapEnd, keepFreeSlot, stationItemCap } from './layout/shared.js';
 
 export const STATION_PORTS = [
   { slot: 0, dx: 1, dy: 2, nx: 0, ny: 1 },
@@ -809,8 +809,8 @@ function attachStations0(source, { stack = 1, maxWidth = null, maxHeight = null,
       if (maxHeight && Math.max(L.height - 2, y + 3) - Math.min(1, y - 3) + 1 > maxHeight) continue;
       if (!fits(x, y)) continue;
       // 预留的是卫星配电站时，它的格子不进站身外那 1 格碰撞圈（电力感应塔可以贴着站身）
-      if (reserveItem === 2212 && reserve.some(([rx, ry]) => Math.abs(rx + 1 - x) <= STATION_CLEAR && Math.abs(ry + 1 - y) <= STATION_CLEAR)) continue;
-      if (L.stations.some((st) => Math.hypot(st.x - x, st.y - y) < STATION_GAP)) continue; // 游戏要求两站隔开
+      if (reserveItem === 2212 && reserve.some(([rx, ry]) => (Math.abs(rx + 1 - x) <= STATION_CLEAR && Math.abs(ry + 1 - y) <= STATION_CLEAR) || (Math.abs(rx + 1 - x) <= STATION_EW.x && Math.abs(ry + 1 - y) <= STATION_EW.y))) continue;
+      if (L.stations.some((st) => stationSpan(st.x - x, st.y - y) < STATION_GAP)) continue; // 游戏要求两站隔开（东西向按最窄格宽折算，gamedata.js）
       const area = Math.max(L.width, x + 4) * Math.max(L.height, y + 4);
       // 候选站位照旧按到原来段头的距离排（试的还是那一批站位；按近的那头排，离边远、撑大外框的站位会挤进前几名）
       const distance = ports.reduce((n, p) => n + Math.abs(p.x - x) + Math.abs(p.y - y), 0);
@@ -847,8 +847,14 @@ function attachStations0(source, { stack = 1, maxWidth = null, maxHeight = null,
         for (let k = order.length - 1; k >= 0; k--) {
           const p = order[k];
           const leg = L.legs[p.leg];
-          const seg = L.segments[p.kind === 'in' ? leg.to : leg.from];
           const own = leg.cells.length + (leg.direct ? 0 : 1);
+          if (leg.gap != null) {
+            // 研究站夹带：终点是带尾那格（layout/shared.js 的 gapEnd）
+            const e = gapEnd(L, leg);
+            rest[k] = rest[k + 1] + routeFloor(s, [e.x, e.y], p, own);
+            continue;
+          }
+          const seg = L.segments[p.kind === 'in' ? leg.to : leg.from];
           const t = tailOf(p);
           // 能翻的口两头都可能接（近的那头接不上时退回原来的段头），下限取两头小的
           const lb = routeFloor(s, [p.kind === 'in' ? seg.entryX : seg.exitX, seg.y], p, own);
@@ -874,7 +880,9 @@ function attachStations0(source, { stack = 1, maxWidth = null, maxHeight = null,
         let chosen = null;
         // 直接接到段的端头（不经过边缘的出入口和原来那段高架），原来那段高架和出入口格让出来
         const leg = L.legs[p.leg];
-        const seg = L.segments[p.kind === 'in' ? leg.to : leg.from];
+        // 研究站夹带（leg.gap）：终点是带尾那格，链在那里往北流（layout/shared.js 的 gapEnd），没有段
+        const gend = leg.gap != null ? gapEnd(L, leg) : null;
+        const seg = gend ? null : L.segments[p.kind === 'in' ? leg.to : leg.from];
         const own = [...leg.cells.map((c) => cell(...c)), ...(leg.direct ? [] : [cell(leg.edge, leg.py, 0)])];
         const ignore = new Set(own);
         // 能翻的原料口：段尾离这个站位近就先接段尾（接上了这一段翻过来），接不上再接原来的段头；别的口照旧只接段头
@@ -886,9 +894,9 @@ function attachStations0(source, { stack = 1, maxWidth = null, maxHeight = null,
           // 只试离目标最近的 4 个空闲站口：更远的口几乎不会更好，A* 失败时却要把预算耗完
           const slots = STATION_PORTS.filter((q) => freeSlots.has(q.slot)).sort((a, b) =>
             Math.abs(s.x + a.dx + a.nx * 2 - px) + Math.abs(s.y + a.dy + a.ny * 2 - p.y) - Math.abs(s.x + b.dx + b.nx * 2 - px) - Math.abs(s.y + b.dy + b.ny * 2 - p.y)).slice(0, 4);
-          const target = [flip ? tail : p.kind === 'in' ? seg.entryX : seg.exitX, seg.y, 0];
+          const target = gend ? [gend.x, gend.y, 0] : [flip ? tail : p.kind === 'in' ? seg.entryX : seg.exitX, seg.y, 0];
           // 终点之后链往哪走（按寻路的方向说）：原料从段首顺着段流下去（翻过来就是反着）；成品是从站往段尾反着找，过了段尾就是逆着段回去
-          const targetDir = p.kind === 'in' ? dirIndex(flip ? -seg.dir : seg.dir, 0) : dirIndex(-seg.dout, 0);
+          const targetDir = gend ? dirIndex(-gend.dx, -gend.dy) : p.kind === 'in' ? dirIndex(flip ? -seg.dir : seg.dir, 0) : dirIndex(-seg.dout, 0);
           for (const q of slots) {
             const stub = [0, 1, 2].map((d) => [s.x + q.dx + q.nx * d, s.y + q.dy + q.ny * d, 0]);
             // 站口那 3 格（地面）：出界，或者有带子（自己那段让出来的除外）就不行。网格和带子集合逐格一致，直接查网格

@@ -5,12 +5,12 @@
 // 挡住的口：各块对外的入口、出口（check.js 的 portRays）在块里能直线走出去的方向，出了块又撞上别的块的外框，四个方向都撞上就算挡住
 // （不接站、从边缘进出料的块左右两边都是口，一般只有竖着摞成一列挡不住）。规则：
 //   块与块的外框之间至少空 gap 格（默认 1）；
-//   不同块的两座物流站中心直线距离 ≥ STATION_GAP（24.08）；
-//   不同块的供电设施之间 ≥ powerGap（配电站之间 6，其余 2√2）；卫星配电站不进别的块物流站身外那一圈（9×9）。
+//   不同块的两座物流站中心隔 STATION_GAP（24.08）以上（东西向按最窄格宽折算，gamedata.js 的 stationSpan）；
+//   不同块的供电设施之间照 powerApart（两座配电站南北隔 6 或东西隔 7，其余直线 2√2）；卫星配电站不进别的块物流站身外那一圈（9×9，东西向多让一列）。
 // 拼完跑一遍独立检查：拼出来的整张图不能比各块自己多出任何报错，多了就把间距加大重拼。
 // 各块的供电网是分开的（块与块之间不拉线），检查会提醒「没有连成一张网」，贴好后自己连上或各接电源。
 import { fromStr, toStr } from '../codec/parser.js';
-import { STATION_GAP, STATION_CLEAR, powerGap } from '../gamedata.js';
+import { STATION_GAP, STATION_CLEAR, STATION_EW, powerApart, stationSpan } from '../gamedata.js';
 import { checkBlueprint, portRays } from './check.js';
 
 const isStation = (id) => id === 2103 || id === 2104;
@@ -56,13 +56,11 @@ function compatible(a, oa, b, ob, gap) {
   // 外框之间至少空 gap 格
   const apart = oa.x + a.w + gap <= ob.x || ob.x + b.w + gap <= oa.x || oa.y + a.h + gap <= ob.y || ob.y + b.h + gap <= oa.y;
   if (!apart) return false;
-  for (const s of a.stations) for (const t of b.stations) if (Math.hypot(s.x + oa.x - t.x - ob.x, s.y + oa.y - t.y - ob.y) < STATION_GAP - 1e-9) return false;
-  for (const p of a.power) for (const q of b.power) {
-    const g = powerGap(p.id, q.id);
-    if ((p.x + oa.x - q.x - ob.x) ** 2 + (p.y + oa.y - q.y - ob.y) ** 2 < g * g - 1e-9) return false;
-  }
+  for (const s of a.stations) for (const t of b.stations) if (stationSpan(s.x + oa.x - t.x - ob.x, s.y + oa.y - t.y - ob.y) < STATION_GAP - 1e-9) return false;
+  for (const p of a.power) for (const q of b.power) if (!powerApart(p.id, q.id, p.x + oa.x - q.x - ob.x, p.y + oa.y - q.y - ob.y)) return false;
   // 卫星配电站（3×3）不进别的块物流站身外那一圈
-  const ring = (P, op, S, os) => P.some((p) => p.id === 2212 && S.some((s) => Math.abs(p.x + op.x - s.x - os.x) <= STATION_CLEAR + 1 && Math.abs(p.y + op.y - s.y - os.y) <= STATION_CLEAR + 1));
+  const near = (dx, dy) => (dx <= STATION_CLEAR + 1 && dy <= STATION_CLEAR + 1) || (dx <= STATION_EW.x + 1 && dy <= STATION_EW.y + 1); // 东西向多让一列（gamedata.js 的 STATION_EW）
+  const ring = (P, op, S, os) => P.some((p) => p.id === 2212 && S.some((s) => near(Math.abs(p.x + op.x - s.x - os.x), Math.abs(p.y + op.y - s.y - os.y))));
   return !ring(a.power, oa, b.stations, ob) && !ring(b.power, ob, a.stations, oa);
 }
 

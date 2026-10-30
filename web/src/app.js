@@ -7,8 +7,8 @@ import { readHandoff, readDefs } from './handoff.js';
 
 const $ = (id) => document.getElementById(id);
 const STORE = 'dsp-handcraft:settings';
-const DEFAULTS = { targetId: 6005, rate: 60, ext: [], recipes: {}, assembler: '2303', smelter: '2302', chemical: '2309', lab: '2901', labstack: 15, belt: '3', sorter: '2014', power: 'substation', station: 'ils', pile: '1', spray: '0', proslot: '1', warper: '0', maxwidth: '', maxheight: '', aspect: '', orient: 'h', effort: 'quick', page: 1, chemwide: '0', defs: null, supply: '', dist: '0', stationPrefs: null };
-const OPTION_NAMES = ['assembler', 'smelter', 'chemical', 'chemwide', 'lab', 'belt', 'sorter', 'station', 'supply', 'dist', 'pile', 'power', 'spray', 'proslot', 'warper', 'maxwidth', 'maxheight', 'aspect', 'effort']; // 排布方向去掉了，统一横排（用户 2026/10/07）；自动切分、切分后的蓝图去掉了，网页不切块（用户 2026/10/27）
+const DEFAULTS = { targetId: 6005, rate: 60, ext: [], recipes: {}, assembler: '2303', smelter: '2302', chemical: '2309', lab: '2901', labstack: 15, belt: '3', sorter: '2014', power: 'substation', station: 'ils', pile: '1', spray: '0', proslot: '1', warper: '0', maxwidth: '', maxheight: '', aspect: '', orient: 'h', effort: 'normal', page: 1, chemwide: '0', defs: null, supply: '', dist: '0', stationPrefs: null, fracengine: 'template' };
+const OPTION_NAMES = ['assembler', 'smelter', 'chemical', 'chemwide', 'lab', 'belt', 'sorter', 'station', 'supply', 'dist', 'pile', 'power', 'spray', 'proslot', 'warper', 'maxwidth', 'maxheight', 'aspect', 'effort', 'fracengine']; // 排布方向去掉了，统一横排（用户 2026/10/07）；自动切分、切分后的蓝图去掉了，网页不切块（用户 2026/10/27）
 // 物品类别色条（游戏物品类型）：原矿、材料、组件、成品、物流、生产设施、防御、黑雾、矩阵
 const CAT_COLOR = { 1: '#9aa5b1', 2: '#6f8fb3', 3: '#5f9b8b', 4: '#b48b52', 5: '#7c80c0', 6: '#4f7cc9', 8: '#b56262', 9: '#b56262', 10: '#707070', 11: '#9a72cf' };
 const STATUS_TEXT = {
@@ -152,6 +152,8 @@ function loadSettings() {
   Object.assign(state, DEFAULTS, s);
   // 排布方向：上一版默认「自动」，效果不好，改回默认横排；那时存下的「自动」当作没选过（以后自己选的才记，见 orientPicked）
   if (state.orient === 'auto' && !s.orientPicked) state.orient = 'h';
+  // 网页去掉快速档，只留标准、美观（用户 2026/10/31）：以前存的「快速」改成标准
+  if (state.effort === 'quick') state.effort = 'normal';
   // 化工厂间距 2026/10/19 改成默认只限赤道，换了新键 chemwide：旧键 chemtight（那时默认任何纬度）不认，以前存过的也拿新的默认值
   delete state.chemtight;
   // 箱子 2026/10/26 改成左侧一列仓组（side-s / side-l），以前存的排进行里那种（box-s / box-l）换过来；「物流方式」的两个子选项记上次选的
@@ -199,6 +201,12 @@ function saveSettings() {
     /* 忽略 */
   }
   requestForecast(); // 每一处改设置都经过这里
+  toggleFracEngine();
+}
+/** 「分馏阵列排法」只在目标是重氢、选了分馏塔阵列时有（2026/10/30 加的退火排法，默认照旧裁剪用户原图） */
+function toggleFracEngine() {
+  const field = document.getElementById('fracengine-field');
+  if (field) field.hidden = !(Number(state.recipes?.[1121]) === 115 && state.targets?.some((t) => t.id === 1121));
 }
 
 // 图纸上方一排下拉按钮（用户 2026/10/26）：供电、物流方式、传送带、分拣器、熔炉、制造台、化工厂、研究站、喷增产剂。
@@ -1736,15 +1744,24 @@ function machineDiagram(m, label) {
   const ys = sorters.map((so) => so.y1 - cy);
   const top = Math.max(fp.h / 2, ...ys) + 1.1;
   const bottom = Math.min(-fp.h / 2, ...ys) - 1.1;
-  const half = Math.max(fp.w / 2, ...sorters.map((so) => Math.abs(so.x - cx))) + 1.1;
+  const half = Math.max(fp.w / 2, ...sorters.map((so) => Math.abs((so.x1 ?? so.x) - cx))) + 1.1;
   const parts = sorters.map((so) => {
+    const name = byId.get(so.itemId)?.name ?? '';
+    if (so.x1 != null) {
+      // 横着的（研究站夹带的侧面分拣器）：从框的左边或右边伸到夹带那一列
+      const y = -(so.y0 - cy);
+      const edge = so.x1 > so.x ? fp.w / 2 : -fp.w / 2;
+      const belt = so.x1 - cx;
+      const mid = (edge + belt) / 2;
+      const k = Math.sign(so.io === 'out' ? belt - edge : edge - belt) || 1;
+      return `<g><title>${so.io === 'out' ? '出料' : '取料'} · ${esc(name)}</title><path d="M${edge} ${y}H${belt}" stroke="#dbe8f7" stroke-width="0.09"/><path d="M${mid - 0.12 * k} ${y - 0.18}L${mid + 0.1 * k} ${y}L${mid - 0.12 * k} ${y + 0.18}" fill="none" stroke="#dbe8f7" stroke-width="0.08"/><g transform="translate(${belt} ${y}) scale(1.35)">${drawIcon(so.itemId) ?? ''}</g></g>`;
+    }
     const x = so.x - cx;
     const edge = so.y1 > so.y0 ? -fp.h / 2 : fp.h / 2; // 画图 y 向下：带子在上面时从框上边出去
     const belt = -(so.y1 - cy);
     const out = so.io === 'out';
     const mid = (edge + belt) / 2;
     const k = Math.sign(out ? belt - edge : edge - belt) || 1;
-    const name = byId.get(so.itemId)?.name ?? '';
     return `<g><title>${out ? '出料' : '取料'} · ${esc(name)}</title><path d="M${x} ${edge}V${belt}" stroke="#dbe8f7" stroke-width="0.09"/><path d="M${x - 0.18} ${mid - 0.12 * k}L${x} ${mid + 0.1 * k}L${x + 0.18} ${mid - 0.12 * k}" fill="none" stroke="#dbe8f7" stroke-width="0.08"/><g transform="translate(${x} ${belt}) scale(1.35)">${drawIcon(so.itemId) ?? ''}</g></g>`;
   });
   const W = 2 * half;
@@ -1768,7 +1785,7 @@ function renderMachine() {
   const outs = r.outputs.map((x) => tile(x, x.rate)).join('');
   const main = r.outputs.find((x) => byId.get(x.id)?.name === g.item) ?? r.outputs[0];
   const levels = g.levels > 1 ? `（每叠 ${g.levels} 层）` : '';
-  const side = (so) => (so.y1 > so.y0 ? '上边' : '下边');
+  const side = (so) => (so.x1 != null ? (so.x1 > so.x ? '右边' : '左边') : so.y1 > so.y0 ? '上边' : '下边'); // x1：横着的侧面分拣器（研究站夹带）
   const list = sorters
     .slice()
     .sort((a, b) => (a.io === b.io ? a.x - b.x : a.io === 'in' ? -1 : 1))
@@ -2047,7 +2064,8 @@ function fillNotes(d) {
     for (const e of d.check.errors) li.push(`<li class="err">${esc(e)}</li>`);
     if (d.check.warnings.length) console.info('[dsp-handcraft] 检查提醒：\n' + d.check.warnings.map((x) => `- ${x}`).join('\n'));
     for (const n of d.array.notes) li.push(`<li>${esc(n)}</li>`);
-    li.push('<li>图中 A~D 是四个氢循环（各接物流站一个出站口）；三角指向分馏塔的产物口。原图的高架有两种高度（0.5 和 1 层），分在 L2、L3 查看。</li>');
+    if (d.array.plan?.engine === 'anneal') li.push('<li>图中字母是各个氢循环（每个接物流站一个出站口、一个进站口）；三角指向分馏塔的产物口。半层的是重氢跨过回程带的那一节，1 层的是增产剂带，分在 L2、L3 查看。</li>');
+    else li.push('<li>图中 A~D 是四个氢循环（各接物流站一个出站口）；三角指向分馏塔的产物口。原图的高架有两种高度（0.5 和 1 层），分在 L2、L3 查看。</li>');
     $('notes').innerHTML = li.join('');
     return;
   }
@@ -2077,7 +2095,7 @@ function fillNotes(d) {
     dev.push(...d.check.errors, ...d.validate.errors);
   }
   if (d.metrics.stationFallback) li.push('<li class="err">物流站没放进空地，改成了靠左侧站列。可以在「外部供应」里拆出一部分再试。</li>');
-  if (d.metrics.coreSwitch) dev.push(`内核：排版内核搜了 ${d.metrics.coreSwitch.segments} 段还不可行，换主干内核从头排了一遍`);
+  if (d.metrics.coreSwitch) dev.push(`内核：排版内核搜了 ${d.metrics.coreSwitch.segments} 段还不可行，换主干内核${d.metrics.coreSwitch.warm ? '从排版内核最好那张接着排（热启动）' : '从头排了一遍'}`);
   else if (d.metrics.core === 'typeset') dev.push('内核：排版内核');
   if (!d.feasible && d.metrics.factories > 120) li.push(`<li class="err">产线太大，排不下。可以在「外部供应」里把电路板、处理器这类中间产物设为外部供应，分开生成。</li>`);
   // 要超级磁场的：原地竖直升降（垂直传送带）、一格升一层的陡坡（worker.js 的 steep）
@@ -2210,6 +2228,7 @@ function initView() {
   $('result-body').append($('sheet-foot'));
   syncLogistics();
   togglePile();
+  toggleFracEngine();
   renderMore();
 }
 // ---------- 从别的网页带过来的方案（地址里的 #plan=，见 handoff.js） ----------

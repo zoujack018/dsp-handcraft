@@ -14,14 +14,16 @@
 //
 // 放在哪：
 //   电力感应塔 1×1：任何没有工厂、地面带、分拣器经过、头顶也没有高架带的空格。
-//   卫星配电站 3×3：九格全空的位置（2026/10/04 实测：紧挨制造台、熔炉本体也行）；两座之间 3×3 不重叠。
+//   卫星配电站 3×3：九格全空的位置（2026/10/04 实测：紧挨制造台、熔炉本体也行）；两座要南北隔 6 或东西隔 7（顶盘比底座宽，gamedata.js 的 powerApart）。
+//   卫星配电站的顶盘比底座宽：离中心 2 格那圈里不能有顶盘那一截高度（4.18~5.27 层）的带子（markDisk）。
 //   卫星配电站不进物流站身外那 1 格碰撞圈（gamedata.js 的 STATION_CLEAR，按 9×9 算）；电力感应塔可以贴着站身（实测 D4）。
 //   布局里找不到时，在外沿加一条地，取加得少的一边。
 // 选址是集合覆盖：贪心每次挑能新覆盖最多目标的位置，最后倒序删掉多余的；
 // 设施之间超出连接距离时，在两群之间补一座中继。
-import { STATION_CLEAR, powerCells, powerGap, powerHugs, substationPad, slotPoint } from '../gamedata.js';
+import { STATION_CLEAR, STATION_EW, SUBSTATION_DISK, powerCells, powerApart, powerHugs, substationPad, slotPoint } from '../gamedata.js';
 import { bankSorters, bankLanes } from './burn.js';
 import { portRays } from './layout/shared.js';
+import { chainTiles } from '../emit/blueprint.js';
 
 export const CELL_M = 1.2566;
 export const POWER = {
@@ -143,6 +145,12 @@ function mark(L, rowGaps, power, occ, T, ox = 0) {
   // 带子占的格子：和 chainTiles 列出来的那些格一样，只是不拼数组（搜索时每步都要走一遍）
   for (const ch of L.chains)
     for (const part of ch.parts) {
+      if (part.gap != null) {
+        // 研究站夹带（layout/belts.js 的 labGaps）那一列的地面格
+        const gp = L.labGaps[part.gap];
+        for (let y = gp.y0; y <= gp.y1; y++) add(gp.x, y);
+        continue;
+      }
       if (part.leg != null) {
         const l = L.legs[part.leg];
         if (l.kind === 'in' || l.kind === 'out') {
@@ -190,6 +198,7 @@ function mark(L, rowGaps, power, occ, T, ox = 0) {
   for (const st of L.stations || []) {
     const c = power === 2212 ? STATION_CLEAR : 3;
     for (let dx = -c; dx <= c; dx++) for (let dy = -c; dy <= c; dy++) add(st.x + dx, st.y + dy);
+    if (power === 2212) for (const sx of [-STATION_EW.x, STATION_EW.x]) for (let dy = -STATION_EW.y; dy <= STATION_EW.y; dy++) add(st.x + sx, st.y + dy); // 东西向再让一列（gamedata.js 的 STATION_EW）
     put(T, st.x, st.y, '物流站', NOBID);
   }
   // 同一台工厂的分拣器多半挨着排，上一根的工厂直接拿来用，省一次查表
@@ -207,6 +216,35 @@ function mark(L, rowGaps, power, occ, T, ox = 0) {
     const pt = slotPoint(p.g, s.side, s.col - s.cx);
     put(T, s.cx + pt.dx, s.io === 'in' ? seg.y : L.rowCy[p.row] + pt.dy, '分拣器', s.bid);
   }
+  // 研究站夹带的侧面分拣器（横着、长 1，从研究站往带上放）：取料端是研究站的槽位；手臂压着研究站本体和带子那格，不另占格子
+  if (L.labGaps)
+    for (const gp of L.labGaps) {
+      const q = L.pos.get(gp.bid);
+      for (const t of gp.taps) {
+        const [dx, dy] = q.g.slotPos[t.slot];
+        put(T, t.cx + dx, L.rowCy[q.row] + dy, '分拣器', gp.bid);
+      }
+    }
+}
+
+/**
+ * 卫星配电站的顶盘（5.49 格见方、离地 6~7 m）比 3×3 底座宽：离中心 SUBSTATION_DISK.reach（2）格那一圈里，高度落在顶盘那一截（4.18~5.27 层）的带子会撞
+ * （用户 2026/10/28 实测，docs/game-rules.md 第 38 条；独立检查 emit/check.js 报「顶盘撞上高架带」）。occupancy 记格子不分高度，只挡得住底座压着的带子；
+ * 这里把这种高度的每节带子周围 3×3 也记进 occ，底座和它重叠的中心（离这节带子切比雪夫距离 ≤ 2）就不能放。
+ * 只在放卫星配电站时用（placePower、fitPlacement；搜索里的 powerBands 照旧不看高度）。带子的范围和 plan/reroute.js 的 diskHits 一样：各条物品带、翘曲器带、增产剂带
+ */
+function markDisk(L, occ) {
+  const r = SUBSTATION_DISK.reach - 1; // 每节带子周围 r 格（3×3），加上底座半宽 1 正好是 reach
+  const scan = (t) => {
+    for (const [x, y, z] of t) if (z > SUBSTATION_DISK.lo && z < SUBSTATION_DISK.hi) for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) occ.add(x + dx, y + dy);
+  };
+  for (const ch of L.chains) {
+    const t = chainTiles(L, ch);
+    scan(t.main);
+    for (const e of t.extra) scan(e);
+  }
+  for (const w of L.warperLinks || []) scan(w.cells);
+  for (const p of L.proLines || []) scan(p.cells);
 }
 
 const SIDES = ['left', 'right', 'bottom', 'top'];
@@ -214,8 +252,8 @@ const SIDES = ['left', 'right', 'bottom', 'top'];
 /** 设施中心在 (x, y) 时实际占的格子，以及离中心最远几格（ring） */
 const cellsOf = (spec, x, y) => powerCells(spec.itemId, x, y);
 const ringOf = (spec) => (spec.size - 1) / 2;
-/** 同类设施两座能不能这样放：中心直线距离不小于 powerGap（配电站 6、塔 2√2，2026/10/05 实测） */
-export const apart = (spec, a, b) => (a.x - b.x) ** 2 + (a.y - b.y) ** 2 >= powerGap(spec.itemId, spec.itemId) ** 2 - 1e-9;
+/** 同类设施两座能不能这样放（gamedata.js 的 powerApart）：塔之间中心直线距离不小于 2√2；两座配电站要南北隔 6 或东西隔 7（顶盘，第 41 条） */
+export const apart = (spec, a, b) => powerApart(spec.itemId, spec.itemId, a.x - b.x, a.y - b.y);
 
 /** 外沿加地后的范围：x ∈ [x0, x1)，y ∈ [y0, y1) */
 const bounds = (W, H, ext) => ({ x0: -ext.left, x1: W + ext.right, y0: -ext.bottom, y1: H + ext.top });
@@ -402,6 +440,7 @@ export function placePower(L, type, opt = {}) {
   if (!spec) throw new Error(`未知供电方式 ${type}`);
   const { cover, link } = powerReach(type, opt);
   const { occ, targets } = occupancy(L, { ...opt, power: spec.itemId });
+  if (spec.itemId === 2212) markDisk(L, occ); // 顶盘那一圈让开 4.18~5.27 层的带子
   const W = L.width;
   const H = L.height;
   const h = (spec.size - 1) / 2;
@@ -652,6 +691,7 @@ export function fitPlacement(L, type, nodes, opt = {}) {
   if (!spec || !nodes?.length) return null;
   const { cover, link } = powerReach(type, opt);
   const { occ, targets } = occupancy(L, { ...opt, power: spec.itemId });
+  if (spec.itemId === 2212) markDisk(L, occ); // 和 placePower 一样，顶盘那一圈有 4.18~5.27 层的带子就不能原样用
   const blocked = portBlocks(L);
   for (const n of nodes) for (const [x, y] of cellsOf(spec, n.x, n.y)) if (x < 0 || y < 0 || x >= L.width || y >= L.height || occ.has(x, y) || blocked.has(K(x, y))) return null;
   for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) if (!apart(spec, nodes[i], nodes[j])) return null;

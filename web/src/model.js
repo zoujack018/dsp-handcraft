@@ -53,6 +53,15 @@ export function renderModel(graph, L) {
     const pt = slotPoint(g, s.side, s.col - s.cx); // 研究站、对撞机的分拣器对齐槽位（x 带小数）
     return { x: s.cx + pt.dx, y0: cy + pt.dy, y1: seg.y, io: s.io, itemId: baseItem(s.itemId), factoryItem: g.item, len: s.length };
   });
+  // 研究站夹带的侧面分拣器（src/plan/layout/belts.js 的 labGaps）：横着的，x 是研究站那头（槽位），x1 是夹带那一列，y0 = y1 是槽位的 y
+  for (const gp of L.labGaps || []) {
+    const p = L.pos.get(gp.bid);
+    const cy = L.rowCy[p.row];
+    for (const t of gp.taps) {
+      const [dx, dy] = p.g.slotPos[t.slot];
+      sorters.push({ x: t.cx + dx, x1: gp.x, y0: cy + dy, y1: cy + dy, io: 'out', itemId: baseItem(gp.itemId), factoryItem: p.g.item, len: 1 });
+    }
+  }
   const power = L.power ? { name: L.power.name, size: L.power.size, cover: L.power.cover, nodes: L.power.nodes } : null;
   const stations = (L.stations || []).map((st) => ({ x: st.x, y: st.y }));
   // 搜索中还没接站：打分时估的站位（holes.js，7×7 空地的中心），实时预览画成虚线框；真正接站在搜索结束后，位置可能不同

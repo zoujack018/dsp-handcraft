@@ -1,6 +1,7 @@
 // 每种物品的路线：挂通道（贪心集合覆盖）、定访问顺序和流向、落实成地面段和高架段
-import { BELT_SPEED, baseItem } from '../../gamedata.js';
+import { BELT_SPEED, LAB_GAP, baseItem } from '../../gamedata.js';
 import { CH_PITCH, STATION_COLS, TOL, permutations } from './shared.js';
+import { pileCapOf } from '../piling.js';
 
 /**
  * 喷增产剂（opt.sprayAll）时给喷涂机留的直带空当：入口（原料）或最后一个生产访问的段尾，
@@ -289,9 +290,11 @@ export function routeItems(c) {
   const beltCap = BELT_SPEED[opt.belt] * opt.stack * 60;
   // 物流站输出原料时可以集装（科技解锁后 1~4 层），原料带的运力随之翻倍；成品由分拣器放上带，不集装
   const rawCap = beltCap * Math.max(1, opt.station?.stack ?? opt.externalStack ?? 1);
-  // 自动集装机（opt.pilers，用户 2026/10/26）：分拣器放上带的是单个物品，带上每放约 1700/分过一台集装机叠成 4 层，
-  // 产物带一条最多运单条带的 4 倍，不到这个量不拆带（集装机放在哪儿是后处理，plan/addons.js 的 stackPilers）。关掉时和单条带一样
-  const pileCap = opt.pilers ? Math.max(beltCap, BELT_SPEED[opt.belt] * 4 * 60) : beltCap;
+  // 自动集装机（opt.pilers，用户 2026/10/26）：分拣器放上带的是单个物品，带上每放约 1700/分过一台集装机，产物带一条最多运 pileCap，
+  // 不到这个量不拆带（集装机放在哪儿是后处理，plan/addons.js 的 stackPilers）。一台只把相邻两个合成一个（用户 2026/10/30），
+  // 以前按一台叠满 4 层算的单条带 4 倍（7200）要很多台才接近；opt.pileModel 写 k 按一条带最多放 k 台够得着的算（plan/piling.js 的 pileCapOf），
+  // 不写照旧 4 倍。关掉集装机时和单条带一样
+  const pileCap = opt.pilers ? Math.max(beltCap, pileCapOf(BELT_SPEED[opt.belt] * 60, opt.pileModel)) : beltCap;
   // 排物品的顺序：只能走某一个通道的先排，能二选一的后排（让它们去轨道少的那边）；原料入口随时可以多开，最后排
   const flex = (f) => {
     if (f.producer === 'RAW') return 3;
@@ -1482,6 +1485,34 @@ export function routeItems(c) {
     chains.push({ itemId: f.itemId, parts: TQ.slice(0, nq) });
   };
 
+  // 研究站夹带（宇宙矩阵，plan/graph.js 的 sideItem；用户 2026/10/30）：产物不挂通道。同一块里第 2k、2k+1 台（中心隔 6）中间那一列夹一条往北流的带，
+  // 左边那台从右侧、右边那台从左侧往上放（gamedata.js 的 LAB_GAP），带在研究站那一行最上面那格原地升起，接一段 'out' 高架到成品出口
+  // （layout/elevation.js 的 cellsFor）。夹带不进 segments（分轨、通道里的分拣器、喷涂、集装都不碰它），记在 c.labGaps，
+  // 纵向的格子等 layout/tracks.js 定了行的 y 再填。第一版每条夹带各自一条带、各自一个出口，出口取左右离得近的那边
+  const labGaps = [];
+  const routeGaps = (prodBlocks, out, count) => {
+    for (let bi = 0; bi < prodBlocks.length; bi++) {
+      const p = prodBlocks[bi];
+      const g = p.g;
+      const cs = p.centers;
+      const off = (g.bodyWidth + 1) / 2; // 夹带那一列离研究站中心几格（本体右边第一列，3）
+      for (let i = 0; i < cs.length; ) {
+        // 右边那台紧挨着（中心隔 6）才两台共用；配电站挖空位（layout/powerholes.js）挪开了的各用自己右边那一列
+        const pair = i + 1 < cs.length && cs[i + 1] - cs[i] === 2 * off;
+        const x = cs[i] + off;
+        const taps = [{ bid: p.bid, building: i, cx: cs[i], slot: LAB_GAP.left, dy: Math.round(g.slotPos[LAB_GAP.left][1]), y: 0 }];
+        if (pair) taps.push({ bid: p.bid, building: i + 1, cx: cs[i + 1], slot: LAB_GAP.right, dy: Math.round(g.slotPos[LAB_GAP.right][1]), y: 0 });
+        const dout = leftEnds || x - xL <= xR - x ? -1 : 1;
+        const rate = (out * taps.length) / count;
+        const gi = labGaps.length;
+        labGaps.push({ id: gi, itemId: f.itemId, bid: p.bid, row: p.row, x, y0: 0, y1: 0, dout, rate, taps });
+        const l = addLeg({ itemId: f.itemId, kind: 'out', from: -1, gap: gi, edge: exitCol(dout), rate, id: legs.length, cells: [] });
+        chains.push({ itemId: f.itemId, parts: [{ gap: gi }, { leg: l.id }] });
+        i += pair ? 2 : 1;
+      }
+    }
+  };
+
   // 物品按 flex 从小到大排（同一档保持原来的先后，和稳定排序一样）。items、flexOf 只用前 nItems 项
   const CA = list(22);
   const items = list(23);
@@ -1517,10 +1548,12 @@ export function routeItems(c) {
           cc.d = c.rate / g.count;
         }
       }
-      if (isRaw || f.rate <= pileCap + TOL) routeFlow(prodAll, CA, nCons, outAll, f.rate);
+      if (!isRaw && graph.byId.get(f.producer).sideItem === f.itemId) routeGaps(prodAll, outAll, graph.byId.get(f.producer).count);
+      else if (isRaw || f.rate <= pileCap + TOL) routeFlow(prodAll, CA, nCons, outAll, f.rate);
       else for (const part of splitFlow(prodAll, CA.slice(0, nCons), outAll, f.perFactory)) routeFlow(part.P, part.C, part.C.length, part.out, part.rate);
     }
   }
 
   Object.assign(c, { beltCap, chains, legs, pileCap, rawCap, segments, sides });
+  if (labGaps.length) c.labGaps = labGaps; // 没有夹带的线不写（c 里占着位、是 undefined）
 }
