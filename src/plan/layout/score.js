@@ -4,7 +4,7 @@ import { powerBands } from '../power.js';
 import { stationHoles } from '../holes.js';
 import { STATION_COLS, TOL, busMinX, gk } from './shared.js';
 import { sprayGapCells } from './elevation.js';
-import { OVERPASS_Z } from '../../gamedata.js';
+import { BELT_SPEED, OVERPASS_Z } from '../../gamedata.js';
 
 // 线性超高税（opt.heightTax）要查的「这一格在不在熔炉、制造台本体头顶」：按 (x, y) 编号的表，按线程复用，存这一次的戳（不用清零）
 let overBuf = new Int32Array(0);
@@ -404,7 +404,8 @@ export function scoreLayout(c) {
   });
   // 不依赖分拣器的部分先算（流量、尺寸、带数、结构、叠层、口味）；这几项的惩罚先存在 late 里，等分拣器的惩罚记完再按原来的次序记
   const late = [];
-  // 每条带（原料每个入口一条，产物一种一条）的流量不能超过单条带运力（产物带开集装机时是集装后的运力 pileCap，layout/belts.js；route 选项 pileModel 定）
+  // 每条带（原料每个入口一条，产物一种一条）的流量不能超过单条带运力（产物带开集装机时是集装后的运力 pileCap，layout/belts.js；route 选项 pileModel 定；
+  // 集装分拣器叠层 sorterStack 定的时说明里写叠几层）
   for (let i = 0; i < chains.length; i++) {
     const ch = chains[i];
     const parts = ch.parts;
@@ -415,7 +416,7 @@ export function scoreLayout(c) {
     }
     const it = graph.items.get(ch.itemId);
     const cap = it.producer === 'RAW' ? rawCap : pileCap;
-    if (rate > cap + TOL) late.push(['belt', P.belt, `${it.name} 流量 ${rate.toFixed(0)}/分 超过${cap > beltCap && it.producer !== 'RAW' ? (opt.pileModel > 0 ? `一条带过 ${Math.floor(opt.pileModel)} 台集装机的` : '一条带叠 4 层的') : '单条带'}运力 ${opt.pileModel > 0 ? Math.round(cap) : cap}/分`, itemBids(ch.itemId)]);
+    if (rate > cap + TOL) late.push(['belt', P.belt, `${it.name} 流量 ${rate.toFixed(0)}/分 超过${cap > beltCap && it.producer !== 'RAW' ? (opt.sorterStack > 1 && cap === BELT_SPEED[opt.belt] * 60 * opt.sorterStack ? `一条带叠 ${opt.sorterStack} 层的` : opt.pileModel > 0 ? `一条带过 ${Math.floor(opt.pileModel)} 台集装机的` : '一条带叠 4 层的') : '单条带'}运力 ${opt.pileModel > 0 ? Math.round(cap) : cap}/分`, itemBids(ch.itemId)]);
   }
 
   let maxX = xR - 1;

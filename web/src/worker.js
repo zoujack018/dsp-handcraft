@@ -12,7 +12,7 @@ import { validate } from '../../src/plan/validate.js';
 import { emitBlueprint, stationSettings, chainTiles } from '../../src/emit/blueprint.js';
 import { beltStats } from '../../src/plan/reroute.js';
 import { checkBlueprint } from '../../src/emit/check.js';
-import { ITEMS, RAW_ITEM_IDS, BELT_IDS, factory, hasHighLatitude, recipeChoices, defaultRecipe, addGameData, plannable, recipe as recipeOf } from '../../src/gamedata.js';
+import { ITEMS, RAW_ITEM_IDS, BELT_IDS, PILE_SORTER_TECH, factory, hasHighLatitude, recipeChoices, defaultRecipe, addGameData, plannable, recipe as recipeOf } from '../../src/gamedata.js';
 import { renderModel, groupLabels } from './model.js';
 import { autoWatcher, previewShapeOk } from './autowatch.js';
 import vanilla from '../../data/Vanilla.json' with { type: 'json' };
@@ -504,6 +504,10 @@ const TIME_MODEL = {
   segs: { quick: { ok: 1, flag: 14 }, normal: { ok: 1, flag: 18 }, fine: { ok: 1, flag: 19 } }, // 段数（没瓶颈 / 有瓶颈），每类的中位
 };
 const BELT_CAP = { 1: 360, 2: 720, 3: 1800 }; // 每条带每分钟运多少（不叠）
+/** 页面「集装分拣器改良」科技等级（pilertech，0~6，没选过是 0）：只在选了集装分拣器时算，别的分拣器是 0 */
+const pilerTechOf = (p) => (Number(p.sorter) === 2014 ? Math.max(0, Math.min(6, Math.floor(Number(p.pilertech)) || 0)) : 0);
+/** 集装分拣器往带上叠几层：按科技等级查 PILE_SORTER_TECH，别的分拣器是 1 */
+const sorterStackOf = (p) => (Number(p.sorter) === 2014 ? PILE_SORTER_TECH[pilerTechOf(p)].out : 1);
 const FINISH_SHARE = 0.02; // 每段里算给后处理的份额（previewer 的 liveEst 要加上它）
 
 /**
@@ -517,8 +521,8 @@ function bottleneck(graph, p) {
   let beltLoad = 0;
   for (const it of graph.items.values()) {
     // 物流站出的原料能叠；产物带默认过自动集装机（route.js 的 pilers），运力和规划器排的一样（plan/piling.js 的 pileCapOf，
-    // route.js 的 pileModel 不写时按 4 条带算；最低配置不放集装机，earlyGame）
-    const cap = it.producer === 'RAW' ? (p.station ? cap0 * Number(p.pile || 1) : cap0) : earlyGame(p) ? cap0 : Math.max(cap0, pileCapOf(cap0, ROUTE_DEFAULTS.pileModel));
+    // route.js 的 pileModel 不写时按 4 条带算；最低配置不放集装机，earlyGame）；集装分拣器叠层时不靠集装机也运 cap0 × 层数（sorterStackOf）
+    const cap = it.producer === 'RAW' ? (p.station ? cap0 * Number(p.pile || 1) : cap0) : Math.max(earlyGame(p) ? cap0 : Math.max(cap0, pileCapOf(cap0, ROUTE_DEFAULTS.pileModel)), cap0 * sorterStackOf(p));
     const toGroup = new Map();
     for (const c of it.consumers) {
       beltLoad = Math.max(beltLoad, c.rate / cap);
@@ -793,8 +797,10 @@ async function planOne(calc, p, helpers, effort, restarts, onRound = null, previ
         // 传送带重走（src/plan/reroute.js）：各档都开，只重走挑中的那张、哪一项都不比原来差才换上（用户 2026/10/29 要在网页上审）
         reroute: true,
         ...(earlyGame(p) ? { noLift: true, pilers: false } : {}), // 全部选最低配置：当作没解锁超级磁场、自动集装机
+        ...(sorterStackOf(p) > 1 ? { sorterStack: sorterStackOf(p) } : {}), // 集装分拣器往带上叠几层（route.js 的 sorterStack），1 层时不写
+        ...(pilerTechOf(p) > 0 ? { pileTech: pilerTechOf(p) } : {}), // 「集装分拣器改良」等级（以后按它算分拣器速度，现在规划器还不读），没研究时不写
       },
-      station: p.station ? { place: p.station === 'ils-side' ? 'side' : 'edge', stack: Number(p.pile || 1), slots: { warper: p.warper === '1', keepFree: p.proslot !== '0' && Number(p.spray || 0) > 0 } } : null,
+      station: p.station ? { place: p.station === 'ils-side' ? 'side' : 'edge', stack: Number(p.pile || 1), slots: { warper: p.warper === '1', keepFree: Number(p.spray || 0) > 0 } } : null,
       power: p.power || null,
       burn: Array.isArray(p.burn) && p.burn.length ? p.burn.map(Number) : false, // 要就地烧掉的副产物（plan/burn.js；网页上的开关 2026/10/26 拿掉了，页面不再传）
       // 供货：不接物流站时原料、成品接储物仓 / 储液罐（plan/storage.js 的 SUPPLY）；左栏「物流配送器」选了放在仓顶就是 dist-s / dist-l

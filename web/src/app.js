@@ -7,8 +7,8 @@ import { readHandoff, readDefs } from './handoff.js';
 
 const $ = (id) => document.getElementById(id);
 const STORE = 'dsp-handcraft:settings';
-const DEFAULTS = { targetId: 6005, rate: 60, ext: [], recipes: {}, assembler: '2303', smelter: '2302', chemical: '2309', lab: '2901', labstack: 15, belt: '3', sorter: '2014', power: 'substation', station: 'ils', pile: '1', spray: '0', proslot: '1', warper: '0', maxwidth: '', maxheight: '', aspect: '', orient: 'h', effort: 'normal', page: 1, chemwide: '0', defs: null, supply: '', dist: '0', stationPrefs: null, fracengine: 'template' };
-const OPTION_NAMES = ['assembler', 'smelter', 'chemical', 'chemwide', 'lab', 'belt', 'sorter', 'station', 'supply', 'dist', 'pile', 'power', 'spray', 'proslot', 'warper', 'maxwidth', 'maxheight', 'aspect', 'effort', 'fracengine']; // 排布方向去掉了，统一横排（用户 2026/10/07）；自动切分、切分后的蓝图去掉了，网页不切块（用户 2026/10/27）
+const DEFAULTS = { targetId: 6005, rate: 60, ext: [], recipes: {}, assembler: '2303', smelter: '2302', chemical: '2309', lab: '2901', labstack: 15, belt: '3', sorter: '2014', power: 'substation', station: 'ils', pile: '1', pilertech: '0', spray: '0', warper: '0', maxwidth: '', maxheight: '', aspect: '', orient: 'h', effort: 'normal', page: 1, chemwide: '0', defs: null, supply: '', dist: '0', stationPrefs: null, fracengine: 'template' };
+const OPTION_NAMES = ['assembler', 'smelter', 'chemical', 'chemwide', 'lab', 'belt', 'sorter', 'station', 'supply', 'dist', 'pile', 'pilertech', 'power', 'spray', 'warper', 'maxwidth', 'maxheight', 'aspect', 'effort', 'fracengine']; // 排布方向去掉了，统一横排（用户 2026/10/07）；自动切分、切分后的蓝图去掉了，网页不切块（用户 2026/10/27）
 // 物品类别色条（游戏物品类型）：原矿、材料、组件、成品、物流、生产设施、防御、黑雾、矩阵
 const CAT_COLOR = { 1: '#9aa5b1', 2: '#6f8fb3', 3: '#5f9b8b', 4: '#b48b52', 5: '#7c80c0', 6: '#4f7cc9', 8: '#b56262', 9: '#b56262', 10: '#707070', 11: '#9a72cf' };
 const STATUS_TEXT = {
@@ -167,6 +167,8 @@ function loadSettings() {
   // 新配方：{ 物品 ID: 配方 ID }，只记开了新配方的物品
   state.recipes = s.recipes && typeof s.recipes === 'object' ? Object.fromEntries(Object.entries(s.recipes).filter(([, v]) => Number(v) > 0)) : {};
   delete state.burn; // 就地烧掉 2026/10/26 从网页上拿掉了（命令行还有），以前存的不认
+  delete state.proslot; // 「增产剂格」2026/11/01 拿掉了，喷增产剂就留一格
+  delete state.sorterstack; // 「集装分拣器往带上叠几层」2026/11/01 换成按科技等级选（pilertech），旧键没发布过，不认
   state.defs = readDefs(s.defs); // 上次从计算器带过来的新物品、新配方（地址里的方案只用一次，刷新后靠这份）
   state.ext = new Set(Array.isArray(s.ext) ? s.ext : typeof s.raw === 'string' ? s.raw.split(/[,，、\s]+/).filter(Boolean) : []);
   state.legacyTarget = typeof s.target === 'string' ? s.target : null;
@@ -227,6 +229,19 @@ const PILL_ICONS = {
 const pillIcon = (name) => `<span class="pill-ico" aria-hidden="true"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">${PILL_ICONS[name] ?? ''}</svg></span>`;
 const legendOf = (field) => field.querySelector('legend').firstChild.textContent.trim(); // 图例后面可能跟着 beta 标
 const pillText = (radio) => radio.nextElementSibling.dataset.pill || radio.nextElementSibling.textContent;
+// 带二级菜单的项（用户 2026/11/01）：「分拣器」的集装分拣器挂「集装分拣器改良」等级（pilertech），「物流方式」的物流站挂「运输站集装物流」等级（pile）。
+// 等级也是左栏里藏着的一组单选，二级菜单照它生成，最上面一行是那组的图例；选一级 = 勾上那一项 + 记下这一级，按钮上的字不变
+const PILL_SUBS = { sorter: { value: '2014', option: 'pilertech' }, logistics: { value: 'station', option: 'pile' } };
+/** 下拉菜单里的一项；挂着二级菜单的再加右边的 ▸（能点，触屏靠它开关）和二级菜单 */
+function pillItem(name, el) {
+  const item = (attrs = '') => `<button type="button" role="menuitemradio" tabindex="-1" data-value="${esc(el.value)}"${attrs}>${esc(pillText(el))}</button>`;
+  const sub = PILL_SUBS[name];
+  const field = sub?.value === el.value && document.querySelector(`.seg[data-name="${sub.option}"]`);
+  if (!field) return item();
+  const head = legendOf(field);
+  const levels = [...field.querySelectorAll('input[type="radio"]')].map((r) => `<button type="button" role="menuitemradio" tabindex="-1" data-sub-value="${esc(r.value)}">${esc(pillText(r))}${r.nextElementSibling.dataset.note ? `<span class="pill-note">${esc(r.nextElementSibling.dataset.note)}</span>` : ''}</button>`).join('');
+  return `<div class="pill-sub" data-sub="${sub.option}">${item(' aria-haspopup="menu" aria-expanded="false"')}<button type="button" class="pill-sub-toggle" tabindex="-1" aria-hidden="true">▸</button><div class="pill-submenu" role="menu" aria-label="${esc(head)}"><div class="pill-sub-head" role="presentation">${esc(head)}</div>${levels}</div></div>`;
+}
 function initPills() {
   const bar = $('toolbar');
   for (const name of PILL_NAMES) {
@@ -237,23 +252,50 @@ function initPills() {
     wrap.className = 'pill-wrap';
     wrap.dataset.option = name;
     wrap.dataset.label = legendOf(field);
-    wrap.innerHTML = `<button type="button" class="pill" aria-haspopup="menu" aria-expanded="false">${pillIcon(name)}<span class="pill-text"></span></button><div class="pill-menu" role="menu" aria-label="${esc(wrap.dataset.label)}">${[...field.querySelectorAll('input[type="radio"]')].map((el) => `<button type="button" role="menuitemradio" tabindex="-1" data-value="${esc(el.value)}">${esc(pillText(el))}</button>`).join('')}</div>`;
+    wrap.innerHTML = `<button type="button" class="pill" aria-haspopup="menu" aria-expanded="false">${pillIcon(name)}<span class="pill-text"></span></button><div class="pill-menu" role="menu" aria-label="${esc(wrap.dataset.label)}">${[...field.querySelectorAll('input[type="radio"]')].map((el) => pillItem(name, el)).join('')}</div>`;
     // 鼠标、焦点从外面进来：又可以弹出了；焦点离开就收起
     wrap.addEventListener('pointerenter', () => pillReady(wrap));
     wrap.addEventListener('focusin', (e) => !wrap.contains(e.relatedTarget) && pillReady(wrap));
     wrap.addEventListener('focusout', (e) => !wrap.contains(e.relatedTarget) && closePill(wrap, false));
+    // 鼠标挪到菜单里别的项、离开整个下拉（没点开时）：点 ▸ 开着的二级菜单收起
+    wrap.addEventListener('pointerover', (e) => e.pointerType === 'mouse' && e.target.closest('[data-value]') && wrap.querySelectorAll('.pill-sub.open').forEach((s) => !s.contains(e.target) && closeSub(s, false)));
+    wrap.addEventListener('pointerleave', (e) => e.pointerType === 'mouse' && !wrap.classList.contains('open') && wrap.querySelectorAll('.pill-sub.open').forEach((s) => closeSub(s, false)));
+    wrap.querySelectorAll('.pill-sub').forEach((s) => s.addEventListener('pointerenter', () => subReady(s)));
     bar.append(wrap);
   }
   bar.addEventListener('click', (e) => {
     const wrap = e.target.closest('.pill-wrap');
+    const level = e.target.closest('[data-sub-value]');
+    const toggle = e.target.closest('.pill-sub-toggle');
     const item = e.target.closest('[data-value]');
-    if (item) pickPill(wrap, item.dataset.value);
+    if (level) pickSub(wrap, level.closest('.pill-sub'), level.dataset.subValue);
+    else if (toggle) toggle.parentElement.classList.contains('open') ? closeSub(toggle.parentElement, false) : openSub(toggle.parentElement, false);
+    else if (item) pickPill(wrap, item.dataset.value);
     else if (e.target.closest('.pill')) wrap.classList.contains('open') ? closePill(wrap, true) : openPill(wrap, false);
   });
-  // 键盘：按钮上回车、空格、上下键展开，左右键换到相邻的按钮；菜单里上下键挪、回车或空格选、Esc 收起
+  bar.addEventListener('mousedown', (e) => e.target.closest('.pill-sub-toggle') && e.preventDefault()); // 点 ▸ 不抢焦点（焦点还在原处，键盘接着用）
+  // 键盘：按钮上回车、空格、上下键展开，左右键换到相邻的按钮；菜单里上下键挪、回车或空格选、Esc 收起；
+  // 挂着二级菜单的项上按右键展开、焦点到当前那级，二级菜单里上下键挪、回车或空格选，左键或 Esc 回到那一项
   bar.addEventListener('keydown', (e) => {
     const wrap = e.target.closest('.pill-wrap');
     if (!wrap) return;
+    if (e.target.matches('[data-sub-value]')) {
+      const sub = e.target.closest('.pill-sub');
+      const levels = [...sub.querySelectorAll('[data-sub-value]')];
+      const j = levels.indexOf(e.target);
+      const n = levels.length;
+      if (e.key === 'ArrowLeft' || e.key === 'Escape') {
+        e.preventDefault();
+        closeSub(sub, true);
+      } else if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        pickSub(wrap, sub, e.target.dataset.subValue);
+      } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
+        e.preventDefault();
+        levels[e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : (j + (e.key === 'ArrowUp' ? n - 1 : 1)) % n].focus();
+      }
+      return;
+    }
     const items = [...wrap.querySelectorAll('[data-value]')];
     const i = items.indexOf(e.target);
     if (e.key === 'Escape') {
@@ -269,6 +311,9 @@ function initPills() {
     } else if (i >= 0 && (e.key === 'Enter' || e.key === ' ')) {
       e.preventDefault();
       pickPill(wrap, e.target.dataset.value);
+    } else if (i >= 0 && e.key === 'ArrowRight' && e.target.parentElement.classList.contains('pill-sub')) {
+      e.preventDefault();
+      openSub(e.target.parentElement, true);
     } else if (i >= 0 && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
       e.preventDefault();
       const n = items.length;
@@ -293,10 +338,11 @@ function openPill(wrap, focusItem) {
   pillReady(wrap);
   wrap.classList.add('open');
   wrap.querySelector('.pill').setAttribute('aria-expanded', 'true');
-  if (focusItem) (wrap.querySelector('[aria-checked="true"]') || wrap.querySelector('[data-value]')).focus();
+  if (focusItem) (wrap.querySelector('[data-value][aria-checked="true"]') || wrap.querySelector('[data-value]')).focus();
 }
 /** 收起；shut：选了一项、按了 Esc、再点一下按钮，鼠标和焦点再进来之前悬停、聚焦都不弹出 */
 function closePill(wrap, shut) {
+  wrap.querySelectorAll('.pill-sub.open').forEach((s) => closeSub(s, false));
   wrap.classList.remove('open');
   wrap.querySelector('.pill').setAttribute('aria-expanded', 'false');
   if (!shut) return;
@@ -312,6 +358,37 @@ function pickPill(wrap, value) {
     radio.dispatchEvent(new Event('change', { bubbles: true }));
   }
   syncOptionSelects();
+}
+/** 鼠标进了挂着二级菜单的那一项、要展开时：二级菜单往右放不下就往左（量法同 pillReady）；记下二级菜单比那一行往下多出多少（斜着挪的三角，模板的 .pill-sub::after） */
+function subReady(sub) {
+  const menu = sub.querySelector('.pill-submenu');
+  menu.style.display = 'block'; // 量一下二级菜单多宽、多高
+  sub.classList.toggle('flip', sub.getBoundingClientRect().right + menu.offsetWidth > document.documentElement.clientWidth - 8);
+  sub.style.setProperty('--sub-drop', `${Math.max(0, menu.offsetTop + menu.offsetHeight - sub.offsetHeight)}px`);
+  menu.style.display = '';
+}
+/** 展开二级菜单（点 ▸、键盘右键）：同一个下拉里别的收起；focusItem：焦点挪到当前那级 */
+function openSub(sub, focusItem) {
+  sub.parentElement.querySelectorAll('.pill-sub.open').forEach((s) => s !== sub && closeSub(s, false));
+  subReady(sub);
+  sub.classList.add('open');
+  sub.querySelector('[data-value]').setAttribute('aria-expanded', 'true');
+  if (focusItem) (sub.querySelector('[data-sub-value][aria-checked="true"]') || sub.querySelector('[data-sub-value]')).focus();
+}
+/** 收起二级菜单；focusItem：焦点回到挂着它的那一项（键盘左键、Esc） */
+function closeSub(sub, focusItem) {
+  sub.classList.remove('open');
+  sub.querySelector('[data-value]').setAttribute('aria-expanded', 'false');
+  if (focusItem) sub.querySelector('[data-value]').focus();
+}
+/** 二级菜单里选了一级：勾上藏着的等级单选、发 change，再照 pickPill 选上挂着它的那一项（集装分拣器 / 物流站） */
+function pickSub(wrap, sub, value) {
+  const radio = document.querySelector(`input[name="${sub.dataset.sub}"][value="${value}"]`);
+  if (radio && !radio.checked) {
+    radio.checked = true;
+    radio.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  pickPill(wrap, sub.querySelector('[data-value]').dataset.value);
 }
 /** 物流方式：传送带 / 传送带+箱子 / 物流站，由「物流站」（藏着的单选，一律放进空地）「箱子」两个设置推出来；选了就把那两个设置改过去，箱子用上次选的 */
 const logisticsOf = () => (document.querySelector('input[name="station"]:checked')?.value ? 'station' : document.querySelector('input[name="supply"]:checked')?.value ? 'box' : '');
@@ -373,6 +450,10 @@ function syncPills() {
     text.textContent = cur ? pillText(cur) : '';
     pill.setAttribute('aria-label', `${wrap.dataset.label}：${text.textContent}`);
     wrap.querySelectorAll('[data-value]').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.value === cur?.value)));
+    wrap.querySelectorAll('.pill-sub').forEach((sub) => {
+      const level = document.querySelector(`input[name="${sub.dataset.sub}"]:checked`)?.value;
+      sub.querySelectorAll('[data-sub-value]').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.subValue === level)));
+    });
   });
 }
 
@@ -1262,20 +1343,13 @@ $('labstack').addEventListener('change', () => {
   saveSettings();
   renderMore();
 });
-// 站输出集装只在接物流站时有意义
+// 「物流方式」的子选项：箱子的两项只在传送带+箱子时有，翘曲器格只在接物流站时有（站出货叠几层在顶栏「物流站」的二级菜单里，2026/11/01）
 function togglePile() {
   const connected = !!document.querySelector('input[name="station"]:checked')?.value;
   const boxed = !connected && !!document.querySelector('input[name="supply"]:checked')?.value; // 「物流方式」选了传送带+箱子
-  $('pile-field').hidden = !connected;
   $('supply-field').hidden = !boxed; // 箱子（左侧一列仓组）的大小只在传送带+箱子时有
   $('dist-field').hidden = !boxed; // 物流配送器：同上
-  $('proslot-field').hidden = !connected; // 物流站格子（增产剂格、翘曲器格）只在接物流站时有意义
-  $('warper-field').hidden = !connected;
-  const select = $('pile-field').querySelector('select');
-  if (select) {
-    select.disabled = !connected;
-    select.title = connected ? '物流站输出堆叠层数，取决于已解锁科技' : '接入物流站后可设置';
-  }
+  $('warper-field').hidden = !connected; // 翘曲器格只在接物流站时有意义（增产剂格 2026/11/01 改成喷增产剂就留，不用选）
 }
 document.querySelectorAll('input[name="station"], input[name="supply"]').forEach((el) => el.addEventListener('change', togglePile));
 $('ext-list').addEventListener('click', (e) => {

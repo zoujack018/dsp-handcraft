@@ -99,8 +99,11 @@ const stackChain = (L, ch, cap) => {
   for (const q of ch.parts) if (q.seg != null) rate = Math.max(rate, L.segments[q.seg].rate);
   return rate > cap + 1e-6;
 };
-/** 布局里有没有要集装的带（stackCap：单条带运力，route.js 的 stackCapOf；0 是关着） */
-export const needsStacking = (L, stackCap) => stackCap > 0 && L.chains.some((ch) => stackChain(L, ch, stackCap));
+/**
+ * 布局里有没有要集装的带（stackCap：单条带运力，route.js 的 stackCapOf；0 是关着）。sorterStack：集装分拣器往带上叠几层
+ * （route.js 的 sorterStackOf），放上带的货物本来就叠这么多层，一条带不靠集装机运 stackCap × sorterStack，超了才要集装
+ */
+export const needsStacking = (L, stackCap, sorterStack = 1) => stackCap > 0 && L.chains.some((ch) => stackChain(L, ch, stackCap * sorterStack));
 
 /**
  * 集装（用户 2026/10/26）：产物带一条运的超过单条带的运力时（layout/belts.js 的 pileCap），分拣器放上带的是单个物品，一个占一个格位；
@@ -110,11 +113,14 @@ export const needsStacking = (L, stackCap) => stackCap > 0 && L.chains.some((ch)
  * 格位再过 STACK_AT 就再放一台。上一台之后没放新的单个时，下一台合不上（pileOnce 的 fresh），格位降不到 1% 运力的不放。
  * 取料只减物品，格位按不多于物品数算（保守，piling.js 的 takeItems）。放料按每台工厂满速（取放事件和 layout/belts.js 的一样，同一列先放后取），
  * 同一台工厂在这一段同一个方向有几根分拣器时平分。能放的格：直带、不在分拣器的取放格和横穿的格上、头顶没有高架、不挨着物流站、
- * 不占喷涂机的空当（can）。哪儿的格位超过单条带的运力（集装机放不下），记进 L.stackShort（finishOne 判不可行）
+ * 不占喷涂机的空当（can）。哪儿的格位超过单条带的运力（集装机放不下），记进 L.stackShort（finishOne 判不可行）。
+ * cap：单条带的格位（每分钟，极速带 1800），STACK_AT、pileOnce、超没超都比它。layers：集装分拣器往带上叠几层（route.js 的 sorterStack）：
+ * 放料 e 个按 e ÷ layers 个 layers 层的货物记（游戏里还会补进插入点前后同种的货物、补到 layers 层，这里不算，保守），
+ * 一条带不靠集装机运 cap × layers，超过的链才集装；layers = 1 时照旧按单个物品
  */
-function stackPilers(L, tiles, cap, can, used, name) {
+function stackPilers(L, tiles, cap, layers, can, used, name) {
   const segChain = new Map();
-  L.chains.forEach((ch, ci) => { if (stackChain(L, ch, cap)) for (const q of ch.parts) if (q.seg != null) segChain.set(q.seg, ci); });
+  L.chains.forEach((ch, ci) => { if (stackChain(L, ch, cap * layers)) for (const q of ch.parts) if (q.seg != null) segChain.set(q.seg, ci); });
   const nSame = new Map();
   const sk = (s) => `${s.segId}|${s.bid}|${s.building}|${s.io}`;
   for (const s of L.sorterList) nSame.set(sk(s), (nSame.get(sk(s)) ?? 0) + 1);
@@ -172,7 +178,8 @@ function stackPilers(L, tiles, cap, can, used, name) {
         }
         const es = z === 0 ? ev.get(key(x, y)) : undefined;
         if (es) {
-          for (const e of es) if (e > 0) { c[1] += e; fresh += e; }
+          // 放料 e 个是 e ÷ layers 个 layers 层的货物（layers = 1 时 e ÷ 1 就是 e，和以前一字不差）
+          for (const e of es) if (e > 0) { c[layers] += e / layers; fresh += e / layers; }
           for (const e of es) if (e < 0) takeItems(c, -e);
         }
         const slots = slotsOf(c);
@@ -200,13 +207,14 @@ function stackPilers(L, tiles, cap, can, used, name) {
 }
 
 /**
- * 在布局上加自动集装机（pile：产物出线前；stackCap：运的超过一条带的产物带上集装，见 stackPilers）和喷涂机 + 增产剂带（spray 1~3）。改写 L：
+ * 在布局上加自动集装机（pile：产物出线前；stackCap：运的超过一条带的产物带上集装，sorterStack 集装分拣器往带上叠几层，见 stackPilers）
+ * 和喷涂机 + 增产剂带（spray 1~3）。改写 L：
  *   L.pilers   [{chain, x, y, dx, dy, itemId}]   集装机所在格和流向
  *   L.coaters  [{chain, x, y, ix, iy, itemId}]   喷涂机所在格、取料格
  *   L.proLines [{cells, station: {k, slot} | null, edge, itemId, rate}]  增产剂带（逐格，从源头起），可能有几条
  *   L.addonNotes 放不下的说明；L.sprayMissed 没喷上的带数（应为 0，finishOne 据此判不可行）；L.stackShort 集装机放不下时的说明（有才写，finishOne 据此判不可行）
  */
-export function addAddons(L, { spray = 0, sprayItems = null, sprayTo = null, pile = false, sprayRate = 0, supply = null, sorter = 2013, maxLayers = 15, stackCap = 0 } = {}) {
+export function addAddons(L, { spray = 0, sprayItems = null, sprayTo = null, pile = false, sprayRate = 0, supply = null, sorter = 2013, maxLayers = 15, stackCap = 0, sorterStack = 1 } = {}) {
   L.pilers = [];
   L.coaters = [];
   L.proLines = [];
@@ -254,7 +262,7 @@ export function addAddons(L, { spray = 0, sprayItems = null, sprayTo = null, pil
   const name = (id) => ITEMS.get(realItem(id))?.name ?? String(id);
 
   // 运的超过一条带的产物带上集装（先放：出线前的集装机、喷涂机都让开这几格）。分拣器横穿的格也不放（和喷涂机一样保守）
-  if (needsStacking(L, stackCap)) {
+  if (needsStacking(L, stackCap, sorterStack)) {
     const span = new Set();
     for (const s of L.sorterList) {
       const p = L.pos.get(s.bid);
@@ -262,7 +270,7 @@ export function addAddons(L, { spray = 0, sprayItems = null, sprayTo = null, pil
       const y1 = L.segments[s.segId].y;
       for (let y = Math.min(y0, y1); y <= Math.max(y0, y1); y++) span.add(key(s.col, y));
     }
-    stackPilers(L, tiles, stackCap, (x, y) => free(x, y) && !span.has(key(x, y)), used, name);
+    stackPilers(L, tiles, stackCap, sorterStack, (x, y) => free(x, y) && !span.has(key(x, y)), used, name);
   }
 
   if (pile) {

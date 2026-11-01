@@ -19,12 +19,14 @@ const SPLIT_COST = 16;
  * 块的流量超过一条带的运力就记「超运力」。前沿大线一行几百列，整行同组的一段常常超（引力矩阵 180 的铁块 45 台 × 60/分）。
  * 排版时一行里同组的一段超过这个台数就在行内切成几块（台数尽量平均），各挂各的带。
  * piled（只有主干内核传，place.js）：开自动集装机时产物和不是原料的进料按集装后的运力算（layout/belts.js 的 pileCap，plan/piling.js 的 pileCapOf：
- * 不写 pileModel 是单条带的 4 倍），原料照旧
+ * 不写 pileModel 是单条带的 4 倍），原料照旧。集装分拣器叠层（route 选项 sorterStack）时产物带不靠集装机也运单条带格位 × 层数，
+ * 两个内核的产物、不是原料的进料和分身单元按带切（unitsOf）都取两者大的（层数 1 时不变）
  */
 export function blockCaps(graph, ro = {}, piled = false) {
   const beltCap = BELT_SPEED[ro.belt ?? DEFAULTS.belt] * (ro.stack ?? DEFAULTS.stack) * 60;
   const rawCap = beltCap * Math.max(1, ro.station?.stack ?? ro.externalStack ?? DEFAULTS.externalStack);
-  const itemCap = piled && (ro.pilers ?? DEFAULTS.pilers) ? Math.max(beltCap, pileCapOf(BELT_SPEED[ro.belt ?? DEFAULTS.belt] * 60, ro.pileModel ?? DEFAULTS.pileModel)) : beltCap;
+  const sorterCap = BELT_SPEED[ro.belt ?? DEFAULTS.belt] * 60 * (ro.sorterStack || 1);
+  const itemCap = Math.max(piled && (ro.pilers ?? DEFAULTS.pilers) ? Math.max(beltCap, pileCapOf(BELT_SPEED[ro.belt ?? DEFAULTS.belt] * 60, ro.pileModel ?? DEFAULTS.pileModel)) : beltCap, sorterCap);
   const caps = new Map();
   for (const g of graph.groups) {
     let n = Infinity;
@@ -33,7 +35,7 @@ export function blockCaps(graph, ro = {}, piled = false) {
       for (const c of it.consumers) if (c.to === g.id && c.rate > 0) n = Math.min(n, (it.producer === 'RAW' ? rawCap : itemCap) / (c.rate / g.count));
     caps.set(g.id, Math.max(1, Math.floor(n + 1e-9)));
   }
-  caps.beltCap = beltCap; // 分身单元按带切（unitsOf）要用
+  caps.beltCap = Math.max(beltCap, sorterCap); // 分身单元按带切（unitsOf）要用：只切产物
   return caps;
 }
 

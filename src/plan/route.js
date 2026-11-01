@@ -36,6 +36,11 @@ export const DEFAULTS = {
   // 一台只把相邻两个合成一个（用户 2026/10/30），7200 要很多台才接近。写正整数 k 按一条带最多放 k 台集装机够得着的算
   // （料全先放后取，每台放在格位到 1700 处、之后补单个；极速带 k = 1~7：2626、3451、4119、4641、5071、5419、5700）。试验开关，量完考卷再定默认
   pileModel: null,
+  // 集装分拣器往带上放货叠几层（科技「集装分拣器改良」1、3、5 级到 2、3、4 层（BWIKI），效果「分拣器输出运货量」，游戏 0.10.35 的 inserterStackOutput）：放下的货物最多这么多层，
+  // 还把货补进插入点前后的同种货物、补到这么多层；别的分拣器不叠。只在 sorter 2014 时由调用方传 >1。产物带一条不靠集装机就运
+  // 单条带格位 × 这个数（layout/belts.js 的 pileCap、typeset.js 的 blockCaps），后处理放料按这么多层的货物记（plan/addons.js 的 stackPilers）。
+  // 1 照旧按单个物品算；原料带（物流站叠层 stack / externalStack、箱子供货）不看它
+  sorterStack: 1,
   maxTracks: 3, // 分拣器最长 3 格 => 每个通道最多 3 条地面轨道
   // 第 4 条轨：一个通道 4 条地面轨道，条件是每根分拣器都够得着（下方那行只接第 0~2 条、上方那行只接第 1~3 条，layout/tracks.js 挑排法）。
   // 默认关；喷增产剂时 plan/index.js 打开（2026/10/08，待办 3 第二步，先只在喷涂线上量）
@@ -149,6 +154,10 @@ export const DEFAULTS = {
 /** 自动集装机（pilers）开着时单条带的运力（后处理按它放集装机，plan/addons.js 的 stackPilers），关着时 0。ro 是 route() 的选项 */
 export function stackCapOf(ro = {}) {
   return (ro.pilers ?? DEFAULTS.pilers) ? BELT_SPEED[ro.belt ?? DEFAULTS.belt] * (ro.stack ?? DEFAULTS.stack) * 60 : 0;
+}
+/** 集装分拣器往带上叠几层（route 选项 sorterStack，见 DEFAULTS）：不小于 1 的整数，后处理放集装机用（plan/index.js 的 finishOne） */
+export function sorterStackOf(ro = {}) {
+  return Math.max(1, Math.floor(ro.sorterStack ?? DEFAULTS.sorterStack) || 1);
 }
 
 /**

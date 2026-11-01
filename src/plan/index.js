@@ -15,7 +15,7 @@ import { attachStations, linkWarpers, cropToContent } from './stations.js';
 import { groundRoutes, groundOptions } from './ground.js';
 import { rerouteBelts, rerouteOptions, beltStats, rerouteWorse } from './reroute.js';
 import { addAddons, needsStacking } from './addons.js';
-import { stackCapOf } from './route.js';
+import { stackCapOf, sorterStackOf } from './route.js';
 import { addStores, addProStores, isColumnSupply } from './storage.js';
 import { addBurners, burnable } from './burn.js';
 import { translateLayout } from './coordinates.js';
@@ -45,6 +45,7 @@ export function stationOption(options = {}) {
  * 一个搜索候选走完全部后处理；接不上物流站时返回 null。只用到布局本身，可以放到后台线程里做。
  * ctx：{ station, power, powerOptions, maxWidth, maxHeight, noGrounding, ground 高架落地的选项（ground.js 的 groundOptions，变层税没开时 null）, aw, spray, sprayItems, sprayTo, pile, sprayRate, burn,
  *        stackCap 运的超过一条带的产物带上放集装机（route.js 的 stackCapOf，0 是关着；plan/addons.js 的 stackPilers）,
+ *        sorterStack 集装分拣器往带上叠几层（route.js 的 sorterStackOf；1 时 ctx 里不写）,
  *        supply 箱子供货（plan/storage.js 的 SUPPLY，不接物流站时）, sorter 分拣器（箱子组按它的速度算几根）, storeLayers 储物仓最多叠几层 }
  */
 /**
@@ -117,7 +118,7 @@ function liftsLeft(L) {
 }
 
 export function finishOne(cand, ctx) {
-  const { station, power, powerOptions, maxWidth, maxHeight, noGrounding, ground = null, busGround = false, aw = 1, spray = 0, sprayItems = null, sprayTo = null, pile = false, sprayRate = 0, burn = false, supply = null, sorter = 2013, storeLayers = 15, stackCap = 0 } = ctx;
+  const { station, power, powerOptions, maxWidth, maxHeight, noGrounding, ground = null, busGround = false, aw = 1, spray = 0, sprayItems = null, sprayTo = null, pile = false, sprayRate = 0, burn = false, supply = null, sorter = 2013, storeLayers = 15, stackCap = 0, sorterStack = 1 } = ctx;
   // 后处理改的是自己的一份。接物流站（edge）时 attachStations 自己先复制一份再改，供电预选只读布局，这里不用先复制；
   // 就地烧副产物要先改布局（标 burn、加发电厂），照旧先复制
   let L = burn || station?.place !== 'edge' ? structuredClone(cand.layout) : cand.layout;
@@ -165,9 +166,9 @@ export function finishOne(cand, ctx) {
   // 翘曲器整张一格：一座站存，别的站用传送带接（落地之后、增产剂和供电之前，后面的会让开这些带子）
   if (station?.slots?.warper && L.stations?.length) linkWarpers(L, L.noLift ? { maxLevel: 0 } : undefined);
   // 增产剂（所有原料和中间产物进工厂前喷）和自动集装机（产物出线前叠层；运的超过一条带的产物带上集装）：在供电之前加，供电要给喷涂机、集装机通电
-  const stack = needsStacking(L, stackCap);
+  const stack = needsStacking(L, stackCap, sorterStack);
   if (spray || pile || stack) {
-    addAddons(L, { spray, sprayItems, sprayTo, pile, sprayRate, supply: station ? null : supply, sorter, maxLayers: storeLayers, stackCap: stack ? stackCap : 0 });
+    addAddons(L, { spray, sprayItems, sprayTo, pile, sprayRate, supply: station ? null : supply, sorter, maxLayers: storeLayers, stackCap: stack ? stackCap : 0, sorterStack });
     // 集装机放不下（有一段带上单个物品占的格位超过一条带的运力）：那条带运不过来，按不可行处理
     if (L.stackShort) {
       L.feasible = false;
@@ -377,7 +378,7 @@ function* planFrame(calc, options) {
     // 帮手线程按 snapshotMs 开关自己装钩子（web/src/worker.js 的 task 分支）
     return o;
   };
-  const ctx = (aw = routeOptions.areaWeight ?? 1) => ({ station: station && { ...station }, power, powerOptions: options.powerOptions, maxWidth: routeOptions.maxWidth, maxHeight: routeOptions.maxHeight, noGrounding: !!options.noGrounding, ground: groundOptions(routeOptions), busGround: !!routeOptions.busGround, aw, spray: calc.spray ? calc.spray.level : 0, sprayItems: calc.spray?.items ?? null, sprayTo: calc.spray?.to ?? null, pile: !!options.pile, sprayRate: calc.spray?.rate ?? 0, burn: options.burn || false, allowMissed: !!routeOptions.allowMissed, supply: options.supply ?? null, sorter: routeOptions.sorter ?? options.sorter ?? 2013, storeLayers: options.storeLayers ?? 15, stackCap: stackCapOf(routeOptions), ...rerouteCtx(routeOptions) });
+  const ctx = (aw = routeOptions.areaWeight ?? 1) => ({ station: station && { ...station }, power, powerOptions: options.powerOptions, maxWidth: routeOptions.maxWidth, maxHeight: routeOptions.maxHeight, noGrounding: !!options.noGrounding, ground: groundOptions(routeOptions), busGround: !!routeOptions.busGround, aw, spray: calc.spray ? calc.spray.level : 0, sprayItems: calc.spray?.items ?? null, sprayTo: calc.spray?.to ?? null, pile: !!options.pile, sprayRate: calc.spray?.rate ?? 0, burn: options.burn || false, allowMissed: !!routeOptions.allowMissed, supply: options.supply ?? null, sorter: routeOptions.sorter ?? options.sorter ?? 2013, storeLayers: options.storeLayers ?? 15, stackCap: stackCapOf(routeOptions), ...sorterStackCtx(routeOptions), ...rerouteCtx(routeOptions) });
 
   let result = yield { kind: 'search', graph, options: searchOpts(routeOptions, options.timeLimit ?? null) };
 
@@ -578,7 +579,12 @@ function* planFrame(calc, options) {
 export function finishContext(calc, options) {
   const ro = options.routeOptions || {};
   const station = ro.station ? { place: 'side', stack: ro.station.stack, slots: ro.station.slots } : ro.externalStack != null ? { place: 'edge', stack: ro.externalStack, slots: ro.stationSlots } : null;
-  return { station, power: ro.power ?? null, powerOptions: ro.powerOptions, maxWidth: ro.maxWidth, maxHeight: ro.maxHeight, noGrounding: !!options.noGrounding, ground: groundOptions(ro), busGround: !!ro.busGround, aw: ro.areaWeight ?? 1, spray: calc.spray ? calc.spray.level : 0, sprayItems: calc.spray?.items ?? null, sprayTo: calc.spray?.to ?? null, pile: !!options.pile, sprayRate: calc.spray?.rate ?? 0, burn: options.burn || false, allowMissed: !!ro.allowMissed, supply: options.supply ?? null, sorter: ro.sorter ?? options.sorter ?? 2013, storeLayers: options.storeLayers ?? 15, stackCap: stackCapOf(ro), ...rerouteCtx(ro) };
+  return { station, power: ro.power ?? null, powerOptions: ro.powerOptions, maxWidth: ro.maxWidth, maxHeight: ro.maxHeight, noGrounding: !!options.noGrounding, ground: groundOptions(ro), busGround: !!ro.busGround, aw: ro.areaWeight ?? 1, spray: calc.spray ? calc.spray.level : 0, sprayItems: calc.spray?.items ?? null, sprayTo: calc.spray?.to ?? null, pile: !!options.pile, sprayRate: calc.spray?.rate ?? 0, burn: options.burn || false, allowMissed: !!ro.allowMissed, supply: options.supply ?? null, sorter: ro.sorter ?? options.sorter ?? 2013, storeLayers: options.storeLayers ?? 15, stackCap: stackCapOf(ro), ...sorterStackCtx(ro), ...rerouteCtx(ro) };
+}
+/** 集装分拣器叠层（route.js 的 sorterStackOf）进 ctx：1 层时不加这一项，ctx 和以前一字不差 */
+function sorterStackCtx(ro) {
+  const k = sorterStackOf(ro);
+  return k > 1 ? { sorterStack: k } : {};
 }
 /**
  * 后处理重走（plan/reroute.js）的参数进 ctx：没开时、只做挑中的那张时（mode 'pick'，planFrame 最后自己做）不加这一项，ctx 和以前一字不差；

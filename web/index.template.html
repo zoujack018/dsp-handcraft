@@ -446,7 +446,7 @@ body.viewer-expanded { overflow: hidden; }
 .spec .seg span[data-short]::before { content: attr(data-short); font-size: 12px; }
 /* 试验中的功能（用户 2026/10/26）：图例后面一个小 beta 标，不要上面 .seg span 那套格子样式 */
 .modern-option { display: none; }
-#pile-field[hidden], .spec > [data-name="station"] { display: none !important; }
+.spec > [data-name="station"], .spec > [data-name="pilertech"], .spec > [data-name="pile"] { display: none !important; }
 .spec > .field { order: 0; }
 .spec > .go { order: 7; }
 .spec > .status { order: 8; }
@@ -535,8 +535,8 @@ body.viewer-expanded { overflow: hidden; }
 .spec > [data-name="fracengine"] { order: 9; }
 .spec > [data-name="fracengine"][hidden] { display: none !important; }
 .spec > [data-name="chemwide"], .spec > .field.labstack { order: 13; }
-.spec > [data-name="pile"], .spec > [data-name="proslot"], .spec > [data-name="warper"] { order: 12; } /* 物流站的三项（不再折叠，用户 2026/10/26） */
-.spec > [data-name="proslot"][hidden], .spec > [data-name="warper"][hidden] { display: none !important; }
+.spec > [data-name="warper"] { order: 12; } /* 物流站的翘曲器格（不再折叠，用户 2026/10/26；站出货叠几层 2026/11/01 挪进顶栏「物流站」的二级菜单，增产剂格同一天改成喷增产剂就留） */
+.spec > [data-name="warper"][hidden] { display: none !important; }
 .spec > [data-name="maxwidth"], .spec > [data-name="maxheight"], .spec > [data-name="aspect"] { order: 14; }
 .spec .seg .hint { margin: 4px 0 0; }
 .progress { height: 6px; border-radius: 3px; background: #d6dfea; overflow: hidden; }
@@ -565,6 +565,25 @@ body.viewer-expanded { overflow: hidden; }
 .pill-menu button[aria-checked="true"]::after { visibility: visible; }
 .pill-menu button:hover, .pill-menu button:focus-visible { background: #eef3f9; }
 .pill-menu button:focus-visible { outline: 2px solid #6398ca; outline-offset: -2px; }
+/* 带二级菜单的那一项（集装分拣器、物流站，用户 2026/11/01）：悬停或点右边的 ▸ 在它右边展开科技等级，右边放不下就往左（.flip）；
+   .open 是点 ▸ 或按右键开的（触屏靠 ▸），二级菜单最上面一行是不能点的小标题 */
+.pill-sub { position: relative; display: flex; }
+.pill-menu .pill-sub > [data-value] { flex: 1 1 auto; width: auto; min-width: 0; }
+.pill-menu .pill-sub-toggle { flex: none; width: auto; padding: 7px 10px 7px 4px; color: var(--ink-2); }
+.pill-menu .pill-sub-toggle::after { content: none; }
+.pill-sub.open > button { background: #eef3f9; }
+.pill-submenu { display: none; position: absolute; z-index: 1; top: -4px; left: 100%; padding: 4px 0; background: #fff; border-radius: 8px; box-shadow: 0 6px 20px rgba(17, 47, 82, 0.22); }
+.pill-sub.flip > .pill-submenu { left: auto; right: 100%; }
+.pill-sub.open > .pill-submenu { display: block; }
+/* 鼠标从那一项斜着往下挪进二级菜单：两项都是菜单最后一行，斜着走会出菜单，那一行下面到二级菜单底这块三角也算悬停（高 --sub-drop，subReady 量的） */
+.pill-sub::after { content: ""; display: none; position: absolute; top: 100%; left: 0; right: 0; height: var(--sub-drop, 0); clip-path: polygon(0 0, 100% 0, 100% 100%); }
+.pill-sub.flip::after { clip-path: polygon(0 0, 100% 0, 0 100%); }
+@media (hover: hover) {
+  .pill-sub:hover > button { background: #eef3f9; }
+  .pill-sub:hover > .pill-submenu, .pill-sub:hover::after { display: block; }
+}
+.pill-sub-head { padding: 5px 12px 3px; font-size: 12px; color: var(--ink-2); white-space: nowrap; cursor: default; }
+.pill-note { margin-left: auto; padding-left: 14px; font-size: 12px; font-weight: 400; color: var(--ink-2); } /* 等级右边这级提升了什么（用户 2026/11/01） */
 /* 右侧栏两页：楼层、用电（用户 2026/10/26：用电从「检查」挪过来）；选中的那页同选中的楼层卡片 */
 .rail-tabs { display: flex; gap: 4px; }
 .rail-tabs button { flex: 1 1 0; min-width: 0; font: 600 12px/1.2 var(--ui); color: #e6f0ff; background: transparent; border: 1px solid #3d6084; padding: 6px 4px; cursor: pointer; }
@@ -758,23 +777,28 @@ body.viewer-expanded { overflow: hidden; }
         </div>
         <p class="hint">新排法还没进游戏验过。</p>
       </fieldset>
-      <fieldset class="seg" data-name="pile" id="pile-field">
-        <legend>物流站出货叠几层</legend>
+      <!-- 两个科技等级挪进顶栏下拉的二级菜单（用户 2026/11/01）：「分拣器」的集装分拣器、「物流方式」的物流站各挂一个，图例是二级菜单的小标题。
+           这两组单选不显示，只记设置；pile 的值照旧是站出货叠几层（= 等级 + 1），以前存的设置、带过来的方案都认；data-note 是二级菜单里写在等级右边的这级提升了什么 -->
+      <fieldset class="seg" data-name="pilertech" hidden>
+        <legend>集装分拣器改良科技水平</legend>
         <div class="opts">
-          <label><input type="radio" name="pile" value="1"><span>1</span></label>
-          <label><input type="radio" name="pile" value="2"><span>2</span></label>
-          <label><input type="radio" name="pile" value="3"><span>3</span></label>
-          <label><input type="radio" name="pile" value="4"><span>4</span></label>
+          <label><input type="radio" name="pilertech" value="0"><span>未研究（默认）</span></label>
+          <label><input type="radio" name="pilertech" value="1"><span data-note="叠 2 层">1 级</span></label>
+          <label><input type="radio" name="pilertech" value="2"><span data-note="一趟 3 个">2 级</span></label>
+          <label><input type="radio" name="pilertech" value="3"><span data-note="叠 3 层">3 级</span></label>
+          <label><input type="radio" name="pilertech" value="4"><span data-note="一趟 4 个">4 级</span></label>
+          <label><input type="radio" name="pilertech" value="5"><span data-note="叠 4 层">5 级</span></label>
+          <label><input type="radio" name="pilertech" value="6"><span data-note="双向">6 级</span></label>
         </div>
-        <p class="hint">没研究「运输站集装物流」就选 1。带上的自动集装机不看这个。</p>
       </fieldset>
-      <fieldset class="seg" data-name="proslot" id="proslot-field">
-        <legend>增产剂格（喷增产剂时）</legend>
+      <fieldset class="seg" data-name="pile" hidden>
+        <legend>运输站集装物流</legend>
         <div class="opts">
-          <label><input type="radio" name="proslot" value="1"><span>留一格</span></label>
-          <label><input type="radio" name="proslot" value="0"><span>不留</span></label>
+          <label><input type="radio" name="pile" value="1"><span>未研究（默认）</span></label>
+          <label><input type="radio" name="pile" value="2"><span data-note="叠 2 层">1 级</span></label>
+          <label><input type="radio" name="pile" value="3"><span data-note="叠 3 层">2 级</span></label>
+          <label><input type="radio" name="pile" value="4"><span data-note="叠 4 层">3 级</span></label>
         </div>
-        
       </fieldset>
       <fieldset class="seg" data-name="warper" id="warper-field">
         <legend>翘曲器格（星际需求）</legend>

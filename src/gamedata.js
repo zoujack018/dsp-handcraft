@@ -118,6 +118,23 @@ export const SPRAY_LEVELS = [
 ];
 
 /**
+ * 科技「集装分拣器改良」各级（下标 = 等级，0 是没研究）给集装分拣器（2014）的：
+ *   out   往带上放货叠几层（GameHistoryData.inserterStackOutput，默认 1）：1、3、5 级提到 2、3、4
+ *   in    一趟最多取几份（inserterStackInput，默认 2）：2、4 级提到 3、4
+ *   both  双向运送（inserterBidirectional，默认 false）：6 级
+ * 来源：BWIKI「集装分拣器改良」、游戏 0.10.35 的 GameHistoryData，见 docs/game-rules.md 第 45 条（没实测）。
+ */
+export const PILE_SORTER_TECH = [
+  { out: 1, in: 2, both: false },
+  { out: 2, in: 2, both: false },
+  { out: 2, in: 3, both: false },
+  { out: 3, in: 3, both: false },
+  { out: 3, in: 4, both: false },
+  { out: 4, in: 4, both: false },
+  { out: 4, in: 4, both: true },
+];
+
+/**
  * 工厂几何（单位：格；坐标以工厂中心所在格为原点，y 向上）。
  *   pitch        同一块里相邻两台的中心距
  *   center       块左端到第一台中心的距离
