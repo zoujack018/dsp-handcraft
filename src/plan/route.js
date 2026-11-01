@@ -37,8 +37,9 @@ export const DEFAULTS = {
   // （料全先放后取，每台放在格位到 1700 处、之后补单个；极速带 k = 1~7：2626、3451、4119、4641、5071、5419、5700）。试验开关，量完考卷再定默认
   pileModel: null,
   // 集装分拣器往带上放货叠几层（科技「集装分拣器改良」1、3、5 级到 2、3、4 层（BWIKI），效果「分拣器输出运货量」，游戏 0.10.35 的 inserterStackOutput）：放下的货物最多这么多层，
-  // 还把货补进插入点前后的同种货物、补到这么多层；别的分拣器不叠。只在 sorter 2014 时由调用方传 >1。产物带一条不靠集装机就运
-  // 单条带格位 × 这个数（layout/belts.js 的 pileCap、typeset.js 的 blockCaps），后处理放料按这么多层的货物记（plan/addons.js 的 stackPilers）。
+  // 还把货补进插入点前后的同种货物、补到这么多层；别的分拣器不叠。只在 sorter 2014 时由调用方传 >1。产物带一条按
+  // 单条带格位 × 这个数排、超了拆带，不再按集装机叠到 4 倍排（layout/belts.js 的 pileCap、typeset.js 的 blockCaps；用户 2026/11/01：
+  // 叠 2、3 层时铁块 7200 一条带要几台集装机、放不下），后处理放料按这么多层的货物记（plan/addons.js 的 stackPilers）。
   // 1 照旧按单个物品算；原料带（物流站叠层 stack / externalStack、箱子供货）不看它
   sorterStack: 1,
   maxTracks: 3, // 分拣器最长 3 格 => 每个通道最多 3 条地面轨道

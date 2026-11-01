@@ -28,6 +28,8 @@ export const TARGET_SPACE = 0.8;
 export const BELT_SLACK = 0.1;
 /** 内核 'auto'：排版内核搜完这么多段、最好那张还不可行，就换主干内核、从那张热启动（planCore） */
 export const AUTO_SEGMENTS = 2;
+/** 集装机放不下、只因为这个不可行时，后面各段一条产物带依次按几台集装机够得着的排（route.js 的 pileModel；planFrame 的 relaxPile） */
+export const PILE_LADDER = [3, 1];
 
 /**
  * 物流站选项统一成 { place, stack }：
@@ -447,6 +449,24 @@ function* planFrame(calc, options) {
   // （可行了以后挑的一直是可行的，不会再放）；routeOptions 里写明了 maxLevel 的照写明的
   const levelRelaxed = station?.place === 'edge' && routeOptions.maxLevel == null && !pick.layout.feasible;
   if (levelRelaxed) routeOptions.maxLevel = 6;
+  // 集装机放不下（用户 2026/11/01「继续修」：铁块 7200 负熵熔炉 40 台，集装分拣器没研究改良时一条带要十几台集装机、放不下，排不出来）：
+  // 最好那张只因为这个不可行（L.stackShort，别的硬罚项都没有）时，后面各段产物带一条按 PILE_LADDER[i] 台集装机够得着的排（route.js 的 pileModel，
+  // 极速带 3 台 4119/分、1 台 2626/分，超了拆带），还是只因为这个不可行再往下一级。只在这时才改：全局改成 3 时考卷 4 超 4119 的大线可行 9/12 → 4/12
+  // （中途有工厂取料的长带过集装机排得下，拆了带通道轨道不够）；第一段就可行、或者还有别的毛病的线一字不变；routeOptions 写明了 pileModel、关了集装机的照写明的
+  const pileAuto = routeOptions.pileModel === undefined && routeOptions.pilers !== false;
+  let pileStep = 0;
+  const relaxPile = () => {
+    const L = pick.layout;
+    if (!pileAuto || pileStep >= PILE_LADDER.length || L.feasible || !L.stackShort || L.sprayMissed) return;
+    if (!L.penalties.every((x) => (x.kind === 'belt' && x.msg === L.stackShort) || x.kind === 'aspect' || x.kind === 'long' || x.kind === 'fill' || x.kind === 'spray')) return;
+    routeOptions.pileModel = PILE_LADDER[pileStep++];
+  };
+  // 放宽以后搜出来的候选记着按几台集装机排的（挑中这样一张时在规划细节里说一句）
+  const markPile = (list, pm) => {
+    if (pileStep > 0 && pm != null) for (const x of list) x.pileModel = pm;
+    return list;
+  };
+  relaxPile();
   // 接力退火（排版内核，分支 explore/typeset）：后面每一段从目前最好那张接着退一半的轮（place.js 的 warm），不是都从头再来。
   // 大线一段段从头搜，常常每段都卡在同一个地方（黄棒 30 塔第 3~13 段都是 78.2%、不可行）
   const warmOf = (c) => (routeOptions.core === 'typeset' && c?.seq ? { seq: c.seq, W: c.W, bays: c.bays ?? null, gaps: c.gaps ?? null } : null);
@@ -473,9 +493,10 @@ function* planFrame(calc, options) {
     if (stuck) so.seed = (options.seed ?? 7) + 7919 * (k + 1);
     if (warmOf(pick)) so.warm = warmOf(pick);
     const again = yield { kind: 'search', graph, options: so };
-    const more = yield* finish(pool(again), ctx(aw));
+    const more = markPile(yield* finish(pool(again), ctx(aw)), ro.pileModel);
     finished = dropPre([...finished, ...more]);
     pick = choose(finished);
+    relaxPile();
     rounds++;
     options.onRound?.({ round: rounds, space: pick.layout.space.space, feasible: !!pick.layout.feasible, target });
     if (giveUp()) return handBack();
@@ -507,10 +528,12 @@ function* planFrame(calc, options) {
       const o = searchOpts({ ...routeOptions, areaWeight: aw }, Math.min(options.timeLimit ?? Infinity, stopAt - Date.now()));
       o.seed = (options.seed ?? 7) + 1009 * k;
       if (warmOf(pick)) o.warm = warmOf(pick);
+      const pm = routeOptions.pileModel;
       const again = yield { kind: 'search', graph, options: o };
-      const more = yield* finish(pool(again), ctx(aw));
+      const more = markPile(yield* finish(pool(again), ctx(aw)), pm);
       finished = dropPre([...finished, ...more]);
       pick = choose(finished);
+      relaxPile();
       rounds++;
       options.onRound?.({ round: rounds, space: pick.layout.space.space, feasible: !!pick.layout.feasible, target });
       if (giveUp()) return handBack();
@@ -569,7 +592,8 @@ function* planFrame(calc, options) {
   }
   const rest = { ...result };
   delete rest.candidates; // 候选只在这里用，不往外带
-  return { graph, ...rest, rows: pick.rows, pads: pick.pads, blocks: pick.blocks, streets: pick.streets, layout: pick.layout, station, stationFallback: fallback, levelRelaxed, targetSpace: target, targetMet: met(pick.layout), stalled, searchRounds: rounds, ms: Date.now() - t };
+  if (pick.pileModel != null) (pick.layout.addonNotes ||= []).push(`产物带要的自动集装机放不下，改成一条带最多按 ${pick.pileModel} 台集装机排（超了拆带）`);
+  return { graph, ...rest, rows: pick.rows, pads: pick.pads, blocks: pick.blocks, streets: pick.streets, layout: pick.layout, station, stationFallback: fallback, levelRelaxed, pileRelaxed: pick.pileModel ?? null, targetSpace: target, targetMet: met(pick.layout), stalled, searchRounds: rounds, ms: Date.now() - t };
 }
 
 /**

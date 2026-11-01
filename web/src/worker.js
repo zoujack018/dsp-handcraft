@@ -521,8 +521,8 @@ function bottleneck(graph, p) {
   let beltLoad = 0;
   for (const it of graph.items.values()) {
     // 物流站出的原料能叠；产物带默认过自动集装机（route.js 的 pilers），运力和规划器排的一样（plan/piling.js 的 pileCapOf，
-    // route.js 的 pileModel 不写时按 4 条带算；最低配置不放集装机，earlyGame）；集装分拣器叠层时不靠集装机也运 cap0 × 层数（sorterStackOf）
-    const cap = it.producer === 'RAW' ? (p.station ? cap0 * Number(p.pile || 1) : cap0) : Math.max(earlyGame(p) ? cap0 : Math.max(cap0, pileCapOf(cap0, ROUTE_DEFAULTS.pileModel)), cap0 * sorterStackOf(p));
+    // route.js 的 pileModel 不写时按 4 条带算；最低配置不放集装机，earlyGame）；集装分拣器叠层时按 cap0 × 层数、不再算集装机（sorterStackOf，同 layout/belts.js 的 pileCap）
+    const cap = it.producer === 'RAW' ? (p.station ? cap0 * Number(p.pile || 1) : cap0) : sorterStackOf(p) > 1 ? cap0 * sorterStackOf(p) : Math.max(earlyGame(p) ? cap0 : Math.max(cap0, pileCapOf(cap0, ROUTE_DEFAULTS.pileModel)), cap0);
     const toGroup = new Map();
     for (const c of it.consumers) {
       beltLoad = Math.max(beltLoad, c.rate / cap);

@@ -293,9 +293,10 @@ export function routeItems(c) {
   // 自动集装机（opt.pilers，用户 2026/10/26）：分拣器放上带的是单个物品，带上每放约 1700/分过一台集装机，产物带一条最多运 pileCap，
   // 不到这个量不拆带（集装机放在哪儿是后处理，plan/addons.js 的 stackPilers）。一台只把相邻两个合成一个（用户 2026/10/30），
   // 以前按一台叠满 4 层算的单条带 4 倍（7200）要很多台才接近；opt.pileModel 写 k 按一条带最多放 k 台够得着的算（plan/piling.js 的 pileCapOf），
-  // 不写照旧 4 倍。关掉集装机时和单条带一样。集装分拣器放上带的本来就叠 sorterStack 层（route.js 的 DEFAULTS），不靠集装机也运得了
-  // 单条带格位 × 层数，取两者大的（层数 1 时不变）
-  const pileCap = Math.max(opt.pilers ? Math.max(beltCap, pileCapOf(BELT_SPEED[opt.belt] * 60, opt.pileModel)) : beltCap, BELT_SPEED[opt.belt] * 60 * (opt.sorterStack || 1));
+  // 不写照旧 4 倍。关掉集装机时和单条带一样。集装分拣器放上带的本来就叠 sorterStack 层（route.js 的 DEFAULTS），不靠集装机运单条带格位 × 层数；
+  // 叠 2、3 层时就按这个拆带、不再指望集装机叠到 4 倍（用户 2026/11/01：铁块 7200 在「集装分拣器改良」1~4 级一条带要 4~7 台集装机、放不下，
+  // 搜索看不见集装机放不放得下）；叠 4 层时两种算法都是 4 倍，层数 1 时不变
+  const pileCap = (opt.sorterStack || 1) > 1 ? Math.max(beltCap, BELT_SPEED[opt.belt] * 60 * opt.sorterStack) : Math.max(opt.pilers ? Math.max(beltCap, pileCapOf(BELT_SPEED[opt.belt] * 60, opt.pileModel)) : beltCap, BELT_SPEED[opt.belt] * 60);
   // 排物品的顺序：只能走某一个通道的先排，能二选一的后排（让它们去轨道少的那边）；原料入口随时可以多开，最后排
   const flex = (f) => {
     if (f.producer === 'RAW') return 3;
