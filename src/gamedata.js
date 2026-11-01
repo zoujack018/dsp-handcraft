@@ -661,12 +661,16 @@ export const plannable = (recipeId, factoryId) => (FACTORY_KIND[factoryId] === '
 /**
  * 计算器默认用哪个配方做这种物品：编号最小的单产物配方（和以前一样，不管工厂排不排得了）；
  * 没有单产物配方时，才用「这种物品是第一个产物、工厂排得了、原料里没有它自己」的带副产物配方（比如反物质只能用质能储存，同时出氢）。
- * 都没有就是原料（从边缘或物流站进）。精炼油的默认是重整精炼（原料里有它自己、精炼厂排不了，中间产物照旧建议外部供应）；
- * 当目标时计算器改用等离子精炼（calculator.js 的 chooseRecipe，用户 2026/10/26）
+ * 都没有就是原料（从边缘或物流站进）。单产物配方原料里有它自己的不用（只有精炼油的重整精炼：从头做不出来、精炼厂也排不了），
+ * 改用可选配方的第一个（精炼油用等离子精炼，副产氢单独送出；用户 2026/11/02：「重整精炼这个配方没有用，不要用这个，仅仅保留等离子精炼」，
+ * 以前中间产物只能设外部供应）
  */
 export function defaultRecipe(itemId) {
   const all = recipesProducing(itemId).filter((r) => r.type !== -1 && r.outputs[0].id === itemId).sort((a, b) => a.id - b.id);
-  return all.find((r) => r.outputs.length === 1) ?? all.find((r) => isSupported(r) && !r.inputs.some((x) => x.id === itemId)) ?? null;
+  const self = (r) => r.inputs.some((x) => x.id === itemId);
+  const one = all.find((r) => r.outputs.length === 1);
+  if (one && self(one)) return recipeChoices(itemId)[0] ?? null;
+  return one ?? all.find((r) => isSupported(r) && !self(r)) ?? null;
 }
 /**
  * 一种物品可选的配方：类型不是「无中生有」、这种物品是第一个产物、工厂能排、原料里没有它自己。
