@@ -1,5 +1,5 @@
 // 生产图：配方组（同一配方的一排工厂）+ 物品流。规划器只认这个结构。
-import { factory, recipe as recipeOf, item as itemOf, BYPRODUCT, realItem, plannable } from '../gamedata.js';
+import { factory, recipe as recipeOf, item as itemOf, BYPRODUCT, STORE_COPY, realItem, plannable } from '../gamedata.js';
 
 const GROUP_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 /** 工厂上下两侧里有槽位的列数少的那一侧（一般 3，对撞机 2） */
@@ -23,6 +23,18 @@ const ITEM_LETTERS = 'abcdefghijklmnopqrstuvwxyz0123456789';
  * @returns {{groups: Group[], items: Map<number, ItemFlow>, target: number}}
  */
 export function buildGraph(calc) {
+  // 同一种副产物有几组工厂在出（信息矩阵的石墨烯选可燃冰：等离子精炼、石墨烯（高效）都出氢）：生产图里一种物品只记一个生产者，
+  // 以前后一组盖掉前一组，带上只有它那份、出口要的是几组合计，报「供给顺序不足」（用户 2026/11/02）。第二组起换个编号
+  // （STORE_COPY，同箱子供货的仓），各走各的带；出蓝图、接站按真实物品（realItem），进站还是同一格
+  const byKeys = new Map();
+  const byCount = new Map();
+  for (const fl of calc.flows) {
+    if (!fl.byproduct || byKeys.has(`${fl.from}:${fl.itemId}`)) continue;
+    const k = byCount.get(fl.itemId) ?? 0;
+    byCount.set(fl.itemId, k + 1);
+    byKeys.set(`${fl.from}:${fl.itemId}`, STORE_COPY * k + BYPRODUCT + fl.itemId);
+  }
+  const byKey = (from, itemId) => byKeys.get(`${from}:${itemId}`) ?? BYPRODUCT + itemId;
   const groups = calc.units.map((u, i) => {
     const f = factory(u.factoryId, calc.latitude);
     if (!f.supported || !plannable(u.recipeId, u.factoryId)) {
@@ -43,9 +55,9 @@ export function buildGraph(calc) {
     const speedMul = u.spray?.speedMul ?? 1;
     const rateOf = st ? () => st.rate / u.count : (o) => (o.count * outMul * 60 * f.speed * speedMul * levels) / r.time; // 个/分钟
     const perFactory = rateOf(r.outputs.find((o) => o.id === u.itemId) ?? r.outputs[0]);
-    // 产物：主产物 + 副产物（副产物在生产图里的编号是 BYPRODUCT + 真实编号，单独一条带）
+    // 产物：主产物 + 副产物（副产物在生产图里的编号是 BYPRODUCT + 真实编号，单独一条带；别的组也出这种副产物时见上面 byKey）
     // 和主产物一起供产线的（u.shared，同一道配方被几种物品同时选中，calculator.js）也是正经产物
-    const outputs = r.outputs.map((o) => ({ itemId: o.id === u.itemId || u.shared?.includes(o.id) ? o.id : BYPRODUCT + o.id, perFactory: rateOf(o) }));
+    const outputs = r.outputs.map((o) => ({ itemId: o.id === u.itemId || u.shared?.includes(o.id) ? o.id : byKey(u.id, o.id), perFactory: rateOf(o) }));
     const sideItem = sideItemOf(f, r, u, calc.flows);
     const pitch = sideItem == null ? f.pitch : f.pitch + 1; // 夹带的组每台右边多一列（中心隔 6）
     return {
@@ -93,15 +105,15 @@ export function buildGraph(calc) {
 
   const items = new Map();
   let li = 0;
-  const flowOf = (itemId, by) => {
-    const key = by ? BYPRODUCT + itemId : itemId;
+  const flowOf = (itemId, by, from) => {
+    const key = by ? byKey(from, itemId) : itemId;
     if (!items.has(key)) {
       items.set(key, { itemId: key, real: realItem(itemId), byproduct: !!by, name: itemOf(realItem(itemId)).name + (by ? '（副产）' : ''), letter: ITEM_LETTERS[li++] ?? '?', producer: null, consumers: [], rate: 0 });
     }
     return items.get(key);
   };
   for (const fl of calc.flows) {
-    const f = flowOf(fl.itemId, fl.byproduct);
+    const f = flowOf(fl.itemId, fl.byproduct, fl.from);
     f.producer = fl.from; // 组 ID 或 'RAW'
     f.consumers.push({ to: fl.to, rate: fl.rate }); // 组 ID 或 'OUT'
     f.rate += fl.rate;

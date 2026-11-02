@@ -7,7 +7,7 @@
 // 接线照接物流站的做法（stations.js）：从进料带的入口往那条带的段尾找路，原来通到边缘的出口和高架作废。
 // 摆在产线右边、左边或下边，挑外框面积最小、又接得上的那种；宽、长上限内放不下就不烧，照旧送出并写明。
 // 在接站、高架落地之后，翘曲器、增产剂、供电之前做：后面的都把发电厂那块地当障碍（stations.js 的 obstacles）。
-import { BYPRODUCT, ITEMS, realItem, burnPerMinute, THERMAL_BANK as T, THERMAL_MW } from '../gamedata.js';
+import { BYPRODUCT, STORE_COPY, ITEMS, realItem, burnPerMinute, THERMAL_BANK as T, THERMAL_MW } from '../gamedata.js';
 import { obstacles, pathfind, dirIndex, cropToContent } from './stations.js';
 import { translateLayout } from './coordinates.js';
 import { chainTiles } from '../emit/blueprint.js';
@@ -34,8 +34,8 @@ export function contentBox(L) {
   return [x0, y0, x1, y1];
 }
 
-/** 这个物品能不能在火力发电厂里烧（有燃料值的副产物） */
-export const burnable = (itemId) => itemId >= BYPRODUCT && itemId < 2 * BYPRODUCT && burnPerMinute(itemId) > 0;
+/** 这个物品能不能在火力发电厂里烧（有燃料值的副产物；几组工厂出同一种副产物时第二组起编号加 STORE_COPY，见 graph.js 的 byKey） */
+export const burnable = (itemId) => itemId % STORE_COPY >= BYPRODUCT && itemId % STORE_COPY < 2 * BYPRODUCT && burnPerMinute(itemId) > 0;
 /** 一列最多串几台：最上面那两根集装分拣器要把整列的燃料都送进去（满负荷算）；接卫星配电站时另有覆盖限制 */
 export function maxDepthFor(itemId, power) {
   const byRate = Math.max(1, Math.floor((2 * T.sorterRate * 60) / burnPerMinute(itemId) + 1e-9));
