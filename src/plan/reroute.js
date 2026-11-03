@@ -1,30 +1,18 @@
-// 后处理重走（routeOptions.reroute，默认关；传送带交叉重做第 2、3 步，设计见 out/demo-analysis/设计.md，用户 2026/10/28）：
-// 落地、翘曲器带、喷涂机、增产剂带、集装机都照旧放完以后、放供电之前（plan/index.js 的 finishTail），工厂、分拣器、地面段、站、
-// 喷涂机、集装机、增产剂带都不动，把每条带上两个固定格之间的那几截（段与段之间的高架、站的接线、出入口的接线、翘曲器带）拆了重走。
-// 默认只重走最后挑中的那张，哪一项都不比原来差才换上（plan/index.js 的 planFrame 最后，守门是这里的 rerouteWorse）。
-// 重走完相遇（beltStats 的 meet）比进门时多的，先把引起相遇的几截一截截退回原来的路，退到不比原来多再交给守门（rerouteBelts 的「五、相遇修补」；
-// 守门第二次起这样做，第一次照旧；第三次原料接线不换站口、段不掉头，修补哪截都能退，见 plan/index.js 的 planFrame）。
+// 后处理重走（routeOptions.reroute，默认关）：落地、翘曲器带、喷涂机、增产剂带、集装机都放完以后、放供电之前（plan/index.js 的 finishTail），
+// 别的都不动，把每条带上两个固定格之间的那几截（段间高架、站的接线、出入口的接线、翘曲器带）拆了重走。
+// 默认只重走最后挑中的那张，哪一项都不比原来差才换上（plan/index.js 的 planFrame，守门是 rerouteWorse）。
 //
-// 每截在（格、高度档 h、朝向）上做 A*：h = 0 地面、1 半层、2 第 1 层……（z = h / 2，docs/game-rules.md 第 38 条）。代价（越小越好）：
-//   水平走一格 1 + a[h′]；高度变一档 tau，一格变两档是陡坡（要超级磁场）另加 steep；拐弯 turn（拐进终点那格也算），变高的那一步同时拐弯另加 slopeTurn；
-//   原地竖直升降（同一格里每节差一层，官方垂直传送带）允许但最贵：每层 2·tau + lift，外加那一节带子，只在直行的格子里做——
-//   所以坡越缓越便宜：每格半层 < 每格一层的陡坡 < 原地竖直（用户 2026/10/28）；
-//   走进有别的链的格（叠格）另加 over，从没有别的链的格走进去（相遇）再加 meet；
-//   外框：走出固定的东西加原来的接线围成的框，每往外撑一列（行）按那一边的长度 × exit，框外每格另加 outer；
-//   最外一圈（固定的东西围成的框以外）每格另加 ring，翘曲器带在固定的东西围成的框以外每格另加 ringWarper（往里收，外框能小一点）。
-//   不用原地升降（route.js 的 noLift）时一格最多变一档、不原地升降、不出陡坡；接卫星配电站时新路不上 4 层以上（顶盘在 4.18~5.27 层，供电后放）。
-// 挡路：工厂、物流站、喷涂机和集装机的机身、先选好的供电设施位（所有高度）；分拣器手臂那几格的地面和半层、分拣器接的那格的半层
-//   （半层不压分拣器，硬规则；手臂底下的地面是保守，这一截原来就走在那儿的照旧能走）；喷涂空当的保护区；边缘出入口往外那一行的地面；
-//   别的带子占着的（格、档）和原地升降那一叠的中间几档；同一条边（同样两格之间）上挨着走的两条带上下不能对调（半路交叉）。
-// 固定格：地面段（裁段 trim：段两头超出首尾分拣器的那几格并进接着它的那截一起重走）、站口和站身边那格、边缘出入口那格；
-//   经过集装机（和前后各一格）、喷涂机（和前后各两格）的截整截不动；侧边总线、桥、喷涂窗口、接仓、接发电厂的截也不动。
-// 排法：按原来的长度长的先排，一截截拆了重走，整体重排 passes 遍（哪一遍谁都没变就停）；每截先在两层（地面 / 空中）的放宽图上倒着算一遍
-//   到终点的代价下限当启发值（buildMap），第二遍起只算代价不超过上一遍那条 1.1 倍加 5 的椭圆；某一截找不到路（或出堆超过 budget）
-//   就留着原来那条（原来那条的格子一直空着，不冲突），后面几遍不再找。
-// 物流站的原料接线（resource）：可以从任意一座已存这种原料、或还有空格的站的空口出（一座站最多 5 种，增产剂的空格照留，
-//   同一种物品的供应和需求不进同一座站，docs/game-rules.md 第 37 条；离开的那座站不能空掉）；只有一段、全是取料口的原料带（flip）
-//   可以接段尾、整段掉头流（同 stations.js；喷涂机所在的链不翻）。
-// 供电：重走前先在布局上选一组设施位（新路让开），放供电时现选的要往外加地，而这一组原样还能用，就用这一组（L.powerReserve）。
+// 每截在（格、高度档 h、朝向）上做 A*：h = 0 地面、1 半层、2 第 1 层……（z = h / 2，game-rules 第 38 条）。代价：
+//   水平走一格 1 + a[h′]；高度变一档 tau，一格变两档（陡坡，要超级磁场）另加 steep；拐弯 turn，变高同时拐弯另加 slopeTurn；
+//   原地竖直升降每层 2·tau + lift 加那一节带子，只在直行的格子里做（坡越缓越好，game-rules 第 6 条）；叠格另加 over，相遇再加 meet；
+//   外框（固定的东西加原来的接线围成的框）外每格另加 outer，每往外撑一列（行）另加那一边的长度 × exit；
+//   外框以内、固定的东西围成的框以外：外框最外一圈每格另加 ring，翘曲器带每格另加 ringWarper（往里收）。
+//   不用原地升降（route.js 的 noLift）时一格最多变一档、不原地升降。
+// 固定格：地面段（trim 把段两头超出首尾分拣器的那几格并进相邻那截）、站口和站身边那格、边缘出入口那格；
+//   经过集装机、喷涂机的截，侧边总线、喷涂窗口、接仓的截整截不动。挡路的见「二、网格」。
+// 排法：原来长的先排，一截截拆了重走，整体重排 passes 遍（哪一遍谁都没变就停）；找不到路的截留着原来那条（它的格子一直空着）。
+// 原料接线可以换站口（resource，见 prepare），只有一段、全是取料口的原料带可以整段掉头（flip，同 stations.js）；
+// 供电设施位重走前先选（L.powerReserve），放供电时现选的要往外加地、而这一组原样还能用，就用这一组。
 import { chainTiles } from '../emit/blueprint.js';
 import { sprayGuards } from './layout/elevation.js';
 import { portRays, STATION_SLOTS } from './layout/shared.js';
@@ -33,21 +21,15 @@ import { placePower } from './power.js';
 import { powerCells, realItem, SUBSTATION_DISK } from '../gamedata.js';
 
 /**
- * 代价和开关（routeOptions.reroute 为 true 时用这些；写成对象的按它覆盖，考卷的 ro.rrTau=2 这种也认，见 rerouteOptions）。
- * a：每格按高度档另加（第 1 档半层、第 2 档第 1 层……，按示范校的，out/demo-analysis/calib.mjs），超出的每档加 2；
- * tau、steep、lift、turn、slopeTurn、over、meet、outer、ring、ringWarper、exit 见文件开头（2026/10/28 在 44 张图上扫过，out/rr/sweep.mjs）；
- * newSlot：原料接线换到一座还没存这种原料的站（多占一格）另加；passes 拆了重走几遍；maxH 最高几档（12 = 第 6 层）；
- * budget 每次 A* 最多出堆几次（超了这一截留着原来的路）；pad 布局四周多给几格绕路；resource、flip、trim 见文件开头；power 先选供电设施位；
- * mode：'pick'（默认）只重走最后挑中的那张、哪一项都不比原来差才换上（plan/index.js 的 planFrame）；'all' 每个候选都重走、重走后的代价参与挑选；
- * turnGuard（实验开关，默认关，考卷写 ro.rrTurnGuard=1）：守门也比拐弯（拐弯不比原来多才换上），换不上时先把拐弯的代价（turn、slopeTurn）乘 turnMul 再试一次
- * （turnMul 5：2026/10/29 在引力矩阵 30 不用原地升降、考卷 2 快速档上比过 2、3、5 倍，2 倍几乎换不上，3、5 倍差不多，5 倍换上的多一点）；
- * repair：重走完相遇比进门时多，把引起相遇的几截退回原来的路（见 rerouteBelts 的「五、相遇修补」；mode 'pick' 守门第二次起做，
- * 见 plan/index.js 的 planFrame；考卷写 ro.rrRepair=0 关掉对照）
+ * 代价和开关（routeOptions.reroute 为 true 时用这些；写成对象的按它覆盖，ro.rrTau 这种也认，见 rerouteOptions）。代价见文件开头，
+ * a 按高度档（按示范图校的，超出的每档加 2）；newSlot：原料接线换到一座还没存这种原料的站另加；passes 拆了重走几遍；
+ * maxH 最高几档（12 = 第 6 层）；budget 每次 A* 最多出堆几次；pad 布局四周多给几格绕路；power 先选供电设施位；resource、flip、trim 见文件开头；
+ * mode：'pick' 只重走最后挑中的那张，'all' 每个候选都重走、重走后的代价参与挑选；repair：「五、相遇修补」（守门哪几次做见 planFrame）
  */
-export const REROUTE = { a: [0, 0.8, 0.4, 2, 4], tau: 3, steep: 1.5, lift: 6, turn: 5, slopeTurn: 0.5, over: 1, meet: 2, outer: 2, ring: 0.5, ringWarper: 1, exit: 1, newSlot: 2, passes: 3, maxH: 12, budget: 40000, pad: 4, resource: true, flip: true, power: true, trim: true, mode: 'pick', turnGuard: false, turnMul: 5, repair: true };
+export const REROUTE = { a: [0, 0.8, 0.4, 2, 4], tau: 3, steep: 1.5, lift: 6, turn: 5, slopeTurn: 0.5, over: 1, meet: 2, outer: 2, ring: 0.5, ringWarper: 1, exit: 1, newSlot: 2, passes: 3, maxH: 12, budget: 40000, pad: 4, resource: true, flip: true, power: true, trim: true, mode: 'pick', repair: true };
 const KEYS = Object.keys(REROUTE);
 
-/** routeOptions → 重走的参数；没开时 null。ro.reroute 可以是 true 或参数对象，ro.rrXxx（考卷 --trees 名字=.:ro.rrTau=2）也认 */
+/** routeOptions → 重走的参数；没开时 null。ro.reroute 可以是 true 或参数对象，ro.rrXxx（如 ro.rrTau=2）也认 */
 export function rerouteOptions(ro) {
   if (!ro?.reroute) return null;
   const o = { ...REROUTE, a: REROUTE.a.slice() };
@@ -119,7 +101,7 @@ function ensure(n) {
 }
 
 /**
- * 带子的格子按链的顺序列出来，同时记下每一截（part）占第几到第几格（chainTiles 的写法逐项照抄，两边列出来的格子一模一样）。
+ * 带子的格子按链的顺序列出来（和 chainTiles 逐项一样），同时记下每一截（part）占第几到第几格。
  * 返回 { main, extra, spans: [{ part, i, j }] }，main[i..j) 是这一截的格子
  */
 function chainSpans(L, chain) {
@@ -170,14 +152,13 @@ function chainSpans(L, chain) {
  */
 export function rerouteBelts(L, { opts = REROUTE, power = null, powerOptions = null, maxWidth = null, maxHeight = null, slots = null } = {}) {
   const t0 = performance.now();
-  // 供电设施：先在现在的布局上选好位置（同接站时的预留），新路不占；放下以后真正的供电照旧在后面另放（plan/power.js）。
-  // 要在裁段（trim）之前选：裁下来的那几格还算地面段，不然会把塔放到这几格上、这一截就回不去了
+  // 先选好供电设施位，新路不占（真正的供电在后面另放）。要在裁段之前选，不然塔会放到裁下来的那几格上、这一截就回不去了
   let prePower = null;
   if (power && opts.power) {
     try {
       prePower = placePower(L, power, { ...powerOptions, maxWidth, maxHeight });
       const e = prePower.extend;
-      // 没往外加地、全覆盖到的那一组记下来（跟着布局平移），后面放供电时现选的要往外加地，就退回这一组（plan/index.js 的 finishOne）
+      // 没往外加地、全覆盖到的那一组记下来（跟着布局平移，plan/index.js 的 finishTail 用）
       if (!prePower.uncovered && !e.left && !e.right && !e.bottom && !e.top) L.powerReserve = { type: power, nodes: prePower.nodes.map(({ x, y }) => ({ x, y })) };
     } catch {
       prePower = null; // 预选失败（不会）：不预留
@@ -186,9 +167,8 @@ export function rerouteBelts(L, { opts = REROUTE, power = null, powerOptions = n
   const powMs = performance.now() - t0;
   const noLift = !!L.noLift;
   const DMAX = noLift ? 1 : 2;
-  // 新路最高到第几档。卫星配电站的顶盘（5.49 格见方、4.18~5.27 层，docs/game-rules.md 第 38 条）在供电放好以前不知道在哪，
-  // 接卫星配电站时新路一律不上 4 层以上（第 8 档），免得后放的配电站顶盘撞上（顶盘那一圈以上的 5.5 层也够不着：要从 4.5、5 层过）
-  const MAXH = Math.min(opts.maxH, power === 'substation' ? 8 : 14); // 第 7 层以上不走（OVERPASS_ZMAX：用户只确认到第 7 层）
+  // 接卫星配电站时新路不上 4 层以上（第 8 档）：顶盘（4.18~5.27 层，game-rules 第 38 条）供电放好以前不知道在哪，顶盘以上也去不了
+  const MAXH = Math.min(opts.maxH, power === 'substation' ? 8 : 14); // 第 7 层以上不走（OVERPASS_ZMAX：只确认到第 7 层）
   const stations = L.stations || [];
   const edgeStations = L.stationMode === 'edge';
 
@@ -230,12 +210,10 @@ export function rerouteBelts(L, { opts = REROUTE, power = null, powerOptions = n
     tapCols.get(so.segId).add(so.col);
   }
   const trimmable = (sg) => sg && sg.split == null && !sg.sprayGap && (sg.dir === 1 || sg.dir === -1) && tapCols.has(sg.id);
-  // 自动集装机（plan/addons.js 的 stackPilers，重走在它之后）那一格和顺着带子前后各一格：集装机骑在上面、前后伸进邻格，
-  // 这几格不动——哪截带子经过它们就整截留着不重走；段也不裁到它们
+  // 自动集装机那一格和顺着带子前后各一格（集装机前后伸进邻格）不动：哪截带子经过它们就整截不重走，段也不裁到它们
   const pin = new Set();
   for (const p of L.pilers || []) for (const k of [-1, 0, 1]) pin.add(`${p.x + k * p.dx},${p.y + k * p.dy}`);
-  // 喷涂机（plan/addons.js 的 addAddons，重走在它之后）骑的那格和顺着带子前后各两格（压着的 3 格不能转弯、升降，再往外各一格也要顺着进出，
-  // docs/game-rules.md 第 24 条）：同样不动；喷涂机所在的链也不翻（翻过来喷涂机就到了取料口后面）
+  // 喷涂机骑的那格和顺着带子前后各两格（game-rules 第 24 条）同样不动；喷涂机所在的链也不翻（翻过来喷涂机就到了取料口后面）
   const pin3 = new Set();
   const coated = new Set();
   for (const c of L.coaters || []) {
@@ -252,8 +230,8 @@ export function rerouteBelts(L, { opts = REROUTE, power = null, powerOptions = n
       const { part, i, j } = sp;
       if (part.leg == null) continue;
       const l = L.legs[part.leg];
-      if (l.broken || l.spray || l.bridge || l.store != null || l.burn != null || l.pre) continue;
-      if (l.gap != null) continue; // 研究站夹带接出去的那截（第一版不重走，照原来的路）
+      if (l.broken || l.spray || l.store != null || l.pre) continue;
+      if (l.gap != null) continue; // 研究站夹带接出去的那截照原来的路
       if (l.bus != null && !l.stub) continue; // 侧边总线整条留着（几条并排走得整齐）
       if (l.kind === 'in' && l.stub && !edgeStations) continue;
       if (l.kind === 'out' && l.stub && !edgeStations) continue;
@@ -390,7 +368,7 @@ export function rerouteBelts(L, { opts = REROUTE, power = null, powerOptions = n
     inc(st.x + 3, st.y + 3);
   }
   for (const t of fixedTiles) for (const [x, y] of t) inc(x, y);
-  for (const b of [...(L.burners || []), ...(L.stores || [])]) {
+  for (const b of L.stores || []) {
     inc(b.rect[0], b.rect[1]);
     inc(b.rect[2], b.rect[3]);
   }
@@ -418,15 +396,11 @@ export function rerouteBelts(L, { opts = REROUTE, power = null, powerOptions = n
   const AH = new Float64Array(HN);
   for (let h = 0; h < HN; h++) AH[h] = h < opts.a.length ? opts.a[h] : opts.a[opts.a.length - 1] + 2 * (h - opts.a.length + 1);
   const blk = new Int32Array(NC); // 新路不能用的档（位）
-  // 分拣器手臂底下：地面、半层不走（半层不压分拣器是硬规则；地面是保守：原来就是自己这条链地面带的格照旧能走，见 search 的 armFree）
+  // 分拣器手臂底下的地面、半层不走（半层不压分拣器是硬规则；地面是保守，这一截原来走的地面格照旧能走，见 armAt）
   const arm = new Int32Array(NC);
   const occ = new Int32Array(NC); // 已经有带子的档（位）：固定的和已排的
   const outer = new Float64Array(NC);
-  // 外框：现在的布局（含原来的接线）以外的格每格另加 outer（走出去要把外框撑大）；布局以内、固定的东西围成的框以外的那一圈
-  // 每格另加 ring（「一点钱」：翘曲器带、接线往里收，外框能小一点）
-  // 走出布局还要撑大外框：往外每多一列（行）按那一边的长度另加 exit 倍（面积在最终代价里按 1 倍算，见 index.js 的 finalCost），
-  // 进格时按这一格在框外第几列（行）比上一格多出来的算（DXO、DYO 是在框外第几列、第几行）
-  // 外框最外一圈（固定的东西围成的框以外的那几格）：每截都另加 ring；翘曲器带在布局以内、固定的东西围成的框以外的格都另加 ringWarper（往里收，外框小一点）
+  // 外框的代价（见文件开头）：exit 进格时按这一格在框外第几列、第几行（DXO、DYO）比上一格多出来的算（面积在最终代价里按 1 倍算）
   const RING = new Float64Array(NC);
   const RINGW = new Float64Array(NC);
   const DXO = new Int16Array(NC);
@@ -453,14 +427,15 @@ export function rerouteBelts(L, { opts = REROUTE, power = null, powerOptions = n
     for (let h = Math.max(0, lo); h <= Math.min(HN - 1, hi); h++) m |= 1 << h;
     return m;
   };
+  // 挡路：工厂、物流站、仓的机身（所有高度）
   for (const p of L.pos.values()) {
     const hw = (p.g.bodyWidth - 1) / 2;
     const cy = L.rowCy[p.row];
     for (const cx of p.centers) for (let x = Math.ceil(cx - hw); x <= Math.floor(cx + hw); x++) for (let y = cy - p.g.bodyBelow; y <= cy + p.g.bodyAbove; y++) block(x, y, ALL);
   }
   for (const st of stations) for (let dx = -3; dx <= 3; dx++) for (let dy = -3; dy <= 3; dy++) block(st.x + dx, st.y + dy, ALL);
-  for (const b of [...(L.burners || []), ...(L.stores || [])]) for (let x = b.rect[0]; x <= b.rect[2]; x++) for (let y = b.rect[1]; y <= b.rect[3]; y++) block(x, y, ALL);
-  // 分拣器：手臂那几格（工厂边到带子之间）的地面和半层，接的那格的半层（半层不压分拣器）
+  for (const b of L.stores || []) for (let x = b.rect[0]; x <= b.rect[2]; x++) for (let y = b.rect[1]; y <= b.rect[3]; y++) block(x, y, ALL);
+  // 分拣器：手臂那几格（工厂边到带子之间）的地面和半层，接的那格的半层
   for (const s of L.sorterList) {
     const p = L.pos.get(s.bid);
     const edge = L.rowCy[p.row] + (s.side === 'top' ? p.g.edgeAbove : -p.g.edgeBelow);
@@ -484,7 +459,7 @@ export function rerouteBelts(L, { opts = REROUTE, power = null, powerOptions = n
   }
   for (const p of L.pilers || []) for (const k of [-1, 0, 1]) block(p.x + k * p.dx, p.y + k * p.dy, ALL); // 集装机头顶也不走（放的时候就要求头顶没有高架）
   // 限宽、限长：网格外框就是上限（见 padX、padY），不另外挡
-  // 供电设施：先在现在的布局上选好位置（同接站时的预留），新路不占；放下以后真正的供电照旧在后面另放（plan/power.js）
+  // 先选好的供电设施位（见开头的 prePower）
   if (prePower) for (const n of prePower.nodes) for (const [x, y] of powerCells(prePower.itemId, n.x, n.y)) block(x, y, ALL);
 
   // —— 三、占用和边 ——
@@ -706,19 +681,14 @@ export function rerouteBelts(L, { opts = REROUTE, power = null, powerOptions = n
   const gx = (c) => (c % GW) + X0;
   const gy = (c) => Math.floor(c / GW) + Y0;
   /**
-   * 一截的 A*：starts（[{ c, d, straight, g0, port }]）到 goals（[{ c, bad, flip, port }]）。返回 { tiles: [x, y, h]（两头之间）, start, goal, cost }，走不通 null
-   */
-  /**
-   * 启发值的地图：从终点倒着做一遍两层（地面 / 空中）的 Dijkstra，每格每层到终点的代价下限（A* 的走法放宽了：空中不分哪一档，
-   * 一格的空中能走就按空着的档里最便宜的 a 算，地面、空中之间换一次按 tau，不管拐弯、上下对调和原地升降），所以不比真的代价大，
-   * 而且是一致的（每一步的真代价不小于地图两头的差）。起点四周的格都定下来、再往外 slack 以后就停，没定的格按停的时候的前沿值算（也是下限）
+   * 启发值的地图：从终点倒着做一遍两层（地面 / 空中）的 Dijkstra，得每格每层到终点的代价下限（走法放宽：空中不分哪一档、按空着的档里
+   * 最便宜的 a 算，换层按 tau，不管拐弯、上下对调和原地升降），是一致的。起点四周的格都定下来、再往外 slack 以后就停，没定的格按前沿值算
    */
   const AIR = bits(1, MAXH);
   let front = 0;
   let mapMs = 0;
   let mapPops = 0;
-  // U：只要代价不超过 U 的路时（上一遍找到过一条，见下面排的那一段），只算起点到它、它到终点加起来可能不超过 U 的格（以起点、终点为焦点的椭圆），
-  // 前沿过了 U 就停，没算到的格当走不到——代价不超过 U 的路上的格都在里面、值和整张算的一样，所以找到的路和不设 U 一字不差
+  // U：只要代价不超过 U 的路时，只算起点到它、它到终点加起来可能不超过 U 的格（以起点、终点为焦点的椭圆），找到的路和不设 U 一样
   const buildMap = (avoidMask, ringK, U = Infinity) => {
     mstamp++;
     const ms = mstamp;
@@ -873,14 +843,16 @@ export function rerouteBelts(L, { opts = REROUTE, power = null, powerOptions = n
     if (bound || (!size && cap === Infinity)) front = Infinity; // 都定了（地图里够得着的都算完了），或者只算了 U 以内的：没定的就是走不到（或用不上）
     return ms;
   };
-  // 每格空中那几档里最便宜的 a（按空着的档的位查表）
-  // 查表的下标是空着的档 & AIR（第 1..MAXH 档），表只要 2^(MAXH+1) 那么大
+  // 每格空中那几档里最便宜的 a：下标是空着的档 & AIR（第 1..MAXH 档）
   const MINA = new Float64Array(2 ** (MAXH + 1));
   for (let m = 1; m < MINA.length; m++) {
     let v = Infinity;
     for (let h = 1; h <= MAXH; h++) if (m & (1 << h) && AH[h] < v) v = AH[h];
     MINA[m] = v;
   }
+  /**
+   * 一截的 A*：starts（[{ c, d, straight, g0, port }]）到 goals（[{ c, bad, flip, port }]）。返回 { tiles: [x, y, h]（两头之间）, start, goal, cost }，走不通 null
+   */
   const search = (n, avoidMask = null, U = Infinity) => {
     markOwn(n);
     markOld(n);
@@ -1072,7 +1044,7 @@ export function rerouteBelts(L, { opts = REROUTE, power = null, powerOptions = n
         let g0 = own ? 0 : 0.5;
         // 原来那座站：照旧能回去（拆掉时让出来的那一格还给它）
         if (!hasIt && !own) {
-          if (supplies(k, it)) continue; // 同种物品的供应和需求不进同一座站
+          if (supplies(k, it)) continue; // 同种物品的供应和需求不进同一座站（game-rules 第 37 条）
           if (itemCount(k) >= STATION_SLOTS) continue;
           if (freeTotal() - 1 < keepNeed) continue;
           g0 += opts.newSlot;
@@ -1138,8 +1110,7 @@ export function rerouteBelts(L, { opts = REROUTE, power = null, powerOptions = n
         if (!busy) for (let i = starts.length - 1; i >= 0; i--) if (starts[i].port && starts[i].port.k !== k0) starts.splice(i, 1);
       }
       n.left = totalBudget;
-      // 第二遍起：上一遍找到的那条路还在（别人排的时候让开了它的格），它现在的代价比上一遍多不了多少（只多别人新挨过来的叠格、相遇），
-      // 先只找代价不超过它 1.1 倍加 5 的路（见 buildMap 的 U）；找不到再整张找。两种找法找到的路一样
+      // 第二遍起先只找代价不超过上一遍那条 1.1 倍加 5 的路（见 buildMap 的 U；那条路还在，代价多不了多少），找不到再整张找
       const U = pass > 0 && Number.isFinite(n.cost) ? n.cost * 1.1 + 5 : Infinity;
       let r = search(n, null, U);
       if (!r && U !== Infinity) {
@@ -1198,16 +1169,10 @@ export function rerouteBelts(L, { opts = REROUTE, power = null, powerOptions = n
 
   const passMs = performance.now() - t0 - setupMs;
   // —— 五、相遇修补 ——
-  // 每截各自最省，合起来交叠反而多了：粒子容器 60 高配，水那条带在 1 层沿一条地面带走 3 格，另一条重走过的带在那里从它底下半层穿过，
-  // 相遇 4 → 5，守门就连 10 节原地升降一起留原图（相遇、叠格的代价加到 10 倍、3 倍也没用，2026/10/30 美观档 34 份一份没救回）。
-  // 这里按 beltStats 的口径（每条链的主链、劈开的每一半、翘曲器带、增产剂带各算一条，每两条共用的格按相邻连成一处处）数进门时和重走完的相遇，
-  // 重走完多了就一截截退回原来的路：每次只看相遇变多的那几对、新路和对方有共用格的截，挑退回以后全图相遇少得最多的那截
-  // （一样多先挑原地升降回来得少的、再挑带节回来得少的、再按编号），退到不比进门时多为止；没有哪截退回能再少、还是多，就一截也不退
-  // （守门照样拦，和没有这一步一字不差）；退完变了的截全退了（和原图一样）也不退，免得守门照单全收、不再试第二次。
-  // 相遇没变多时什么都不动。放供电不动带子、裁边只是平移，这里数的和守门比的是同一个数。
-  // 只退两头没变的截：换了站或口的原料接线、翻过来的段不退（原来的路接不上现在的两头）；裁段并进来的那几格本来就在原来的路里，
-  // 退回去还是原来那几格。退回的路守 A* 同样的规矩（search 里那几条）：别的带子占着的（格、档）、原地升降那一叠的中间几档、
-  // 分拣器手臂和接的那格的半层、挡路的那些、同一条边上上下对调，哪一格不行这一截就不退
+  // 每截各自最省，合起来交叠反而多了（加重相遇、叠格的代价也压不住）。按 beltStats 的口径（和守门比的同一个数）数进门时和重走完的相遇，多了就一截截退回原来的路：
+  // 每次在相遇变多的那几对里、新路和对方有共用格的截中，挑退回以后全图相遇少得最多的（一样多先挑原地升降、带节回来得少的，再按编号），
+  // 退到不比进门时多为止；退不到，或者变了的截全退了（守门会照单全收、不再试第二次），就一截也不退。
+  // 只退两头没变的截（换了站或口、翻过来的接不上原来的路），退回的路要过 fits（和 search 同样的规矩）
   let meets = null; // [进门时, 重走完]，修补跑了再加一个修补完的
   let reverted = 0;
   const tRepair = performance.now();
@@ -1424,7 +1389,7 @@ export function rerouteBelts(L, { opts = REROUTE, power = null, powerOptions = n
         relay(n, n.old);
         now += best.d;
       }
-      // 退不到进门时的数，或者退得一截都没变（和原图一模一样，守门会照单全收、第二次加重相遇的重走就不试了）：都换回新路
+      // 退不到进门时的数，或者退得一截都没变（和原图一样）：都换回新路
       const moved = (n) => !sameRoute(n.route, n.old) || !same2(n.start, n.from.start) || !same2(n.goal, n.from.goal) || (n.flips ?? 0) % 2 || (n.type === 'feed' && !same2(n.portCell, n.from.portCell));
       const back = bad || now > meet0 || !nets.some(moved);
       if (back) for (const [n, route] of undo.reverse()) relay(n, route);
@@ -1556,9 +1521,8 @@ export function beltStats(L) {
 }
 
 /**
- * 卫星配电站顶盘那一圈（离中心正好 SUBSTATION_DISK.reach 格、4.18~5.27 层）里有几节带子：独立检查（emit/check.js）报「顶盘撞上高架带」，
- * 网页、考卷会换种子重排。放供电（plan/power.js 的 markDisk）从 2026/10/30 起让开这一圈里这种高度的带子，现放的不会撞（以前不看高度，主干的图偶尔会撞），
- * 这里留着当守门的保险；重走的新路接卫星配电站时不上 4 层以上，不会撞
+ * 卫星配电站顶盘那一圈（离中心正好 SUBSTATION_DISK.reach 格、4.18~5.27 层）里有几节带子（独立检查 emit/check.js 报「顶盘撞上高架带」）。
+ * 放供电（plan/power.js 的 markDisk）已经让开这一圈里这种高度的带子，这里留着当守门的保险
  */
 export function diskHits(L) {
   if (L.power?.itemId !== 2212 || !L.power.nodes?.length) return 0;
@@ -1583,13 +1547,12 @@ export function diskHits(L) {
 /**
  * 守门：重走后的那张哪一项都不比原来的差（带子节数、离地、原地升降、最高层、叠格、相遇、面积、最终代价，可行、供电覆盖、撞顶盘），返回差了的那几项（空数组是都不差）。
  * 原来那张有带子撞上卫星配电站的顶盘（贴不进游戏、要重排）、重走以后一处不撞的，带子那几项和最终代价不比，只看面积、可行、供电。
- * turns：拐弯也比（实验开关 turnGuard）
  */
-export function rerouteWorse(oldL, oldS, newL, newS, { turns = false } = {}) {
+export function rerouteWorse(oldL, oldS, newL, newS) {
   const why = [];
   const hOld = diskHits(oldL), hNew = diskHits(newL);
   const fixes = hOld > 0 && hNew === 0;
-  const keys = turns ? ['nodes', 'air', 'lifts', 'top', 'stacked', 'meet', 'turns'] : ['nodes', 'air', 'lifts', 'top', 'stacked', 'meet'];
+  const keys = ['nodes', 'air', 'lifts', 'top', 'stacked', 'meet'];
   if (!fixes) for (const k of keys) if (newS[k] > oldS[k] + 1e-9) why.push(`${k} ${oldS[k]}→${newS[k]}`);
   if (hNew > hOld) why.push(`撞顶盘 ${hOld}→${hNew}`);
   if (newL.area > oldL.area) why.push(`area ${oldL.area}→${newL.area}`);

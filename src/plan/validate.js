@@ -14,9 +14,9 @@ export function validate(graph, layout) {
     else occ.set(k, what);
   };
   const factoryCell = new Set();
-  const overpassCell = new Set(); // 熔炉、制造台本体的格子：第 OVERPASS_Z~OVERPASS_ZMAX 层的高架带能从头顶过（gamedata.js，用户 2026/10/19 实测）
+  const overpassCell = new Set(); // 熔炉、制造台本体的格子：第 OVERPASS_Z~OVERPASS_ZMAX 层的高架带能从头顶过（gamedata.js，实测，game-rules 第 31 条）
 
-  // 工厂本体（熔炉、制造台 3×3，化工厂 9×4；同一块里相邻两台化工厂共用中间那半格；高架带也不能从工厂上方经过）
+  // 工厂本体（熔炉、制造台 3×3，化工厂 9×4；同一块里相邻两台化工厂共用中间那半格）；高架带不能从工厂上方经过，熔炉、制造台头顶的第 OVERPASS_Z~OVERPASS_ZMAX 层除外
   layout.rows.forEach((row, r) => {
     const cy = layout.rowCy[r];
     for (const bid of row) {
@@ -59,8 +59,8 @@ export function validate(graph, layout) {
         if (z > 0 && stationCell.has(`${x},${y}`)) errors.push(`${name}高架带从物流站上方 (${x},${y}) 经过`);
         if (x < 0 || x >= layout.width || y < 0 || y >= layout.height) errors.push(`${name}带超出蓝图范围 (${x},${y})`);
         const n = tiles[i + 1];
-        // 相邻：水平走一格（坡一格最多升降 STEEP_DZ 层：一层的陡坡要超级磁场，后处理重走 plan/reroute.js 才出；不用原地升降时最多 RAMP_STEP 半层，
-        // docs/game-rules.md 第 38 条；平常的高架不走坡），或者同一格里上下差一层（原地竖直升降）。不用原地升降（route.js 的 noLift，layout.noLift）时一节都不该有
+        // 相邻：水平走一格（坡一格最多升降 STEEP_DZ 层，一层的陡坡要超级磁场，后处理重走 plan/reroute.js 才出；不用原地升降时最多 RAMP_STEP 半层，
+        // game-rules 第 38 条；平常的高架不走坡），或者同一格里上下差一层（原地竖直升降，不用原地升降 layout.noLift 时一节都不该有）
         const flat = n ? Math.abs(n[0] - x) + Math.abs(n[1] - y) : 1;
         const ramp = layout.noLift ? RAMP_STEP : STEEP_DZ;
         if (n && !(flat === 1 || (flat === 0 && Math.abs(n[2] - z) === 1))) errors.push(`${name}带在 (${x},${y},${z}) 处断开`);

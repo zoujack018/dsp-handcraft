@@ -4,11 +4,12 @@ import { SPRITE, glyphSvg, glyphOf } from './glyphs.js';
 import { sliceRoutes, drawingSvg, routeColor, linkedRuns, footprint, LINE, FINE } from './drawing.js';
 import { createViewer } from './viewer.js';
 import { readHandoff, readDefs } from './handoff.js';
+import { beltlessSvg } from './beltless.js';
 
 const $ = (id) => document.getElementById(id);
 const STORE = 'dsp-handcraft:settings';
 const DEFAULTS = { targetId: 6005, rate: 60, ext: [], recipes: {}, assembler: '2303', smelter: '2302', chemical: '2309', lab: '2901', labstack: 15, belt: '3', sorter: '2014', power: 'substation', station: 'ils', pile: '1', pilertech: '0', spray: '0', warper: '0', maxwidth: '', maxheight: '', aspect: '', orient: 'h', effort: 'normal', page: 1, chemwide: '0', defs: null, supply: '', dist: '0', stationPrefs: null, fracengine: 'template' };
-const OPTION_NAMES = ['assembler', 'smelter', 'chemical', 'chemwide', 'lab', 'belt', 'sorter', 'station', 'supply', 'dist', 'pile', 'pilertech', 'power', 'spray', 'warper', 'maxwidth', 'maxheight', 'aspect', 'effort', 'fracengine']; // 排布方向去掉了，统一横排（用户 2026/10/07）；自动切分、切分后的蓝图去掉了，网页不切块（用户 2026/10/27）
+const OPTION_NAMES = ['assembler', 'smelter', 'chemical', 'chemwide', 'lab', 'belt', 'sorter', 'station', 'supply', 'dist', 'pile', 'pilertech', 'power', 'spray', 'warper', 'maxwidth', 'maxheight', 'aspect', 'effort', 'fracengine']; // 没有排布方向（统一横排），网页也不切块
 // 物品类别色条（游戏物品类型）：原矿、材料、组件、成品、物流、生产设施、防御、黑雾、矩阵
 const CAT_COLOR = { 1: '#9aa5b1', 2: '#6f8fb3', 3: '#5f9b8b', 4: '#b48b52', 5: '#7c80c0', 6: '#4f7cc9', 8: '#b56262', 9: '#b56262', 10: '#707070', 11: '#9a72cf' };
 const STATUS_TEXT = {
@@ -45,6 +46,8 @@ let autoSuggest = false;
 let firstVisit = false; // 第一次打开（没存过设置）：默认目标也先按建议补外部供应，和选目标时一样
 let iconMode = false; // 页面旁边有 icons/ 目录时改用其中的图片
 let pickMode = { add: true }; // 物品面板这次是添加目标还是更换第 i 个目标
+let inspectId = 0;
+let flat = null; // 正在看的无带蓝图（量产计算器排好带过来的，handoff.js 的 beltless）：{ text, targets, svg, items, ends, stats, far, issues }；排了自己的一张就清掉
 
 const viewer = createViewer({ box: $('drawing'), enabled: () => true, onSelect: selectRoute, onFactory: selectFactory, onStation: selectStation, onMachine: selectMachine, onClear: clearRoute, onZoom: (n) => $('zoom-label').textContent = `${n}%`, zoomable: () => $('sheet').classList.contains('is-expanded') });
 
@@ -110,6 +113,7 @@ function handle(m) {
     takeHandoffExt();
     renderCatalog();
     renderSpec();
+    syncPills();
     if (firstVisit && !handoff) {
       // 第一次打开：默认的引力矩阵要把精炼油设为外部供应才排得了，照选目标时那样先按建议设好，不然第一次点「生成蓝图」就报错
       firstVisit = false;
@@ -133,6 +137,8 @@ function handle(m) {
     renderExtChips(); // 只重画外部供应那一栏：renderSpec 会重建目标的产量输入框，正在输入时会丢焦点
   } else if (m.type === 'result' && m.id === reqId) {
     finish(m.data);
+  } else if (m.type === 'inspected' && m.id === inspectId) {
+    showFlat(m.data);
   } else if (m.type === 'patched') {
     patchWaiters.get(m.id)?.(m.data);
     patchWaiters.delete(m.id);
@@ -150,15 +156,15 @@ function loadSettings() {
     /* 无痕模式等情况下读不到，使用默认值 */
   }
   Object.assign(state, DEFAULTS, s);
-  // 排布方向：上一版默认「自动」，效果不好，改回默认横排；那时存下的「自动」当作没选过（以后自己选的才记，见 orientPicked）
+  // 排布方向：旧设置里没自己选过的「自动」当作没选，用默认横排（自己选的才记，见 orientPicked）
   if (state.orient === 'auto' && !s.orientPicked) state.orient = 'h';
-  // 网页去掉快速档，只留标准、美观（用户 2026/10/31）：以前存的「快速」改成标准
+  // 网页只有标准、美观两档：旧设置里的「快速」改成标准
   if (state.effort === 'quick') state.effort = 'normal';
-  // 化工厂间距 2026/10/19 改成默认只限赤道，换了新键 chemwide：旧键 chemtight（那时默认任何纬度）不认，以前存过的也拿新的默认值
+  // 化工厂间距用新键 chemwide（默认只限赤道）；旧键 chemtight 的默认是任何纬度，不认，存过的也拿新的默认值
   delete state.chemtight;
-  // 箱子 2026/10/26 改成左侧一列仓组（side-s / side-l），以前存的排进行里那种（box-s / box-l）换过来；「物流方式」的两个子选项记上次选的
+  // 箱子是左侧一列仓组（side-s / side-l），旧设置里排进行里的那种（box-s / box-l）换过来；「物流方式」的两个子选项记上次选的
   if (state.supply === 'box-s' || state.supply === 'box-l') state.supply = state.supply.replace('box', 'side');
-  // 物流站一律放进空地、网页不再切块（用户 2026/10/27 去掉了「物流站位置」「自动切分」「切分后的蓝图」）：以前存的「靠左侧站列」改回放进空地，
+  // 物流站一律放进空地、网页不切块：旧设置里的「靠左侧站列」改回放进空地，
   // 切分的几项和记的「上次选的站位」删掉，存设置时不再带
   if (state.station === 'ils-side') state.station = 'ils';
   for (const k of ['split', 'stitch', 'splitPicked', 'stationPick']) delete state[k];
@@ -166,18 +172,22 @@ function loadSettings() {
   // 旧版本存的是物品名和逗号分隔的外部供应
   // 新配方：{ 物品 ID: 配方 ID }，只记开了新配方的物品
   state.recipes = s.recipes && typeof s.recipes === 'object' ? Object.fromEntries(Object.entries(s.recipes).filter(([, v]) => Number(v) > 0)) : {};
-  delete state.burn; // 就地烧掉 2026/10/26 从网页上拿掉了（命令行还有），以前存的不认
-  delete state.proslot; // 「增产剂格」2026/11/01 拿掉了，喷增产剂就留一格
-  delete state.sorterstack; // 「集装分拣器往带上叠几层」2026/11/01 换成按科技等级选（pilertech），旧键没发布过，不认
+  delete state.burn; // 「就地烧掉」已经删了，旧设置里的不认
+  delete state.proslot; // 没有「增产剂格」选项了，喷增产剂就留一格
+  delete state.sorterstack; // 「集装分拣器往带上叠几层」换成了按科技等级选（pilertech），旧键不认
   state.defs = readDefs(s.defs); // 上次从计算器带过来的新物品、新配方（地址里的方案只用一次，刷新后靠这份）
   state.ext = new Set(Array.isArray(s.ext) ? s.ext : typeof s.raw === 'string' ? s.raw.split(/[,，、\s]+/).filter(Boolean) : []);
-  state.legacyTarget = typeof s.target === 'string' ? s.target : null;
+  // 很早的版本存的是目标的名字（target）：只在没有新写法的 targets 时才认，读完就丢掉；
+  // 不丢的话每次存设置都原样存回去，每次打开都把第一个目标换回那样东西（从计算器带过来的目标也会被换掉）
+  state.legacyTarget = !(Array.isArray(s.targets) && s.targets.length) && typeof s.target === 'string' ? s.target : null;
+  delete state.target;
   // 多个目标：旧版本只有 targetId/rate
   state.targets = Array.isArray(s.targets) && s.targets.length ? s.targets.map((t) => ({ id: Number(t.id), rate: Number(t.rate) || 60 })) : [{ id: Number(s.targetId ?? DEFAULTS.targetId), rate: Number(s.rate ?? DEFAULTS.rate) }];
   for (const name of OPTION_NAMES) {
     const el = document.querySelector(`input[name="${name}"][value="${state[name]}"]`) || document.querySelector(`input[name="${name}"][value="${DEFAULTS[name]}"]`);
     el.checked = true;
   }
+  for (const name of LIMITS) setLimit(name, state[name]);
   state.labstack = labStackOf(state.labstack);
   $('labstack').value = state.labstack;
 }
@@ -205,13 +215,13 @@ function saveSettings() {
   requestForecast(); // 每一处改设置都经过这里
   toggleFracEngine();
 }
-/** 「分馏阵列排法」只在目标是重氢、选了分馏塔阵列时有（2026/10/30 加的退火排法，默认照旧裁剪用户原图） */
+/** 「分馏阵列排法」只在目标是重氢、选了分馏塔阵列时有（默认照原图裁剪，另一种是退火排的） */
 function toggleFracEngine() {
   const field = document.getElementById('fracengine-field');
   if (field) field.hidden = !(Number(state.recipes?.[1121]) === 115 && state.targets?.some((t) => t.id === 1121));
 }
 
-// 图纸上方一排下拉按钮（用户 2026/10/26）：供电、物流方式、传送带、分拣器、熔炉、制造台、化工厂、研究站、喷增产剂。
+// 图纸上方一排下拉按钮：供电、物流方式、传送带、分拣器、熔炉、制造台、化工厂、研究站、喷增产剂。
 // 按钮上只写当前选的（模板里各项 span 的 data-pill），悬停、键盘聚焦或点一下展开；选了就勾上左栏里藏起来的那个单选、发 change，设置还是那一份
 const PILL_NAMES = ['power', 'logistics', 'belt', 'sorter', 'smelter', 'assembler', 'chemical', 'lab', 'spray'];
 // 按钮上字前面的小图标（16 格画、14 像素显示，线条用字色）：一组选项一个，同组的几档共用
@@ -224,12 +234,23 @@ const PILL_ICONS = {
   assembler: '<circle cx="8" cy="8" r="3.8"/><path d="M8 4.2V1.6M8 11.8v2.6M11.3 6.1l2.25-1.3M11.3 9.9l2.25 1.3M4.7 6.1L2.45 4.8M4.7 9.9l-2.25 1.3"/>', // 齿轮
   chemical: '<path d="M5.5 1.5h5M6.5 1.5V6L2.7 12.6a1.2 1.2 0 0 0 1 1.9h8.6a1.2 1.2 0 0 0 1-1.9L9.5 6V1.5M4.2 10h7.6"/>', // 烧瓶
   lab: '<circle cx="8" cy="8" r="1.6" fill="currentColor" stroke="none"/><ellipse cx="8" cy="8" rx="6.5" ry="2.7" transform="rotate(-30 8 8)"/>', // 原子
-  spray: '<path d="M8 1.5c.6 3.5 3 5.9 6.5 6.5-3.5.6-5.9 3-6.5 6.5-.6-3.5-3-5.9-6.5-6.5 3.5-.6 5.9-3 6.5-6.5z"/>', // 四角星
+  spray: '<g transform="rotate(-45 8 8)"><rect x="1.75" y="5.5" width="12.5" height="5" rx="2.5"/><path d="M8 5.5v5"/></g>', // 胶囊（增产剂）
 };
-const pillIcon = (name) => `<span class="pill-ico" aria-hidden="true"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">${PILL_ICONS[name] ?? ''}</svg></span>`;
+const pillIcon = (name) => `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">${PILL_ICONS[name] ?? ''}</svg>`;
+// 按钮上的图标同计算器那排下拉：选中的那种设备、物流设施的游戏图标；不配电、不增产用那样东西的图标去色调淡（同计算器的「不喷增产剂」）；
+// 只用传送带，或者还没有游戏图标（没有 icons/ 目录）时用线条图标
+const PILL_ITEM = { power: { tesla: 2201, substation: 2212 }, logistics: { box: 2101, station: 2104 }, belt: { 1: 2001, 2: 2002, 3: 2003 }, spray: { 1: 1141, 2: 1142, 3: 1143 } };
+const PILL_OFF = { power: 2201, spray: 1141 }; // 不配电：电力感应塔；不增产：增产剂 Mk.I
+function pillIconOf(name, value) {
+  const off = PILL_ITEM[name] && !(value in PILL_ITEM[name]) ? PILL_OFF[name] : undefined;
+  const id = off ?? (PILL_ITEM[name] ? PILL_ITEM[name][value] : Number(value));
+  const it = id && byId.get(id);
+  if (!it || !(iconMode || window.DSPHC?.icon?.(it))) return pillIcon(name);
+  return off ? `<span class="pill-off">${pic(it)}</span>` : pic(it);
+}
 const legendOf = (field) => field.querySelector('legend').firstChild.textContent.trim(); // 图例后面可能跟着 beta 标
 const pillText = (radio) => radio.nextElementSibling.dataset.pill || radio.nextElementSibling.textContent;
-// 带二级菜单的项（用户 2026/11/01）：「分拣器」的集装分拣器挂「集装分拣器改良」等级（pilertech），「物流方式」的物流站挂「运输站集装物流」等级（pile）。
+// 带二级菜单的项：「分拣器」的集装分拣器挂「集装分拣器改良」等级（pilertech），「物流方式」的物流站挂「运输站集装物流」等级（pile）。
 // 等级也是左栏里藏着的一组单选，二级菜单照它生成，最上面一行是那组的图例；选一级 = 勾上那一项 + 记下这一级，按钮上的字不变
 const PILL_SUBS = { sorter: { value: '2014', option: 'pilertech' }, logistics: { value: 'station', option: 'pile' } };
 /** 下拉菜单里的一项；挂着二级菜单的再加右边的 ▸（能点，触屏靠它开关）和二级菜单 */
@@ -252,7 +273,7 @@ function initPills() {
     wrap.className = 'pill-wrap';
     wrap.dataset.option = name;
     wrap.dataset.label = legendOf(field);
-    wrap.innerHTML = `<button type="button" class="pill" aria-haspopup="menu" aria-expanded="false">${pillIcon(name)}<span class="pill-text"></span></button><div class="pill-menu" role="menu" aria-label="${esc(wrap.dataset.label)}">${[...field.querySelectorAll('input[type="radio"]')].map((el) => pillItem(name, el)).join('')}</div>`;
+    wrap.innerHTML = `<button type="button" class="pill" aria-haspopup="menu" aria-expanded="false"><span class="pill-ico" aria-hidden="true"></span><span class="pill-text"></span></button><div class="pill-menu" role="menu" aria-label="${esc(wrap.dataset.label)}">${[...field.querySelectorAll('input[type="radio"]')].map((el) => pillItem(name, el)).join('')}</div>`;
     // 鼠标、焦点从外面进来：又可以弹出了；焦点离开就收起
     wrap.addEventListener('pointerenter', () => pillReady(wrap));
     wrap.addEventListener('focusin', (e) => !wrap.contains(e.relatedTarget) && pillReady(wrap));
@@ -448,6 +469,7 @@ function syncPills() {
     const pill = wrap.querySelector('.pill');
     const text = wrap.querySelector('.pill-text');
     text.textContent = cur ? pillText(cur) : '';
+    wrap.querySelector('.pill-ico').innerHTML = pillIconOf(wrap.dataset.option, cur?.value);
     pill.setAttribute('aria-label', `${wrap.dataset.label}：${text.textContent}`);
     wrap.querySelectorAll('[data-value]').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.value === cur?.value)));
     wrap.querySelectorAll('.pill-sub').forEach((sub) => {
@@ -614,10 +636,10 @@ function onChain(d) {
   }
 }
 /**
- * 外部供应弹窗的依赖图（用户 2026/10/26 第二版：一种物品只画一张卡，一个原料被几个产物用，就从那几个产物各拉一条线到它这张卡上）：
- * 原料在上、产物在下，最终产物在最下面（用户 2026/10/27），直角细线从原料往下送进产物——下面几个函数照「产物在上」算，
+ * 外部供应弹窗的依赖图：一种物品只画一张卡，一个原料被几个产物用，就从那几个产物各拉一条线到它这张卡上；
+ * 原料在上、产物在下，最终产物在最下面，直角细线从原料往下送进产物——下面几个函数照「产物在上」算，
  * renderExt 摆卡片时上下翻过来、连线整层翻过来。外部供应的没有原料（它的原料已不在产线里），不再需要的（dropped）不画。
- * 原矿（和黑雾掉落、临界光子这类没有配方的原料）也画（用户 2026/10/27），副产物画在出它的那组工厂上面
+ * 原矿（和黑雾掉落、临界光子这类没有配方的原料）也画，副产物画在出它的那组工厂上面
  */
 // 卡宽、量不到时的卡高、同层卡片的间距、层与层之间连线区的高、四周边距；产物底边到它横线的距离、同层产物的横线依次错开多少；
 // 重心法来回扫几遍、摆好以后松弛几轮、最后逐层对调相邻卡片试几轮
@@ -645,7 +667,7 @@ function extGraph(d) {
     else bys.set(id, { id, item: b.id, name: b.name, type: b.type, rate: b.rate, state: 'by' });
     byEdges.push({ from: b.ofId, to: id, rate: b.rate, state: 'by' });
   }
-  // 副产物、和主产物同一组工厂出的，也从出它的那组工厂的原料连下来（用户 2026/10/27：副产的氢也连到可燃冰）；via 记着是借来的，
+  // 副产物、和主产物同一组工厂出的，也从出它的那组工厂的原料连下来（比如副产的氢连到可燃冰）；via 记着是借来的，
   // 底部说明里不重复写流量
   const into = (id) => d.edges.filter((e) => e.to === id && e.state !== 'dropped' && e.state !== 'by');
   const via = [
@@ -801,7 +823,7 @@ function layoutGraph({ nodes, edges }, o = GRAPH) {
  * 从产物底边中点 (px, bottom) 往下到横线 y = bar（底边下 o.bar，同层的产物按 x 依次再错开 o.lane），横线从最左的落点延到最右的落点（含 px），
  * 再竖直往下到每个原料卡片顶边（top）上的落点 x。一个原料被 k 个产物用时，顶边上均匀分开 k 个落点，按产物的 x 从左到右分给它们；
  * 跨层的线落在均分点上会从中间层的卡片后面穿过时，在顶边上另找一个不被挡住的点（保持左右次序，相邻至少隔 8），找不到就还用均分点；
- * 产物的中点正对着原料卡的顶边时优先落在那里，一根竖线直通、不拐台阶（用户 2026/10/27：硅石到高纯硅块差几像素也拐一下，很丑）；
+ * 产物的中点正对着原料卡的顶边时优先落在那里，一根竖线直通、不拐台阶（差几像素也拐一下很难看）；
  * 产物只有这一种原料、两张卡左右有重叠时，产物那头也不必在中点（返回的 px 跟着挪），从重叠里离产物中点最近的地方直通
  */
 function graphRoutes({ nodes, edges }, L, o = GRAPH) {
@@ -818,7 +840,7 @@ function graphRoutes({ nodes, edges }, L, o = GRAPH) {
     groups.set(b, []);
   }
   // 竖线能直通的位置：只有一种原料的产物在两张卡（各缩进 8）重叠的那段里取离产物中点最近的点，别的产物就是它的中点；
-  // 两张卡左右不重叠就没有（null）——以前退到重叠段的端点上，箭头跑到产物卡外面、线悬在半空（用户 2026/10/27 截图）
+  // 两张卡左右不重叠就没有（null）：退到重叠段的端点上的话，箭头会跑到产物卡外面、线悬在半空
   const inner = (k) => [L.pos[k].x - o.w / 2 + 8, L.pos[k].x + o.w / 2 - 8];
   const want = (p, a) => {
     const [l, r] = ings.get(p).length === 1 ? [Math.max(inner(p)[0], inner(a)[0]), Math.min(inner(p)[1], inner(a)[1])] : [L.pos[p].x, L.pos[p].x];
@@ -999,7 +1021,7 @@ function renderExt() {
   focusItem(keep);
 }
 
-// 画布右边一列（用户 2026/10/27）：珍奇和原矿在前，一种一张卡，和画布里的卡一样大：左边图标、右边名字，下面一行小字「用于 物品」；只能整种开关。
+// 画布右边一列：珍奇和原矿在前，一种一张卡，和画布里的卡一样大：左边图标、右边名字，下面一行小字「用于 物品」；只能整种开关。
 //   珍奇矿物（光栅石、刺笋结晶…）：点一下，用这种矿的新配方全开（卡西米尔晶体、光子合并器都用光栅石，就一起开），全开着时全关；
 //   有机晶体（有矿脉，当珍奇）、氢、重氢（气态巨星的轨道采集器）、硫酸（硫酸海）当原矿：点一下设成外部供应，再点改回在产线里做。
 // 后面是不用珍奇的新配方（空间翘曲器（高级），重氢是目标时的重氢分馏），写配方名，图标是它特有的原料，下面一行配方
@@ -1158,7 +1180,7 @@ function anchorOf(b) {
   return { id: b.dataset.id, x: wrap.offsetLeft + b.offsetLeft * extZoom - cv.scrollLeft, y: wrap.offsetTop + b.offsetTop * extZoom - cv.scrollTop };
 }
 
-// 画布缩放（用户 2026/10/27）：触控板两指捏合、按住 ⌘ / Ctrl 滚滚轮，以指针处为中心；画布右上角「− 100% + 全图」，点百分比回到 100%，
+// 画布缩放：触控板两指捏合、按住 ⌘ / Ctrl 滚滚轮，以指针处为中心；画布右上角「− 100% + 全图」，点百分比回到 100%，
 // 「全图」缩到整张图放得下；画布里按 + − 0 也行。30%~150%，关了弹窗再开还是上次的比例。不按键的滚轮照旧滚动、按住拖照旧平移。
 // 卡片和连线照旧按原尺寸排，缩放的是外面一层（tree-zoom 按缩放后的大小占位，好让滚动条对得上）
 const ZOOM_STEPS = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1, 1.1, 1.25, 1.5];
@@ -1278,11 +1300,10 @@ function renderSpec() {
       const it = byId.get(t.id);
       const name = it ? it.name : '还没选';
       return `<li class="goal">
-        <button type="button" class="target-btn" data-i="${i}" aria-haspopup="dialog" aria-label="更换目标 ${esc(name)}">
-          <span class="tile is-target" style="--cat:${it ? CAT_COLOR[it.type] || '#9aa5b1' : '#9aa5b1'}">${it ? pic(it) : '<span class="nm">—</span>'}</span>
-          <span><span class="pick-name">${esc(name)}</span><span class="tb-hint">点击更换</span></span>
+        <button type="button" class="target-btn" data-i="${i}" aria-haspopup="dialog" aria-label="更换目标 ${esc(name)}" title="点一下换目标">
+          <span class="ibox">${it ? pic(it) : ''}</span><span class="pick-name">${esc(name)}</span>
         </button>
-        <input type="number" min="1" step="1" inputmode="numeric" data-i="${i}" value="${t.rate}" aria-label="${esc(name)} 每分钟产量">
+        <label class="rate"><input type="number" min="1" step="1" inputmode="numeric" data-i="${i}" value="${t.rate}" aria-label="${esc(name)} 每分钟产量"><span>/分</span></label>
         <button type="button" class="rm" data-i="${i}" aria-label="移除目标 ${esc(name)}"${many ? '' : ' hidden'}>×</button>
       </li>`;
     })
@@ -1292,7 +1313,7 @@ function renderSpec() {
 }
 /**
  * 左栏「外部供应」那一栏：外部供应的物品，开了新配方的物品也列在这里（在弹窗底部开关）。
- * 以前目标用过的外部供应、新配方只在当前产线用得上时显示（用户 2026/10/26：堆太多），按后台预告的 chainItems 筛；
+ * 以前的目标用过的外部供应、新配方只在当前产线用得上时显示（免得越堆越多），按后台预告的 chainItems 筛；
  * 看不见的照样记着，目标又用上时再出来。预告算不出产线（chainItems 为空）时全列
  */
 function renderExtChips() {
@@ -1319,7 +1340,43 @@ function renderExtChips() {
 }
 // 折叠起来的「集装」「物流站格子」在标题上显示当前取值
 function renderMore() {
-  // 左栏的分组都不再折叠（用户 2026/10/26），没有摘要要写了；留着这个名字，调用处不动
+  // 左栏的分组不折叠，没有摘要要写；留着这个名字，调用处不动
+}
+// 宽度、长度上限：第一格是能填的数（0 是不限，别的数自己填），后面是 25、50、100。
+// 填的数存在那一格单选的 value 里（0 存成空，即不限），存设置、带去后台都走单选，后台按数用（worker.js 的 maxWidth、maxHeight）
+const LIMITS = ['maxwidth', 'maxheight'];
+const limitOwn = (name) => document.querySelector(`input[name="${name}"][data-own]`);
+const limitNum = (name) => limitOwn(name).parentElement.querySelector('.limit-num');
+/** 把上限设成 v：0、空是不限；25、50、100 勾上那一格（能填的那格回到 0），别的数写进能填的那格并勾上它 */
+function setLimit(name, v) {
+  const n = Math.max(0, Math.min(9999, Math.round(Number(v) || 0)));
+  const preset = n > 0 && document.querySelector(`input[name="${name}"]:not([data-own])[value="${n}"]`);
+  const own = limitOwn(name);
+  own.value = preset || !n ? '' : String(n);
+  limitNum(name).value = preset ? 0 : n;
+  (preset || own).checked = true;
+}
+function initLimits() {
+  for (const name of LIMITS) {
+    const own = limitOwn(name);
+    const box = limitNum(name);
+    const changed = () => document.querySelector(`input[name="${name}"]:checked`).dispatchEvent(new Event('change', { bubbles: true }));
+    // 填好（回车、离开）：按填的数设；用鼠标、手指点进去：先选上这一格（还是 0 就是不限）。不挂在 focus 上：用 Tab 键路过不该改设置
+    box.addEventListener('change', () => {
+      setLimit(name, box.value);
+      changed();
+    });
+    box.addEventListener('click', () => {
+      if (own.checked) return;
+      setLimit(name, box.value);
+      changed();
+    });
+    // 点了 25、50、100：能填的那格回到 0
+    document.querySelectorAll(`input[name="${name}"]:not([data-own])`).forEach((r) => r.addEventListener('change', () => {
+      own.value = '';
+      box.value = 0;
+    }));
+  }
 }
 // 长宽比上限和宽度、长度上限容易打架：开了长宽比，宽、长回到不限；开了宽或长，长宽比回到不限
 $('spec').addEventListener('change', (e) => {
@@ -1329,7 +1386,7 @@ $('spec').addEventListener('change', (e) => {
     const el = document.querySelector(`input[name="${n}"][value="${v}"]`);
     if (el && !el.checked) el.checked = true;
   };
-  if (name === 'aspect' && e.target.value) ['maxwidth', 'maxheight'].forEach((n) => set(n, ''));
+  if (name === 'aspect' && e.target.value) LIMITS.forEach((n) => setLimit(n, 0));
   if ((name === 'maxwidth' || name === 'maxheight') && e.target.value) set('aspect', '');
   syncOptionSelects();
   readOptions();
@@ -1343,13 +1400,13 @@ $('labstack').addEventListener('change', () => {
   saveSettings();
   renderMore();
 });
-// 「物流方式」的子选项：箱子的两项只在传送带+箱子时有，翘曲器格只在接物流站时有（站出货叠几层在顶栏「物流站」的二级菜单里，2026/11/01）
+// 「物流方式」的子选项：箱子的两项只在传送带+箱子时有，翘曲器格只在接物流站时有（站出货叠几层在顶栏「物流站」的二级菜单里）
 function togglePile() {
   const connected = !!document.querySelector('input[name="station"]:checked')?.value;
   const boxed = !connected && !!document.querySelector('input[name="supply"]:checked')?.value; // 「物流方式」选了传送带+箱子
   $('supply-field').hidden = !boxed; // 箱子（左侧一列仓组）的大小只在传送带+箱子时有
   $('dist-field').hidden = !boxed; // 物流配送器：同上
-  $('warper-field').hidden = !connected; // 翘曲器格只在接物流站时有意义（增产剂格 2026/11/01 改成喷增产剂就留，不用选）
+  $('warper-field').hidden = !connected; // 翘曲器格只在接物流站时有意义（增产剂格不用选：喷增产剂就留）
 }
 document.querySelectorAll('input[name="station"], input[name="supply"]').forEach((el) => el.addEventListener('change', togglePile));
 $('ext-list').addEventListener('click', (e) => {
@@ -1406,7 +1463,7 @@ function setBusy(on) {
     }, 100);
   }
 }
-// 取消本轮生成（用户 2026/10/26，代替原来的「就这个蓝图了」）：后台停掉帮手线程，这一次的结果不再要；编号加一，迟到的进度、结果都不认
+// 取消本轮生成：后台停掉帮手线程，这一次的结果不再要；编号加一，迟到的进度、结果都不认
 $('cancel').addEventListener('click', () => {
   if (!busy) return;
   send({ type: 'cancel', id: reqId });
@@ -1418,7 +1475,7 @@ $('cancel').addEventListener('click', () => {
 // ---------- 实时预览（观摩退火） ----------
 // 搜索时后台每半秒报一次各轮的进度，正在看的那一轮每秒最多一份当前排法的绘图模型
 // （搜索阶段只有生产区，物流站、供电在后处理才放）。图纸区画排法，可以切换看哪一轮，默认「自动」：看利用率最高的那一轮，不频繁切换（后台 autowatch.js 挑）。
-// 步数、温度、代价这些数字不显示（用户 2026/10/07：多余，不要乱）
+// 步数、温度、代价这些数字不显示（玩家用不上）
 let preview = null;
 function resetPreview() {
   preview = null;
@@ -1503,7 +1560,7 @@ function buildParams() {
   params.labstack = state.labstack;
   return params;
 }
-// 选完目标、改了选项就立刻算建筑数、预计用时、用电（用户 2026/10/26），写在「生成蓝图」下面；攒 250 毫秒再问，免得每敲一个数字问一次
+// 选完目标、改了选项就立刻算建筑数、预计用时、用电，写在「生成蓝图」下面；攒 250 毫秒再问，免得每敲一个数字问一次
 function requestForecast() {
   if (!catalog.length || !state.targets.every((t) => byId.get(t.id))) return;
   clearTimeout(forecastTimer);
@@ -1534,7 +1591,7 @@ $('spec').addEventListener('submit', (e) => {
   }
   saveSettings();
   const params = buildParams();
-  // 同样的输入再点一次换一个种子（用户 2026/10/24：对这个方案不满意，再点就换一个）；改了输入再回来也接着换，不重复
+  // 同样的输入再点一次换一个种子（对这张不满意，再点就换一张）；改了输入再回来也接着换，不重复
   const key = JSON.stringify(params);
   params.again = presses.get(key) ?? 0;
   presses.set(key, params.again + 1);
@@ -1556,6 +1613,7 @@ function finish(d) {
   setBusy(false);
   if (d.error) {
     setStatus(d.error, true);
+    if (flat && !last) drawFlat();
     if (d.suggestRaw) {
       $('suggest').hidden = false;
       $('suggest').dataset.item = d.suggestRaw;
@@ -1566,11 +1624,13 @@ function finish(d) {
   resetLike(); // 一次生成点一次赞
   show(d);
   goalNote(d.goal);
+  // 排好一张：嵌在别的网页里时由 bridge.js 转告那边做的是哪几样（量产计算器把它们标成已完成，见 handoff.js）
+  window.dispatchEvent(new CustomEvent('dsphc-done', { detail: { targets: state.targets.map((t) => ({ id: t.id, rate: t.rate })), ok: !!(d.feasible && d.check?.ok) } }));
 }
 
 /**
- * 没达到这一档的利用率（用户 2026/10/07 改：照常显示搜到的最好那张）：状态栏后面补一句。
- * 连续几段没进步就先停了（stalled，同日用户要的「没进展就停」），不然是到了时间上限。不可行、检查没过 show 已经说了
+ * 没达到这一档的利用率（照常显示搜到的最好那张）：状态栏后面补一句。
+ * 连续几段没进步就先停了（stalled），不然是到了时间上限。不可行、检查没过 show 已经说了
  */
 function goalNote(g) {
   if (!g || g.met || g.space >= g.target) return;
@@ -1580,8 +1640,11 @@ function goalNote(g) {
 /** 把一张图的结果画出来 */
 function show(d) {
   last = d;
+  flat = null;
+  $('belt-key').hidden = true;
+  $('rail-tabs').hidden = false;
   floors = sliceRoutes(d.model.routes);
-  view.level = 'all'; // 出图先看总览（地面实线、高架虚线叠在一起），要看单层再点右边的 L1、L2…（用户 2026/10/18）
+  view.level = 'all'; // 出图先看总览（地面实线、高架虚线叠在一起），要看单层再点右边的 L1、L2…
   view.focus = '';
   view.selected = '';
   view.factory = '';
@@ -1608,6 +1671,86 @@ function show(d) {
   $('copy-top').hidden = false;
   $('copy-top').textContent = '复制蓝图';
   $('bp-meta').textContent = `${d.blueprint.length.toLocaleString()} 字符`;
+}
+
+// ---------- 现成的无带蓝图（量产计算器「生成无带蓝图」排好带过来的） ----------
+// 图纸照布线图的画法画（beltless.js），标题栏写尺寸、工厂、分拣器、带子；右栏换成带子运什么和怎么用，没有楼层、图层开关；
+// 下面蓝图字符串、接口（带头进的原料、带尾出的产物）、检查。独立检查照常跑：分拣器离连着的带子太远、建好会断开这一类是无带流本来就这样
+// （要原地重建一次才连上），合成一句说明，别的照常报错
+const FAR_LINK = /^分拣器 (\d+) (?:起点|终点)(?:不在所连传送带上|离所连传送带 [\d.]+ m，建好时会断开)/;
+function showFlat(data) {
+  if (data.error) {
+    setStatus(`带过来的无带蓝图解不开：${data.error}`, true);
+    return;
+  }
+  const drawn = beltlessSvg(data.buildings, drawIcon);
+  const far = new Set();
+  const issues = [];
+  for (const e of data.check.errors) {
+    const m = FAR_LINK.exec(e);
+    if (m) far.add(m[1]);
+    else issues.push(e);
+  }
+  if (data.check.warnings.length) console.info('[dsp-handcraft] 无带蓝图检查提醒：\n' + data.check.warnings.map((x) => `- ${x}`).join('\n'));
+  flat = { text: handoff.beltless, targets: handoff.targets.map((t) => ({ id: t.id, rate: t.rate })), ...drawn, far: far.size, issues };
+  last = null; // 楼层、线路、物流站、工厂小窗这些只给自己排的图
+  Object.assign(view, { level: 'all', focus: '', selected: '', factory: '', station: null, machine: null });
+  renderStation();
+  $('route-info').hidden = true;
+  $('sheet-alert').hidden = true;
+  $('result-details').hidden = true;
+  drawFlat();
+  const names = flat.targets.map((t) => `${byId.get(t.id)?.name ?? t.id} ${fmt(t.rate)}/分`).join(' + ');
+  $('sheet-name').textContent = `无带蓝图 · ${names}`;
+  const st = flat.stats;
+  $('sheet-stats').hidden = false;
+  $('sheet-stats').innerHTML =
+    `<span><b>${st.width}×${st.height}</b>格</span><span>工厂<b>${st.factories}</b></span><span>分拣器<b>${st.sorters}</b></span><span>传送带<b>${st.belts}</b></span>` +
+    (issues.length ? `<span class="warn" role="button" tabindex="0" title="看下面的「检查」">需注意 ${issues.length} 处</span>` : '<span class="ok">检查通过</span>');
+  // 右栏：带子运什么、怎么用（没有楼层、用电两页）
+  $('layer-rail').hidden = false;
+  $('rail-tabs').hidden = true;
+  $('floor-list').hidden = true;
+  $('power-pane').hidden = true;
+  $('belt-key').hidden = false;
+  $('belt-key-list').innerHTML = flat.items.map((x) => `<li><i style="--c:${x.color}"></i>${byId.get(x.id) ? pic(byId.get(x.id)) : ''}<span>${esc(byId.get(x.id)?.name ?? x.id)}</span></li>`).join('');
+  $('layer-controls').hidden = true;
+  $('sheet-tools').querySelectorAll('button').forEach((b) => (b.disabled = false));
+  $('floor-name').textContent = '无带蓝图';
+  $('floor-description').textContent = '虚线：分拣器隔空连着的带子';
+  $('floor-meta').textContent = `${st.width} × ${st.height} 格`;
+  // 下面：蓝图字符串、接口、检查
+  $('bp').value = flat.text;
+  $('copy').disabled = false;
+  $('copy').textContent = '复制蓝图';
+  $('copy-top').hidden = false;
+  $('copy-top').textContent = '复制蓝图';
+  $('like').hidden = true;
+  $('bp-meta').textContent = `${flat.text.length.toLocaleString()} 字符`;
+  const listOf = (ids) => ids.map((id) => esc(byId.get(id)?.name ?? id)).join('、');
+  $('ports').innerHTML = [flat.ends.in.length ? `<li>原料从带子区这几条带的带头送进来：${listOf(flat.ends.in)}</li>` : '', flat.ends.out.length ? `<li>产物从带尾出来：${listOf(flat.ends.out)}</li>` : ''].join('') || '<li>没有标出进出口的带子</li>';
+  const li = [];
+  if (far.size) li.push(`<li>${far.size} 个分拣器隔空连着带子：无带流本来就这样，蓝图贴下去建好一遍后，整片拆掉、原地重建一次才会连上。</li>`);
+  // 别的问题按种类合并（数字不同算同一类），每类举一条、写共几处；逐条的进控制台
+  const kinds = new Map();
+  for (const e of issues) {
+    const k = e.replace(/[\d.]+/g, '#');
+    const v = kinds.get(k) ?? { n: 0, first: e };
+    v.n++;
+    kinds.set(k, v);
+  }
+  for (const { n, first } of kinds.values()) li.push(`<li class="err">${esc(first)}${n > 1 ? `（同类共 ${n} 处）` : ''}</li>`);
+  if (issues.length) console.info('[dsp-handcraft] 无带蓝图检查：\n' + issues.map((x) => `- ${x}`).join('\n'));
+  if (!issues.length) li.push(`<li class="ok">${far.size ? '其余检查通过。' : '检查通过。'}</li>`);
+  $('notes').innerHTML = li.join('');
+}
+/** 把无带蓝图画到图纸上（出了别的图、搜索预览之后要画回来时也用） */
+function drawFlat() {
+  viewer.reset();
+  const box = $('drawing');
+  box.classList.add('has-svg');
+  box.innerHTML = flat.svg;
+  viewer.attach(box.querySelector('svg'), true);
 }
 
 /** 图纸上方的红条：这张图不可行时醒目地说出来，并说怎么办 */
@@ -1643,7 +1786,7 @@ function fillSheetStats(d) {
 }
 /** 图纸右下角标题栏的内容：第一行是图名，其余是图纸参数 */
 
-/** 右侧栏两页：楼层、用电（用户 2026/10/26：用电从「检查」挪过来） */
+/** 右侧栏两页：楼层、用电 */
 function railTab(power) {
   $('tab-floors').setAttribute('aria-selected', String(!power));
   $('tab-power').setAttribute('aria-selected', String(power));
@@ -1762,7 +1905,7 @@ function clearRoute() {
   view.focus = '';
   if (last && !busy) drawSheet(last); // 搜索预览期间别把上一张图画回来
 }
-// ---------- 物流站简介（用户 2026/10/27，照游戏里星际物流站的面板）：单击图上的站，图纸右上角上面是站口示意，下面存储的 5 格一格一行——
+// ---------- 物流站简介（照游戏里星际物流站的面板）：单击图上的站，图纸右上角上面是站口示意，下面存储的 5 格一格一行——
 // 物品、上限滑条、右边「本地 / 星际」两个按钮（点一下按 供应 → 需求 → 仓储 轮换），左边一道色条是星际那头的供需；再下面「物流站设置」
 // （充能功率、路程、起送量、轨道采集器、翘曲器必备）。改了就让后台改这张蓝图（worker.js 的 patchStation），蓝图字符串跟着换。
 // 翘曲器格、增产剂格、整站设置改过的记进设置（state.stationPrefs），以后出蓝图都照这个设（blueprint.js 的 opt.stationPrefs）；整站设置整张图的站一起改。
@@ -1790,7 +1933,7 @@ function selectStation(k) {
   view.machine = null;
   renderStation();
 }
-// ---------- 工厂小窗（用户 2026/10/27：熔炉、制造台不塞进线路简介框，做成物流站那样的小窗）：单击图上的工厂，图纸右上角写
+// ---------- 工厂小窗（熔炉、制造台不塞进线路简介框，做成物流站那样的小窗）：单击图上的工厂，图纸右上角写
 // 把什么做成什么（原料、产物的图标和数量，每台每分钟多少）、这组几台共多少，这台机器的分拣器示意（带子那头画物品），每根分拣器从哪条带取、
 // 放到哪条带，传送带、分拣器是哪一级
 function selectMachine(key) {
@@ -2071,7 +2214,7 @@ $('layer-controls').addEventListener('change', (e) => {
 });
 
 function fillLegend(d) {
-  $('legend').innerHTML = Object.entries(d.model.items).map(([id, it]) => `<li><span class="sw" style="background:${colorOf(d, id)}"></span><span>${esc(it.name)}</span><span class="legend-rate">${fmt(it.rate)}<small>/分</small></span></li>`).join('');
+  $('legend').innerHTML = Object.entries(d.model.items).map(([id, it]) => `<li><span class="sw" style="--c:${colorOf(d, id)}"></span><span>${esc(it.name)}</span><span class="legend-rate">${fmt(it.rate)}<small>/分</small></span></li>`).join('');
   $('factory-legend').innerHTML = d.groups.map((g) => `<span><b>${g.letter}</b>${esc(g.item)} <small>×${g.count}${g.levels > 1 ? ` 叠×${g.levels} 层` : ''}</small></span>`).join('');
 }
 
@@ -2143,7 +2286,7 @@ function fillNotes(d) {
     $('notes').innerHTML = li.join('');
     return;
   }
-  // 只写玩家要知道、要动手的；规划器自己的过程和来由打到控制台（开发者工具里看），不占页面（用户 2026/10/07：提示别打扰玩家）
+  // 只写玩家要知道、要动手的；规划器自己的过程和来由打到控制台（开发者工具里看），不占页面
   const dev = [];
   if (d.check.ok && d.feasible) li.push('<li class="ok">检查通过。</li>');
   dev.push(...d.check.warnings);
@@ -2207,7 +2350,7 @@ function fillNotes(d) {
   $('notes').innerHTML = li.join('');
 }
 /**
- * 右侧栏「用电」一页（用户 2026/10/26：从「检查」挪过来）：待机、工作、喷涂另加、最大；最大用电按额定功率折成几台发电设施；有物流站时说一句充电另算。
+ * 右侧栏「用电」一页：待机、工作、喷涂另加、最大；最大用电按额定功率折成几台发电设施；有物流站时说一句充电另算。
  * e：结果的 energy（拼接成一张时是各块加起来的），没有就藏起这一页
  */
 function fillPowerCard(e) {
@@ -2233,14 +2376,16 @@ $('copy').addEventListener('click', async () => {
     document.execCommand('copy');
   }
   for (const b of [$('copy'), $('copy-top')]) b.textContent = '已复制';
-  showLike();
+  if (flat) {
+    window.dispatchEvent(new CustomEvent('dsphc-done', { detail: { targets: flat.targets, ok: !flat.issues.length, kind: 'beltless' } }));
+  } else showLike();
   setTimeout(() => {
     for (const b of [$('copy'), $('copy-top')]) b.textContent = '复制蓝图';
   }, 2000);
 });
 $('copy-top').addEventListener('click', () => $('copy').click());
 
-// ---------- 点赞（用户 2026/10/26）：括号里是全站的总数；一次生成点一次 ----------
+// ---------- 点赞：括号里是全站的总数；一次生成点一次 ----------
 // 点赞总数存在公共计数服务上（全站共享，不记人），换地方改这里
 const LIKES = { base: 'https://abacus.jasoncameron.dev', ns: 'dsp-handcraft', key: 'likes' };
 let likes = null; // 总数，没取到时为空
@@ -2263,7 +2408,7 @@ function askLikes(op) {
     /* 没有 fetch 的老浏览器 */
   }
 }
-/** 出了新的一张：重新可点，但先藏着，复制了蓝图才露出来（用户 2026/10/26：点赞放在复制之后） */
+/** 出了新的一张：重新可点，但先藏着，复制了蓝图才露出来 */
 function resetLike() {
   likedThis = false;
   $('like').hidden = true;
@@ -2310,6 +2455,7 @@ function initView() {
 let handoff = readHandoff(location.hash);
 function applyHandoff() {
   state.targets = handoff.targets.map((t) => ({ ...t }));
+  state.legacyTarget = null; // 带过来的目标为准，存着的老写法不再拿来换
   state.recipes = { ...handoff.recipes };
   state.defs = handoff.defs;
   state.ext = new Set();
@@ -2326,6 +2472,7 @@ function applyHandoff() {
 function takeHandoffExt() {
   if (!handoff || handoff.took) return;
   handoff.took = true;
+  if (handoff.beltless) send({ type: 'inspect', id: ++inspectId, str: handoff.beltless });
   const missing = state.targets.filter((t) => !byId.get(t.id));
   if (missing.length) {
     handoff.auto = false;
@@ -2335,7 +2482,12 @@ function takeHandoffExt() {
   for (const id of handoff.ext) if (byId.get(id)) state.ext.add(byId.get(id).name);
   saveSettings();
   renderSpec();
-  setStatus(`已按${handoff.from ? `「${handoff.from}」` : ''}带过来的方案填好目标、配方和设备，正在排布…`);
+  // 带过来时说了先别排（auto: false，量产计算器这样带）：等用户改好数量自己点
+  setStatus(
+    handoff.beltless
+      ? `无带蓝图是${handoff.from ? `「${handoff.from}」` : '那边'}排好的，复制就能用；要带传送带的，点「生成蓝图」另排一张`
+      : `已按${handoff.from ? `「${handoff.from}」` : ''}带过来的方案填好目标、配方和设备，${handoff.auto ? '正在排布…' : '数量可以再改，好了点「生成蓝图」'}`,
+  );
   autoSuggest = true;
   requestChain();
 }
@@ -2345,12 +2497,14 @@ window.addEventListener('hashchange', () => {
 });
 // 嵌在别的网页里时，图标可以由那边给：window.DSPHC.icon(物品) 返回图片地址，准备好后发 dsphc-icons 事件
 window.addEventListener('dsphc-icons', () => {
+  syncPills();
   renderSpec();
   renderCatalog();
   renderExt();
 });
 initOptionSelects();
 initPills();
+initLimits();
 loadSettings();
 if (handoff) applyHandoff();
 initView();
@@ -2362,6 +2516,7 @@ if (!window.DSPHC) {
   const probe = new Image();
   probe.onload = () => {
     iconMode = true;
+    syncPills();
     renderSpec();
     renderCatalog();
     renderExt();

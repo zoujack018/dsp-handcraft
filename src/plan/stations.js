@@ -46,8 +46,6 @@ export function obstacles(L) {
     belts.add(cell(x, y, z));
     projection.add(key(x, y));
   }
-  // 就地烧副产物的火力发电厂（plan/burn.js）：整块地都不让别的东西进
-  for (const b of L.burners || []) for (let x = b.rect[0]; x <= b.rect[2]; x++) for (let y = b.rect[1]; y <= b.rect[3]; y++) solid.add(key(x, y));
   // 箱子供货的储物仓、储液罐那一块（plan/storage.js）：仓、分拣器、进料带，别的东西都不进
   for (const b of L.stores || []) for (let x = b.rect[0]; x <= b.rect[2]; x++) for (let y = b.rect[1]; y <= b.rect[3]; y++) solid.add(key(x, y));
   for (const s of L.sorterList) {
@@ -68,17 +66,15 @@ export function obstacles(L) {
   return { solid, ground, belts, real, projection, sprayGuard: g, gapNear };
 }
 
-// 在有界网格上找一条接线。地面优先，升降昂贵，每拐一次弯多付 TURN 格的代价（走线成直路，不在空地里蛇行）；
-// 保证每一步几何合法：水平走一步高度不变，升降都是原地竖直的一节。
-// 升降只在直行的格子里做：竖直走过之后，下一步水平方向必须和进这一格时相同（endDir 是终点之后链继续走的方向），
-// 不一边转弯一边升降，也不在升降的那一格掉头（游戏里会拧成莫比乌斯环那样）。
+// 在有界网格上找一条接线：地面优先，升降昂贵，每拐一次弯多付 TURN 格的代价（走线成直路，不在空地里蛇行）。水平走一步高度不变，
+// 升降都是原地竖直的一节，只在直行的格子里做：竖直走过之后，下一步水平方向必须和进这一格时相同（endDir 是终点之后链继续走的方向），
+// 不一边转弯一边升降，也不在升降的那一格掉头（会拧成麻花，game-rules 第 11 条）。
 const TURN = 2;
 export const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 export const dirIndex = (dx, dy) => DIRS.findIndex(([a, b]) => a === dx && b === dy);
 
 // 寻路的工作区：到各状态的代价和前驱按状态编号挨着存在一个定长数组里（DP[2i]、DP[2i + 1]），没到过的代价是 +∞；
-// 每次寻路把到过的状态记下来（touch），下次寻路前只把这些放回 +∞，不用整块清空。
-// 堆是三列并行数组，比较规则和以前的对象堆一模一样（f 相等时的先后也一样），所以找出来的路一格不差。
+// 每次寻路把到过的状态记下来（touch），下次寻路前只把这些放回 +∞，不用整块清空。堆是三列并行数组（hi 存编号，hfg 存 f、g）。
 let cap = 0;
 let dpA = new Float64Array(0);
 let touchA = new Int32Array(1024);
@@ -93,16 +89,10 @@ function ensure(n) {
 }
 
 /**
- * 预判（不出路）：A* 会不会把步数预算耗完、或者找到的路代价不小于 cut。
- * 代价按 1/25 格计全是整数：水平一步 25 + 3z（拐弯再 + 50），竖直一步 100；启发值 25 × 水平曼哈顿距离 + 100z。
- * 启发值是一致的，按 f 从小到大一层层出（桶队列，不用堆），每个状态第一次出来时代价就是最短的。
- *   - 出到第 F 层时，F 以下各层已经出过的（不算终点那一格的）状态有 B 个以上：终点的最短 f 不小于 F，A* 出终点之前
- *     要把 f 比它小的状态全出一遍（一致的启发值，每个这样的状态都至少出一次堆），预算 B 步不够，A* 一定返回 null。
- *     浮点误差远小于 1/25 格，不影响这个判断。
- *   - 出到第 F 层时，F 对应的代价（减去终点高度 × 4）已经不小于 cut + 1e-6：找到的路代价都不小于 cut，返回 CUT（见 CUT）。
- *   - 队列空了：走不到，A* 也一定返回 null。
- *   - 先出到合法的终点：说不准，返回 0，照常跑 A*。
- * 走法、挡不挡路、终点那一格不往外走、竖直落进终点要和 endDir 同向，都和 A* 一模一样。
+ * 预判（不出路）：A* 会不会把步数预算 B 耗完、或者找到的路代价不小于 cut。返回 1：A* 一定返回 null；2：找到的路代价都不小于 cut（当 CUT）；
+ * 0：说不准，照常跑 A*。代价是 A* 的 25 倍、全是整数，启发值一致，按 f 一层层出（桶队列）：出到第 F 层时 F 以下已经出过（不算终点那格的）
+ * B 个以上状态（A* 出终点之前都要出一遍）或者队列空了，返回 1；F 对应的代价（减去终点高度 × 4）已经不小于 cut + 1e-6，返回 2；
+ * 先出到合法的终点返回 0。走法、挡不挡路、终点的规矩都和 A* 一样。
  */
 const RING = 512; // 一步 f 最多涨 200（往上一层），环形桶数要比它大
 let pD = new Int32Array(0);
@@ -251,15 +241,15 @@ function probe(start, startDir, ec, ex, ey, ez, lastDir, W, H, maxLevel, G, ig, 
   for (let k = 0; k < nt; k++) D[T[k]] = PINF;
   return verdict;
 }
-/** 哪些终点（连同走进去的方向、网格大小）A* 已经耗完过预算：再找它们时先预判（只影响快慢，不影响结果） */
+/** 哪些终点（连同走进去的方向、网格大小）A* 已经耗完过预算：再找它们时先预判（只影响速度） */
 const spent = new Set();
 const spentKey = (end, endDir, W, H, maxLevel) => `${end[0]},${end[1]},${end[2]},${endDir},${W},${H},${maxLevel}`;
 
 const POCKET = 64;
 
 /**
- * 障碍集合的格子版：attachStations 每个候选站位一份，和 trial 的 solid / belts 集合同步增删。
- * 寻路判格子时直接查数组，不再每格拼字符串查集合。集合里不在网格内或不是整数的坐标寻路本来就问不到，不进数组。
+ * 障碍集合（obstacles）的格子版：寻路判格子时直接查数组，不每格拼字符串查集合；调用方增删集合时要同步改它。
+ * 集合里不在网格内或不是整数的坐标寻路本来就问不到，不进数组。
  */
 export function obstacleGrid(O, W, H, maxLevel) {
   const plane = W * H;
@@ -302,11 +292,8 @@ function gridIndices(G, set) {
 }
 
 /**
- * 找路到「代价够低才有用」的地方就停：调用方给出 cut（只有代价 < cut 的路才有用）时，堆顶的 f 一到 cut 以上就返回 CUT，不再往下找。
- * 启发值（水平曼哈顿距离 + 高度 × 4）是一致的：每走一步 f 不减，所以出堆的 f 不减；终点出堆时 f = 代价 + 终点高度 × 4。
- * 堆顶的 f 到了 cut + 终点高度 × 4 + 1e-6，以后再找到的路代价都不小于 cut（浮点舍入远小于 1e-6）。
- * 所以返回 CUT 时，不设 cut 照原样找下去的结果只有两种：找不到（null），或者找到一条代价不小于 cut 的路。
- * 没有返回 CUT 时，结果和不设 cut 逐字一样（出堆次序、步数预算都一样，只是多判断了一次堆顶）。
+ * 调用方给了 cut（只有代价 < cut 的路才有用）时，堆顶的 f 到了 cut + 终点高度 × 4 + 1e-6 就返回 CUT：启发值一致、出堆的 f 不减，
+ * 以后找到的路代价都不小于 cut。所以返回 CUT 时不设 cut 的结果是 null 或一条代价不小于 cut 的路；没返回 CUT 时和不设 cut 一样
  */
 export const CUT = Object.freeze({ cut: true });
 
@@ -328,9 +315,8 @@ function minTurns(d, dx, dy) {
 }
 
 /**
- * A* 每次最多出堆多少次（还受格数 × 层数 × 5 封顶）：接物流站时 24 万，别的（增产剂带、烧副产物的接线）照旧 6 万。
- * 云上 2026/10/08（智川云，E3，238 份引力矩阵 / 小产线的站格）：6 万 → 24 万，挑出来可行的从 76% 到 85%，同一批候选配对 21 份只有新的接上、0 份反过来，
- * 预算耗尽的次数每份 27 → 2；再加到 100 万只多 2 个百分点。attachStations 进出时切换（同步执行，不会串到别的活）
+ * A* 每次最多出堆多少次（还受格数 × 层数 × 5 封顶）：接物流站时 24 万（6 万时常把预算耗完、接不上，再加大收益很小），
+ * 别的（增产剂带、翘曲器带、接仓）6 万。attachStations 进出时切换（同步执行，不会串到别的活）
  */
 const PATH_BUDGET = 60000;
 const ATTACH_BUDGET = 240000;
@@ -384,8 +370,8 @@ function pathfind0(start, end, O, W, H, maxLevel, startDir = 4, ignore = null, e
     };
   }
   const [ex, ey, ez] = end;
-  // 起点或终点被围在一小块里（实测走不到的都是 1~2 格的小块）：先各做一次最多 POCKET 格的广度搜索，
-  // 那一小块走完了还没碰到另一头，就一定走不到，直接返回（A* 的走法只比它更受限，结果一样，只是不再白耗 6 万步）
+  // 起点或终点被围在一小块里：先各做一次最多 POCKET 格的广度搜索，那一小块走完了还没碰到另一头，就一定走不到
+  // （A* 的走法只比它更受限），直接返回，不白耗预算
   const enclosed = (sx, sy, sz, tx, ty, tz) => {
     const seen = new Set([sz * plane + sy * W + sx]);
     const st = [sx, sy, sz];
@@ -409,10 +395,8 @@ function pathfind0(start, end, O, W, H, maxLevel, startDir = 4, ignore = null, e
     return true;
   };
   if (enclosed(ex, ey, ez, start[0], start[1], start[2]) || enclosed(start[0], start[1], start[2], ex, ey, ez)) return null;
-  // 终点的进路：最后一步要么从同一层的相邻格水平走进终点，要么从这一列竖直落进来。竖直落进来时状态里的方向是最后一次水平走的方向，
-  // 下面的终点判断要它等于 endDir（0~3 时），也就是先在这一列的某一层 z 从 endDir 反方向的那一格水平走进来，再一路竖直到终点。
-  // 这些格子全都走不进去（挡住或出界），终点就一定到不了，A* 只会把 6 万步的预算耗完再返回 null，这里直接返回（结果一样）。
-  // 实测接站时走不到的几乎都是这种：终点左右是别的带子、上一层的来路是工厂。起点不查挡不挡，算能走；起点就在这一列上时不判断
+  // 终点的进路：从同一层的相邻格水平走进，或者从这一列竖直落进（endDir 是 0~3 时要先在这一列某一层从 endDir 反方向那一格走进来）。
+  // 这些格子全都走不进去时一定到不了，直接返回 null（接站时走不到的多半是这种）。起点不查挡不挡；起点就在这一列上时不判断
   {
     const [sx, sy, sz] = start;
     const open = (x, y, z) => x >= 0 && y >= 0 && x < W && y < H && z >= 0 && z <= maxLevel && ((x === sx && y === sy && z === sz) || !blockedAt(x, y, z));
@@ -425,12 +409,11 @@ function pathfind0(start, end, O, W, H, maxLevel, startDir = 4, ignore = null, e
     if (!reach) return null;
   }
   let budget = Math.min(budgetCap, plane * (maxLevel + 1) * 5);
-  // 终点的格子编号；终点不在网格里时永远走不到（原来按坐标比，出界的格子不会和网格里的混为一格），记成 −1
+  // 终点的格子编号；终点不在网格里时永远走不到，记成 −1
   const ec = Number.isInteger(ex) && Number.isInteger(ey) && Number.isInteger(ez) && ex >= 0 && ey >= 0 && ez >= 0 && ex < W && ey < H && ez <= maxLevel ? ez * plane + ey * W + ex : -1;
   const lastDir = endDir >= 0 && endDir < 4 ? endDir : -1; // 竖直落进终点时要求的方向（-1：不要求）
-  // 这个终点之前耗完过预算（接站时同一个口换个站口、换个站位再找，多半还是找不到），或者调用方估计多半用不上（pre）：
-  // 先用桶队列预判，判得出就不跑 A*（预判只省时间，判不出照常跑，结果一样）。
-  // 预判只在起点、终点都是网格里的整数格时做：桶号按坐标算，坐标不是整数时桶号也不是整数，队列会空转不停
+  // 这个终点之前耗完过预算（换个站口、站位再找多半还是找不到），或者调用方估计多半用不上（pre）：先用桶队列预判（只影响速度）。
+  // 只在起点、终点都是网格里的整数格时做（桶号按坐标算，不是整数时队列会空转不停）
   const sk = spentKey(end, endDir, W, H, maxLevel);
   const [sx0, sy0, sz0] = start;
   const startIn = Number.isInteger(sx0) && Number.isInteger(sy0) && Number.isInteger(sz0) && sx0 >= 0 && sy0 >= 0 && sz0 >= 0 && sx0 < W && sy0 < H && sz0 <= maxLevel;
@@ -439,10 +422,8 @@ function pathfind0(start, end, O, W, H, maxLevel, startDir = 4, ignore = null, e
     if (v === 1) return null;
     if (v === 2) return CUT;
   }
-  // 主循环把堆的进出、走一步都写在一个函数里，工作区数组放进局部变量（不再经过闭包和模块变量），
-  // 每一步的判断、代价的浮点运算次序、进堆出堆的比较都和原来逐字一样，所以出堆的次序、找出来的路一格不差。
-  // 到某状态的代价和前驱挨着放在 DP 里（DP[2i]、DP[2i + 1]），没到过的代价是 +∞；第一次到时记进 touch，下次寻路前放回 +∞。
-  // 有障碍网格时，挡不挡路直接查网格（和 blockedAt 一样的判断），不经过闭包
+  // 主循环把堆的进出、走一步都写在一个函数里，工作区数组放进局部变量，不经过闭包和模块变量（为了快）；
+  // 有障碍网格时，挡不挡路直接查网格（和 blockedAt 一样的判断）
   let T = touchA;
   let nt = 0;
   let HI = hi;
@@ -450,7 +431,7 @@ function pathfind0(start, end, O, W, H, maxLevel, startDir = 4, ignore = null, e
   let hcap = HI.length;
   let n = 0; // 堆里有几个
   // 堆里和前驱里存的是按位拼的编号：平面格 c2 << (zb + 4) | z << 4 | 方向 << 1 | 刚升降（出堆时移位就拆开，不用除 5、除 plane）；
-  // DP 的下标照旧是 ((格子 × 5) + 方向) × 2 + 刚升降。编号是 32 位整数，平面格数 < 2^24 都放得下（DP 早在这之前就放不下了）
+  // DP 的下标是 ((格子 × 5) + 方向) × 2 + 刚升降。编号是 32 位整数，平面格数 < 2^24 都放得下（DP 早在这之前就放不下了）
   let zb = 0;
   while (1 << zb <= maxLevel) zb++;
   const zs = zb + 4;
@@ -487,7 +468,7 @@ function pathfind0(start, end, O, W, H, maxLevel, startDir = 4, ignore = null, e
       let k = 0;
       while (k * 2 + 1 < n) {
         let j = k * 2 + 1;
-        j += (FG[2 * j + 2] < FG[2 * j]) | 0; // 右孩子严格更小才挑右边（和原来的比较一样）；右孩子出界时那一格是哨兵 +∞，挑不上
+        j += (FG[2 * j + 2] < FG[2 * j]) | 0; // 右孩子严格更小才挑右边；右孩子出界时那一格是哨兵 +∞，挑不上
         const fj = FG[2 * j];
         if (fj >= lf) break;
         HI[k] = HI[j];
@@ -523,7 +504,7 @@ function pathfind0(start, end, O, W, H, maxLevel, startDir = 4, ignore = null, e
       break;
     }
     // 走一步：先四个水平方向（0~3：+x、−x、+y、−y），再往上、往下（4、5）
-    const step = 1 + z * 0.12; // 水平走一步的代价（拐弯再加 TURN），和原来的式子同样先算这一项
+    const step = 1 + z * 0.12; // 水平走一步的代价（拐弯再加 TURN）；先算这一项，浮点运算次序改了结果可能变
     for (let m = 0; m < 6; m++) {
       let nx = x;
       let ny = y;
@@ -622,11 +603,9 @@ function portDir(p, leg) {
 }
 
 /**
- * 状态里带着方向，同一格可能以不同方向走两次（升降后必须直走时，落地的那一格有时会绕一圈再回来）。
- * 路径自己压到自己时，把重复的格子当障碍再找，最多几次。
- * cut：只要代价 < cut 的路（见 CUT）。返回 CUT 时，不设 cut 的结果是 null 或者一条代价不小于 cut 的路：
- * 再找时多了障碍，能走的只少不多，最短路只长不短，所以哪一次返回 CUT 都一样。
- * pre：调用方估计这次多半找不到有用的路（返回 CUT），先用桶队列预判（见 probe），只影响快慢。
+ * 状态里带着方向，同一格可能以不同方向走两次（升降后必须直走时，落地的那一格有时会绕一圈再回来）：路径自己压到自己时，
+ * 把重复的格子当障碍再找，最多几次。cut：只要代价 < cut 的路（见 CUT；再找时障碍只多不少，哪一次返回 CUT 都一样）。
+ * pre：调用方估计多半找不到有用的路，先用桶队列预判（probe），只影响速度
  */
 export function pathfind(start, end, O, W, H, maxLevel, startDir = 4, ignore = null, endDir = 4, cut = Infinity, pre = false) {
   const avoid = new Set();
@@ -643,8 +622,8 @@ export function pathfind(start, end, O, W, H, maxLevel, startDir = 4, ignore = n
 
 /**
  * 站位 s 上接口 p 的接线得分的下限（不管用哪个站口、找到哪条路）：站口那 2 节 + 从站口外那格到终点的曼哈顿距离
- * + 至少要拐的弯 × TURN（见 minTurns）；退回原来出入口格时再加上让不出来的那段（ownLen）。和下面接线时的得分式子一一对应：
- * 得分 = 路的代价 + 2（+ ownLen），路的代价不比曼哈顿距离 + 拐弯少
+ * + 至少要拐的弯 × TURN（见 minTurns）；退回原来出入口格时再加上让不出来的那段（ownLen）。
+ * 和接线时的得分（路的代价 + 2，退回时 + ownLen）一一对应
  */
 function routeFloor(s, target, p, ownLen) {
   let lb = Infinity;
@@ -678,13 +657,9 @@ function intCells(set, out) {
 }
 
 /**
- * 站位 (x, y) 能不能放站（3 ≤ x ≤ W − 4，3 ≤ y ≤ H − 4）。原来逐个站位查 7×7 格在不在 solid、ground、projection、gapNear 里，
- * 再逐台工厂比碰撞体；这里一次算好整张图：cells 是这几个集合里的整数格坐标表，7×7 窗口里挡住的格数用二维前缀和数；
- * 工厂碰撞体碰得到的站心，在每台工厂附近逐格按原来的式子标出来。结果和逐个查一模一样。
- * 连续碰撞体：整数格空着不意味着站可以紧贴制造台的半格边界。站身按半宽 3.4 算：
- * 制造台本体紧贴站身（中心隔 5）实测能放（体积测试 D6），制造台碰撞体又确实大于 3 格（C3、C4），3.5 + 1.6 > 5 是误报。
- * 站身外那 1 格碰撞圈只挡卫星配电站（D4~D10），工厂本体可以贴着站身。
- * 碰撞体中心有偏移的（化工厂往上 0.5、对撞机往左 0.3）按偏移后的中心算
+ * 站位 (x, y) 能不能放站（3 ≤ x ≤ W − 4，3 ≤ y ≤ H − 4）：7×7 站身不压 cells（solid、ground、projection、gapNear 里的整数格坐标表，
+ * 用二维前缀和数），也不碰工厂的碰撞体（按 colliderShift 偏移后的中心，在每台工厂附近逐格标出站心）。站身按半宽 3.4（STATION_HALF）：
+ * 制造台本体紧贴站身（中心隔 5）实测能放（体积测试 D6），按 3.5 + 1.6（制造台碰撞体半宽，C3、C4）> 5 是误报；站身外那 1 格碰撞圈只挡卫星配电站（D4~D10）
  */
 function stationFits(L, cells, W, H) {
   const W1 = W + 1;
@@ -726,11 +701,9 @@ function stationFits(L, cells, W, H) {
 function stationGroups(L, slots = null) {
   const cap = stationItemCap(slots); // 每座最多 5 种；增产剂、翘曲器的空格整张留够（keepFreeSlot）
   // 按真实物品和进出分：送出去的（成品、副产物）设为供应，产线要用的设为需求。副产物和产线自己要用的同种物品（比如氢）
-  // 各占一格、放在两座站（下面装站时同种物品不进同一座）：用户 2026/10/27——放在同一座站的同一格里，需求从别处运来把格子装满以后，
-  // 副产物送不进去，出它的那组工厂就停了
+  // 各占一格、放在两座站（下面装站时同种物品不进同一座，game-rules 第 37 条）
   const byItem = new Map();
   for (const p of L.ports) {
-    if (p.burn) continue; // 就地烧掉的副产物不进站（plan/burn.js）
     const k = `${realItem(p.itemId)}${p.kind === 'in' ? '<' : '>'}`;
     if (!byItem.has(k)) byItem.set(k, { itemId: realItem(p.itemId), ports: [] });
     byItem.get(k).ports.push(p);
@@ -780,9 +753,8 @@ function attachStations0(source, { stack = 1, maxWidth = null, maxHeight = null,
   for (const set of [O.solid, O.ground, O.projection, O.gapNear]) if (set) intCells(set, fitCells);
   L.stations = [];
   const groups = stationGroups(L, slots);
-  // 只有一段的原料带（不串通道、不喷涂、段上全是取料口）流向无所谓：接站时哪头离站位近就从哪头进料，用了另一头就把这一段翻过来。
-  // 不翻的话站在另一边时，接线要沿着段绕回段头，成一个「小 C」白费一截带子（用户 2026/10/08，信息矩阵 30 的硅石、可燃冰、铜矿……）。
-  // 段与段之间的高架（产物的远距离供应）、产物的段一律不动；搜索也不动，只是接站时多比一下两头的横向距离，寻路次数不变
+  // 只有一段的原料带（不串通道、不喷涂、段上全是取料口）流向无所谓：接站时哪头离站位近就从哪头进料，用了另一头就把这一段翻过来
+  // （不翻的话站在另一边时，接线要沿着段绕回段头，成一个「小 C」白费一截带子）。段间高架、产物的段一律不动；搜索不管这个
   const single = new Set();
   for (const ch of L.chains) if (ch.parts.length === 2 && ch.parts[1].seg != null) single.add(ch.parts[1].seg);
   /** 这个原料口能翻时，段的另一头（段尾）在第几列；不能翻是 null */
@@ -812,7 +784,7 @@ function attachStations0(source, { stack = 1, maxWidth = null, maxHeight = null,
       if (reserveItem === 2212 && reserve.some(([rx, ry]) => (Math.abs(rx + 1 - x) <= STATION_CLEAR && Math.abs(ry + 1 - y) <= STATION_CLEAR) || (Math.abs(rx + 1 - x) <= STATION_EW.x && Math.abs(ry + 1 - y) <= STATION_EW.y))) continue;
       if (L.stations.some((st) => stationSpan(st.x - x, st.y - y) < STATION_GAP)) continue; // 游戏要求两站隔开（东西向按最窄格宽折算，gamedata.js）
       const area = Math.max(L.width, x + 4) * Math.max(L.height, y + 4);
-      // 候选站位照旧按到原来段头的距离排（试的还是那一批站位；按近的那头排，离边远、撑大外框的站位会挤进前几名）
+      // 候选站位按到原来段头的距离排（按近的那头排的话，离边远、撑大外框的站位会挤进前几名）
       const distance = ports.reduce((n, p) => n + Math.abs(p.x - x) + Math.abs(p.y - y), 0);
       sites.push({ x, y, score: (area - L.area) * 2 + distance });
     }
@@ -826,7 +798,7 @@ function attachStations0(source, { stack = 1, maxWidth = null, maxHeight = null,
     let best = null;
     const base = candidates.length ? obstacleGrid(O, W, H, maxLevel) : null;
     // 每个站位直接在 base 上加站身、加接线（寻路只看 trial.grid），接完这个站位再原样改回去（undo 记着改前的值），
-    // 不再每个站位复制一份网格和障碍集合。选上的站位对带子集合的增删记在 ops 里，这一组定下来以后照着改 O
+    // 不用每个站位复制一份。选上的站位对带子集合的增删记在 ops 里，这一组定下来以后照着改 O
     const trial = { ...O, grid: base };
     const undo = []; // 数组, 下标, 改前的值, …
     const put = (A, i, b) => {
@@ -834,14 +806,13 @@ function attachStations0(source, { stack = 1, maxWidth = null, maxHeight = null,
       A[i] = b;
     };
     for (const s of candidates) {
-      // 这个站位得分的下限：站本身已经把外框撑到这么大（接线只会撑得更大），接线代价每条都不是负的。
-      // 下限加上已接的代价不比最好站位的得分低，这个站位就不可能被选上（要严格更低才换），后面的口不用再接；
-      // 浮点加法对非负数是单调的，所以按同样的式子算出来的下限不会比真算出来的得分高，选出来的站位逐字一样
+      // 这个站位得分的下限（站本身已经把外框撑到这么大，接线只会撑得更大，接线代价都不是负的）：下限加上已接的代价
+      // 不比最好站位的得分低，这个站位就不可能被选上（要严格更低才换），后面的口不用再接
       const floor = (Math.max(L.width, s.x + 4) * Math.max(L.height, s.y + 4) - L.area) * 2;
       if (prune && best && floor >= best.score) continue;
       const order = ports.slice().sort((a, b) => (Math.abs(headX(a, s.x) - s.x) + Math.abs(a.y - s.y)) - (Math.abs(headX(b, s.x) - s.x) + Math.abs(b.y - s.y)));
-      // 还没接的口的得分下限之和（rest[k]：第 k 个口及以后的）。已接的代价 + 还没接的下限 + floor 不比最好站位的得分低，
-      // 这个站位就注定选不上（最后的得分只会更高），和接完再跳过是一回事；多加 1e-6 盖住浮点舍入
+      // rest[k]：第 k 个口及以后还没接的口的得分下限之和（routeFloor）；floor + 已接的代价 + rest 不比最好站位的得分低就注定选不上
+      // （多加 1e-6 盖住浮点舍入）
       const rest = new Float64Array(order.length + 1);
       if (prune && best) {
         for (let k = order.length - 1; k >= 0; k--) {
@@ -872,11 +843,9 @@ function attachStations0(source, { stack = 1, maxWidth = null, maxHeight = null,
         const p = order[pk];
         if (prune && best && floor + cost >= best.score) break; // 注定选不上：少接几个口，下面按没接全跳过
         if (prune && best && floor + cost + rest[pk] >= best.score + 1e-6) break; // 加上还没接的下限也注定选不上（见 rest）
-        // 这个口的接线代价不比 need 低，接上之后（再加上后面几个口的下限）就是上面那种注定选不上的（最后一个口也一样：真得分不比下限加已接的代价低），
-        // 这个站位直接放弃，和接完再跳过是一回事。多加 1e-6：浮点舍入远小于它，判成注定选不上的一定是真选不上
+        // 这个口的接线代价不比 need 低时，接上之后（加上后面几个口的下限）注定选不上，这个站位直接放弃（多加 1e-6 盖住浮点舍入）
         const need = prune && best ? best.score - floor - cost - rest[pk + 1] + 1e-6 : Infinity;
-        // chosen 只记代价低于 need 的接法：原来的 chosen 最后低于 need 时，就是这些里第一个最小的那个，和这里一样；
-        // 不低于 need 时站位注定选不上，这里 chosen 是空的，同样放弃
+        // chosen 只记代价低于 need 的接法（都不低于 need 时 chosen 是空的，同样放弃）
         let chosen = null;
         // 直接接到段的端头（不经过边缘的出入口和原来那段高架），原来那段高架和出入口格让出来
         const leg = L.legs[p.leg];
@@ -905,20 +874,19 @@ function attachStations0(source, { stack = 1, maxWidth = null, maxHeight = null,
             if (base.solid[start[1] * W + start[0]] || base.ground[start[1] * W + start[0]]) continue;
             const dir = DIRS.findIndex(([dx, dy]) => dx === q.nx && dy === q.ny);
             // 这个口的接法要有用：得分低于 lim（换掉已选的，或者让站位不至于注定选不上），或者是一条地面直路（下面就不再试别的口）。
-            // 寻路只找代价够低的路（pathfind 的 cut）：得分不低于 lim、又不是直路（代价比曼哈顿距离多出 0.01 以上）的路找到了也用不上，
-            // 找不到时直接退回原来出入口的那次寻路也一样：所以两次寻路都返回 CUT 时这个口跳过，和原来逐字一样
+            // 所以寻路只找这样的路（cutD、cutB：pathfind 的 cut，直路是代价比曼哈顿距离多不到 0.01 的），两次寻路都返回 CUT 时这个口跳过
             const lim = chosen ? chosen.cost : need;
             const back = !flip && (target[0] !== p.x || target[1] !== p.y); // 直接接不上时还能退回原来的出入口格（翻过来接段尾时不退，外面那一圈接原来的段头）
             const cutD = Math.max(lim - 2, Math.abs(start[0] - target[0]) + Math.abs(start[1] - target[1]) + 0.02);
             const cutB = Math.max(lim - 2 - own.length, Math.abs(start[0] - p.x) + Math.abs(start[1] - p.y) + 0.02);
-            // 已经选了一个口时，后面的口多半比不过它（实测六七成返回 CUT）：寻路先用桶队列预判（pre）
+            // 已经选了一个口时，后面的口多半比不过它：寻路先用桶队列预判（pre）
             const pre = !!chosen;
             // 喷涂机骑在这截高架上的（leg.spray，layout/belts.js 的 legIn）不直接接段头：那截高架要留着，只接原来的出入口
             let path = leg.spray ? null : pathfind(start, target, trial, W, H, maxLevel, dir, ignore, targetDir, cutD, pre);
             let direct = !!path;
             if (path === CUT) {
-              // 直接接的路没找完：原来要么找到一条用不上的路（不再退回），要么找不到（退回原来的出入口）。
-              // 退回的那次也用不上，这个口就跳过；退回的那次有用时，直接接的那次照原样找完，才知道原来走的是哪一支
+              // 直接接的路没找完：不设 cut 时要么找到一条用不上的路（不再退回），要么找不到（退回原来的出入口）。
+              // 退回的那次也用不上，这个口就跳过；有用时直接接的那次不设 cut 再找一遍，才知道走的是哪一支
               if (!back) continue;
               const alt = pathfind(start, [p.x, p.y, 0], trial, W, H, maxLevel, dir, null, portDir(p, leg), cutB, pre);
               if (!alt || alt === CUT) continue;
@@ -997,7 +965,7 @@ function attachStations0(source, { stack = 1, maxWidth = null, maxHeight = null,
         fitCells.push(x, y);
       }
     }
-    // 障碍集合加上这座站的站身、照选上的站位的增删改带子（和原来接这个站位时在集合副本上做的一样，顺序也一样）
+    // 障碍集合加上这座站的站身、照选上的站位的增删改带子
     for (let dx = -3; dx <= 3; dx++) for (let dy = -3; dy <= 3; dy++) {
       O.solid.add(key(best.x + dx, best.y + dy));
       fitCells.push(best.x + dx, best.y + dy);
@@ -1016,11 +984,9 @@ function attachStations0(source, { stack = 1, maxWidth = null, maxHeight = null,
 }
 
 /**
- * 裁到实际占用的格子（接线时四周留的边、没用到的去掉），重数带子：搜索边界用于绕线，只有最终确实占用的格子才进入蓝图边界。
- * 算工厂、物流站、各条线路，还有翘曲器带（linkWarpers）；增产剂带、喷涂机、自动集装机（plan/addons.js 加的）也算进去，带数照出图的数
- * （增产剂带逐格算、集装机那一格拆成两节多算一节，同 addons.js）。
- * 主干里调这个的几处（index.js 的 trimSegmentEnds、burn.js、storage.js 的 addStores、attachStations、linkWarpers）都在 finishOne 里
- * addAddons 之前，那时 L.proLines、L.coaters、L.pilers 还没建，这几行什么都不做；只有供电之前的后处理重走（plan/reroute.js）在 addAddons 之后再裁
+ * 裁到实际占用的格子（接线时四周留的边、没用到的去掉），重数带子。算工厂、物流站、各条线路、翘曲器带、仓；
+ * 增产剂带、喷涂机、自动集装机（plan/addons.js 加的）也算进去，带数照出图的数（集装机那一格拆成两节多算一节）。
+ * 只有后处理重走（plan/reroute.js）在 addAddons 之后调它，别处调的时候这几样还没建
  */
 export function cropToContent(L) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -1035,7 +1001,6 @@ export function cropToContent(L) {
     for (const [x, y] of [...t.main, ...t.extra.flat()]) include(x, y);
   }
   for (const w of L.warperLinks || []) for (const [x, y] of w.cells) include(x, y);
-  for (const b of L.burners || []) { include(b.rect[0], b.rect[1]); include(b.rect[2], b.rect[3]); } // 火力发电厂那一块（plan/burn.js）
   for (const b of L.stores || []) { include(b.rect[0], b.rect[1]); include(b.rect[2], b.rect[3]); } // 箱子供货的储物仓、储液罐（plan/storage.js）
   for (const pl of L.proLines || []) for (const [x, y] of pl.cells) include(x, y); // 增产剂带
   for (const c of L.coaters || []) { include(c.x, c.y); include(c.ix, c.iy); } // 喷涂机和它取料的那格
@@ -1069,10 +1034,9 @@ export function cropToContent(L) {
 }
 
 /**
- * 翘曲器带（用户 2026/10/07：翘曲器整张蓝图一格就够，别的站用传送带接）：挑一座有空格的站存空间翘曲器（星际需求），
- * 从它的空口各拉一条带到别的每座站的空口。传送带送进星际物流站的翘曲器自动进站里专门的翘曲器仓，收的那座站不占物品格。
- * 接不上的那座站有空格就自己存一格翘曲器，都不行就写进 L.warperNotes（那座站的运输船不用翘曲器，照样能跑，只是慢）。
- * 在接站、高架落地之后，增产剂和供电之前做：带子算进障碍（obstacles），后面的增产剂带、供电设施都让开。直接改 L。
+ * 翘曲器带（整张蓝图只存一格翘曲器）：挑一座有空格的站存空间翘曲器（星际需求），从它的空口各拉一条带到别的每座站的空口
+ * （传送带送进星际物流站的翘曲器自动进站里专门的翘曲器仓，收的那座站不占物品格）。接不上的那座站有空格就自己存一格翘曲器，
+ * 都不行就写进 L.warperNotes（那座站的运输船不用翘曲器，照样能跑，只是慢）。在接站、高架落地之后，增产剂和供电之前做，直接改 L。
  */
 export function linkWarpers(L, { maxLevel = 6 } = {}) {
   L.warperLinks = [];

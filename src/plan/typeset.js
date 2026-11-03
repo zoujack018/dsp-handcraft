@@ -1,10 +1,9 @@
-// 排版内核（分支 explore/typeset，2026/10/13：用户要「核心不同于 master」的探索）。
+// 排版内核（routeOptions.core = 'typeset'）。
 //
-// master 的搜索把配方组拆成块、在行里搬来搬去，各行长短不齐：行尾参差是空地的大头（引力矩阵 30 / 60 约 12%，tools/waste.js），
-// 云上 64 次细搜最好 82%。这里换一个搜索状态：所有配方组排成一条队 seq，加一个行宽 W；布局由队「排版」出来——
-// 像排文字一样从左往右铺，铺满一行就换行，组在行尾可以断开（像断字）。断在哪儿用动态规划求全局最好（Knuth–Plass 断行：
-// 每行空出来的列数平方和 + 每断开一个组的罚分，合计最小），所以每行都差不多满，长宽比由 W 定（先定边界）。
-// 奇数行反过来铺（蛇形）：断开的组两段上下挨着。搜索只改队的顺序和行宽，走线、打分、出蓝图、检查照旧用 master 的。
+// 主干内核的搜索把配方组拆成块、在行里搬来搬去，各行长短不齐，行尾参差是空地的大头。这里换一个搜索状态：所有配方组排成一条队 seq，
+// 加一个行宽 W；布局由队「排版」出来——像排文字一样从左往右铺，铺满一行就换行，组在行尾可以断开（像断字）。断在哪儿用动态规划求全局最好
+// （Knuth–Plass 断行：每行空出来的列数平方和 + 每断开一个组的罚分，合计最小），所以每行都差不多满，长宽比由 W 定（先定边界）。
+// 奇数行反过来铺（蛇形）：断开的组两段上下挨着。搜索只改队的顺序和行宽，走线、打分、出蓝图、检查照旧用主干内核的。
 // 初始顺序用谱排序：按组之间的物品流建图，拉普拉斯矩阵第二小特征值的特征向量（Fiedler 向量）给每组一个坐标，上下游挨得近。
 import { layers } from './graph.js';
 import { BELT_SPEED } from '../gamedata.js';
@@ -16,11 +15,10 @@ const SPLIT_COST = 16;
 
 /**
  * 每组一块最多几台（运力断块）：同一块的产物只上一条带、每种吃料也只从一条带取（layout/belts.js），
- * 块的流量超过一条带的运力就记「超运力」。前沿大线一行几百列，整行同组的一段常常超（引力矩阵 180 的铁块 45 台 × 60/分）。
- * 排版时一行里同组的一段超过这个台数就在行内切成几块（台数尽量平均），各挂各的带。
- * piled（只有主干内核传，place.js）：开自动集装机时产物和不是原料的进料按集装后的运力算（layout/belts.js 的 pileCap，plan/piling.js 的 pileCapOf：
- * 不写 pileModel 是单条带的 4 倍），原料照旧。集装分拣器叠层（route 选项 sorterStack）时产物带不靠集装机运单条带格位 × 层数，
- * 两个内核的产物、不是原料的进料和分身单元按带切（unitsOf）都按这个、不再算集装机（同 layout/belts.js 的 pileCap，用户 2026/11/01；层数 1 时不变）
+ * 块的流量超过一条带的运力就记「超运力」，大线上整行同组的一段常常超。排版时一行里同组的一段超过这个台数就在行内切成几块（台数尽量平均），各挂各的带。
+ * piled（只有主干内核传，place.js）：开自动集装机时产物和不是原料的进料按集装后的运力算（plan/piling.js 的 pileCapOf），原料照旧。
+ * 集装分拣器叠层（route 选项 sorterStack > 1）时产物带不靠集装机、运单条带格位 × 层数，两个内核的产物、不是原料的进料和分身单元按带切（unitsOf）
+ * 都按这个、不再算集装机（同 layout/belts.js 的 pileCap）
  */
 export function blockCaps(graph, ro = {}, piled = false) {
   const beltCap = BELT_SPEED[ro.belt ?? DEFAULTS.belt] * (ro.stack ?? DEFAULTS.stack) * 60;
@@ -41,19 +39,17 @@ export function blockCaps(graph, ro = {}, piled = false) {
 
 /**
  * 分身单元：一组的台数超过一块的运力（caps）时拆成 k = ⌈台数 ÷ 一块最多几台⌉ 个单元（台数平均），队里各占一个位置、各自挪。
- * 要几条带的物品（黄棒 30 的磁铁 1920/分 = 2 条）分成几份生产单元，消费它的组（磁线圈）也一样拆开，退火能把一份生产、一份消费
- * 排在一起，两条带各走各的；不拆时同组几块挤在同一行，几条带并排走同一个通道（超轨、分拣器太慢、按块分带时供给顺序差几百）。
- * 没给 caps 或不超的组只有一个单元，单元 ID 就是组 ID（排版逐字不变）；多个单元的 ID 是 组ID#序号。同一个 caps 只算一次
+ * 要几条带的物品分成几份生产单元，消费它的组也一样拆开，退火能把一份生产、一份消费排在一起，两条带各走各的；
+ * 不拆时同组几块挤在同一行，几条带并排走同一个通道（超轨、分拣器太慢、按块分带时供给顺序差）。
+ * 没给 caps 或不超的组只有一个单元，单元 ID 就是组 ID；多个单元的 ID 是 组ID#序号。同一个 caps 只算一次
  */
 const UNITS = new WeakMap();
 export function unitsOf(graph, caps = null) {
   const key = caps ?? graph;
   const hit = UNITS.get(key);
   if (hit?.graph === graph) return hit;
-  // 按带对齐的切点（每组在第几台前切开）：要几条带的中间产物（k 条，每条 F ÷ k），消费者按出现的先后依次把带装满，
-  // 跨过一条带的边界就在那台前切开；生产者每满一条带切一刀。这样每条带的消费正好凑成 F ÷ k（引力矩阵 360 的铁块 3 条 × 1800：
-  // 电动机切成 16 / 40 / 8 台，720 + 360 + 720、1800、360 + 1440）；不切时按块分带要凑整，凑不齐就差几百（引力矩阵 360 塔差 360/分）。
-  // 切点之间的每段再按运力平均切
+  // 按带对齐的切点（每组在第几台前切开）：要 k 条带的中间产物，生产者每满一条带切一刀，消费者按出现的先后依次把带装满、
+  // 跨过一条带的边界就在那台前切开，每条带的消费正好凑成 F ÷ k（不切时按块分带要凑整，凑不齐就差几百）。切点之间的每段再按运力平均切
   const cuts = new Map(graph.groups.map((g) => [g.id, new Set()]));
   const beltCap = caps?.beltCap;
   if (beltCap)
@@ -61,9 +57,8 @@ export function unitsOf(graph, caps = null) {
       if (it.producer === 'RAW' || !(it.rate > beltCap + 1e-6)) continue;
       const k = Math.ceil(it.rate / beltCap - 1e-9);
       const bin = it.rate / k;
-      // 生产者每满一条带切一刀，各条带实际的流量累计到 edges，消费者按 edges 切（黄棒 30 的铁块 1230/分一条带，21 / 20 / 21 台）。
-      // 切在第几台：等分点前后 4 台里，挑累计流量正好落在消费者整台边界上的（差最小；一样时离等分点近、台数少的）——
-      // 引力矩阵 180 的铁块等分是 22.5 台，四舍五入 23 台（1380/分）时消费者凑不出（电动机 45/分一台），21 台（1260）正好
+      // 各条带实际的流量累计到 edges，消费者按 edges 切。生产者切在第几台：等分点前后 4 台里，挑累计流量正好落在消费者整台边界上的
+      // （差最小；一样时离等分点近、台数少的），四舍五入的台数常让消费者凑不出整台
       const pg = graph.byId.get(it.producer);
       const p = it.perFactory;
       const consumerGap = (edge) => {
@@ -278,7 +273,7 @@ export function spectralSnake(graph, R) {
   return seq;
 }
 
-/** 按层排序（和 master 的折行初始解一样：最长路径分层，同层按原来的先后） */
+/** 按层排序（和主干内核的折行初始解一样：最长路径分层，同层按原来的先后） */
 export function layeredOrder(graph) {
   const L = layers(graph);
   return graph.groups
@@ -289,7 +284,7 @@ export function layeredOrder(graph) {
 
 /**
  * 供电缝（电力感应塔时才有）：熔炉、化工厂、对撞机、研究站一台挨一台排时中间没有空列（制造台间距 4、本体 3，自带一列），
- * 长长一段排满，旁边通道又铺满了带，电塔没处放（引力矩阵 180 塔：41 处够不着电）。打开供电缝的组，行里每 G 台留 1 列空列，
+ * 长长一段排满，旁边通道又铺满了带，电塔没处放。打开供电缝的组，行里每 G 台留 1 列空列，
  * 和相邻的块之间也留 1 列，塔放在缝里。G 取最大的「每台中心离两边的缝都不超过 6 格」（塔覆盖 7.96 格，留出分拣器上下的余量）：
  * 熔炉 4、化工厂 2、对撞机 2、研究站 2。自带空列的组返回 0（不用缝）
  */
@@ -313,31 +308,25 @@ export const BAY = 8;
 
 /**
  * 排版：seq 依次铺开（第 k 组 count 台、每台占 pitch 列，每段末尾多 trailing 列），每行宽不超过它的目标宽度，
- * 动态规划挑断行的位置：每行空出来的列数平方和 + 每断开一个组 SPLIT_COST，合计最小（只有一台都放不下时那一行照放）。
+ * 动态规划挑断行的位置（代价见文件开头，SPLIT_COST；只有一台都放不下时那一行照放）。
  * 目标宽度一般是 W；bays（站位，[{ r, left }]）盖到的行少 BAY 列，左端的站位再给那行最左一块加 BAY 列空列。
- * 返回 { rows, blocks, pads }：奇数行反过来铺（蛇形），奇数行最左那块右移半个工厂（上下两行的分拣器一开始就错开，同 master 的折行）。
- * prevDp：上一次断行的 dp（typeset 返回的，它记着自己是哪条队、行宽、站位、供电缝算的），有就给增量断行当缓存（dpCache）
+ * 返回 { rows, blocks, pads }：奇数行反过来铺（蛇形），奇数行最左那块右移半个工厂（上下两行的分拣器一开始就错开，同主干内核的折行）。
+ * prevDp：上一次断行的 dp（typeset 返回的），有就给增量断行当缓存（dpCache）
  */
 export function typeset(graph, seq, W, caps = null, bays = null, gaps = null, prevDp = null) {
   const I = seqInfo(graph, seq, caps, gaps);
   const cache = dpCache(I, W, bays, gaps, seq, prevDp);
   const { cuts, cost, prev: back, S } = breakRows(I, W, bays, cache);
-  // dp：断行动态规划的数组（cost / prev）和它的规格，给下一步增量断行当缓存（dpCache / breakRows）。
-  // cost / prev / N / S 可枚举：排版等价时（同一 seq、W、站位、供电缝）它们逐字一样，deepEqual 照样成立
-  // （test/typeset.test.js 比 gaps=[] 和没 gaps）。缓存校验用的 W / bays / gaps 和算它的队 seq 设成不可枚举：deepEqual 不看、
-  // keep() 不抄、stateMemo.key() 不读；可枚举才能跟着邻域里的 `...typeset(...)` 展开传下去
+  // dp：断行动态规划的数组（cost / prev）和规格，给下一步增量断行当缓存（dpCache）。缓存校验用的 W / bays / gaps 和算它的队 seq 设成不可枚举：
+  // deepEqual（test/typeset.test.js 比 gaps=[] 和没 gaps）不看、keep() 不抄、stateMemo.key() 不读；可枚举才能跟着邻域里的 `...typeset(...)` 展开传下去
   const dp = { cost, prev: back, N: I.N, S };
   Object.defineProperties(dp, { W: { value: W }, bays: { value: bays }, gaps: { value: gaps }, seq: { value: seq } });
   return { ...buildRows(graph, I, cuts, bays, gaps), cuts, dp };
 }
 
 /**
- * 增量断行能不能抄前缀：全局动作（换两组、挪一组、反转一段、相邻对调）只改队 seq，改动点之前的单元一字不变，
- * 所以机器序 grp[0..P0) 不变（P0 = 第一个变了的单元 m 的起始台号 start[m]）。dp：上一次断行的 dp，拿它记着的队 dp.seq 比
- * （局部重排出来的状态带的是祖先的 dp，比的就是祖先的队；队都不原地改，见 typesetNeighbor）。
- * 只有行宽 W、站位 bays、供电缝 gaps 都没变（dp 记的和这次同引用——全局动作传的就是 st.bays / st.gaps 原引用，
- * 站位、供电缝动作新建了数组自然不同引用）、台数一致时才抄；返回 { cost, prev, P0 } 或 null（不满足从头算）。
- * 宽度动作改了 W → 不同引用 → null，照旧从头算
+ * 增量断行能不能抄前缀：拿上一次断行的 dp 记着的队 dp.seq 比，改动点之前的机器序 grp[0..P0) 不变（局部重排出来的状态带的是祖先的 dp；
+ * 队都不原地改）。行宽 W、站位 bays、供电缝 gaps 和 dp 记的同引用、台数一致时才抄；返回 { cost, prev, P0 } 或 null（从头算）
  */
 function dpCache(I, W, bays, gaps, seq, dp) {
   if (!dp || dp.W !== W || dp.bays !== bays || dp.gaps !== gaps || dp.N !== I.N) return null;
@@ -361,9 +350,8 @@ function seqInfo(graph, seq, caps, gaps) {
   // 一块最多几台：运力（caps）和供电缝（gaps 里的组每 G 台一块，块之间留 1 列）取小的
   const gap = gs.map((g) => (gaps?.includes(g.id) ? gapChunk(g) > 0 : false));
   const cap = gs.map((g, k) => Math.min(caps?.get(g.id) ?? Infinity, gap[k] ? gapChunk(g) : Infinity));
-  // 断行扫描每台都要读的几何先按单元下标抄成数组（值就是原来每台现算的那几个式子，不取整），扫描里不再读 gs[k].pitch 这些属性。
-  // chunk：行内另起一块时加的列数（trailing + 开缝的 1 列）。用 new Array 逐个填、不用 map：用 map 时断行的循环反复因 wrong map
-  // 去优化（实测几百次，推断是 map 造出的数组元素种类不固定），这样和改前一样只有十几次；换成 Float64Array 实测更慢
+  // 断行扫描每台都要读的几何先按单元下标抄成数组，扫描里不再读 gs[k].pitch 这些属性。chunk：行内另起一块时加的列数（trailing + 开缝的 1 列）。
+  // 用 new Array 逐个填、不用 map：用 map 时断行的循环反复因 wrong map 去优化（推断是 map 造出的数组元素种类不固定）；Float64Array 更慢
   const n = gs.length;
   const pitch = new Array(n);
   const trail = new Array(n);
@@ -373,8 +361,7 @@ function seqInfo(graph, seq, caps, gaps) {
     trail[k] = gs[k].trailing;
     chunk[k] = gs[k].trailing + (gap[k] ? 1 : 0);
   }
-  // 倒数计数（scanRow / breakRows 代替每台一次 run % cap[k]）只在 cap 都是正整数（安全整数内，减一是精确的）或 +Infinity 时和取模逐字一致：
-  // blockCaps 给的是 Math.max(1, Math.floor(·))、gapChunk 是 1~64、都不限时是 Infinity，正常就这两种；有别的值照旧取模
+  // 倒数计数（见 scanRow）只在 cap 都是正整数（安全整数内）或 +Infinity 时和取模一致，blockCaps、gapChunk 给的就是这样；有别的值照旧取模
   const steady = cap.every((c) => c === Infinity || (Number.isSafeInteger(c) && c >= 1));
   const start = [];
   let N = 0;
@@ -401,11 +388,8 @@ const rowTarget = (W, bays, r) => {
 /**
  * 从第 p 台起铺一行（目标宽 Wt），逐台调 visit(q, slack)（这一行铺到第 q 台为止），宽度规则见 typeset 的说明：
  * 换组加 trailing、开缝的组和邻块之间加 1 列、超过一块的运力或缝距行内另起一块。一台都放不下时只报那一台。
- * breakRows 为省掉每台一次闭包把这段扫描内联了进去（按单元分了两层，见那里），两处的宽度算法必须一致，改一处要同步改另一处；breakWindow 还在调这里。
- * 行内另起一块原来是 run % cap[k] === 0（run：这组在这一行已经排了几台，换组时归 0），每台一次取模。
- * steady（cap 都是正整数或 +Infinity）时改成倒数计数 left：换组时置成 cap[k]，同组每台先减一，减到 0 就另起一块、
- * 再置回 cap[k]。同组第 i 台（i ≥ 1，第 0 台走换组）减到 0 正好是 i = cap、2cap…，就是 i % cap === 0；cap = Infinity 时
- * Infinity − 1 还是 Infinity，永远不到 0，原来 i % Infinity = i 也只在 i = 0 时为 0（那台走的是换组），所以两边都从不另起
+ * breakRows 为省掉每台一次闭包把这段扫描内联了进去，两处的宽度算法必须一致，改一处要同步改另一处；breakWindow 还在调这里。
+ * 行内另起一块是 run % cap[k] === 0，steady 时换成等价的倒数计数 left（换组时置成 cap[k]，减到 0 另起一块、再置回）
  */
 function scanRow(I, p, end, Wt, visit) {
   const { pitch, trail, chunk, gap, cap, grp, steady } = I;
@@ -434,18 +418,12 @@ function scanRow(I, p, end, Wt, visit) {
 
 /**
  * 全局断行（动态规划）：返回每行的 [起, 止) 台号，连同 dp 的 cost / prev / S（给下一步当增量缓存）。
- * cache（dpCache 给的 { cost, prev, P0 } 或 null）：P0 之前的机器序没变 → cost / prev 对 q ≤ P0 和上次逐字一样，直接抄；
- * q > P0 重算。外层循环不从 p = 0 起，从 p_start 起：p < p_start 的那一行连 P0 都够不到，松弛不到 q > P0。
- * p_start = 最小的 p 使 width(p..P0) ≤ W——这里从 P0 往前累加 pitch（真宽度的下界，少算 trailing / 缝只会让 p_start 更小、
- * 多算几个 p，结果不变）一超过 W 就停。进入 q ≤ P0 的松弛重算出和缓存一样的值，严格小于不覆盖、prev 不变；进入 q > P0 的
- * 来自和原来同样的一批 p、同样的先后，所以 cost / prev 逐字一样，回溯出的 cuts 一样。scanRow 的扫描在这里内联（省掉每台一次闭包），
- * 用的是倒数计数（见 scanRow）；cap 不是 steady 时照旧调 scanRow 走取模。内联里只把不变的量提出来：几何读 I 的数组、
- * 同一单元的 pitch / cap 和止于第几台提到单元外、prev 要记的 p·S + r 提到行外、at = q·S + to 每台加 S（都是整数）；
- * width 的累加先后、slack、c0 + slack² + split 的加法先后、严格小于（一样的不覆盖）和两处 break 都照原样，所以每个 cost[at] / prev[at] 逐字一样
+ * 有 cache（dpCache）时 q ≤ P0 的 cost / prev 直接抄，外层循环从还够得着 P0 的那台起（从 P0 往前累加 pitch 当宽度下界），结果和从头算一样。
+ * scanRow 的扫描在这里内联（省掉每台一次闭包，宽度累加、加法先后、严格小于和 break 都必须和 scanRow 一样）；cap 不是 steady 时照旧调 scanRow 走取模
  */
 function breakRows(I, W, bays, cache = null) {
   const { N, pitch, trail, chunk, gap, cap, grp, stop, steady } = I;
-  // 行号状态：0..nb−1 是第几行，nb 是第 nb 行及以后（都按 W）。没有站位时只有一个状态，和不分行号一模一样
+  // 行号状态：0..nb−1 是第几行，nb 是第 nb 行及以后（都按 W）。没有站位时只有一个状态
   const nb = bays?.length ? Math.max(...bays.map((b) => b.r)) + 2 : 0;
   const S = nb + 1;
   const Wr = new Float64Array(S).fill(W);
@@ -477,9 +455,8 @@ function breakRows(I, W, bays, cache = null) {
         relaxScan(I, p, Wt, c0, split, cost, prev, S, to, from);
         continue;
       }
-      // 内联 scanRow（宽度规则和 scanRow 必须一致；一台都放不下时只报那一台），按单元分两层走：外层每个单元一次（换组：加 pitch、
-      // trailing + 缝，倒数计数置成 cap[k]），内层同单元的后面几台（加 pitch，倒数到 0 再加 chunk）。逐台的先后、每台往 width 加的数
-      // 和先后都和 scanRow 一样，只是单元内不再每台查 grp、比 k !== last；没有台的单元（stop[k] < q）跳过，不算换组（scanRow 里碰不到它）
+      // 内联 scanRow（宽度规则必须一致），按单元分两层走：外层每个单元一次（换组：加 pitch、trailing + 缝，倒数计数置成 cap[k]），
+      // 内层同单元的后面几台（加 pitch，倒数到 0 再加 chunk），单元内不再每台查 grp。没有台的单元（stop[k] < q）跳过，不算换组（scanRow 里碰不到它）
       let width = 0;
       let last = -1;
       let at = p * S + to;
@@ -523,8 +500,8 @@ function breakRows(I, W, bays, cache = null) {
 }
 
 /**
- * breakRows 的兜底：cap 里有正整数和 +Infinity 以外的值（blockCaps / gapChunk 给不出，防万一）时，从第 p 台起的一行照旧用 scanRow
- * 的取模扫，松弛和 breakRows 的内联一样。单独成函数：闭包写在 breakRows 里会把 cost、S 这些变量挪进上下文，内联的循环跟着变慢
+ * breakRows 的兜底：cap 里有正整数和 +Infinity 以外的值（防万一）时，从第 p 台起的一行照旧用 scanRow 的取模扫。
+ * 单独成函数：闭包写在 breakRows 里会把 cost、S 这些变量挪进上下文，内联的循环跟着变慢
  */
 function relaxScan(I, p, Wt, c0, split, cost, prev, S, to, from) {
   scanRow(I, p, I.N, Wt, (q, slack) => {
@@ -621,7 +598,6 @@ function buildRows(graph, I, cuts, bays, gaps) {
   return { rows, blocks, pads };
 }
 
-/** 行宽的范围：最宽那组两台放得下；限宽时不超过上限 */
 /**
  * 行宽的范围：最宽那组两台放得下；限宽时不超过上限。
  * aspect（目标长宽比，routeOptions.aspectTarget，比如 3）：一行连通道约 6.5 格高，面积约 总宽 × 6.5，宽 ÷ 长 = aspect 时
@@ -661,8 +637,7 @@ export function typesetStates(graph, usable = null, caps = null, stations = 0, g
   const spectral = expand(spectralOrder(graph));
   const seqs = [spectral, spectral.slice().reverse(), expand(layeredOrder(graph))];
   const widths = [];
-  // 行数最多试到 12，大线再往上加到「3:1 时大约几行」+ 4（一行连通道约 6.5 格高：3:1 时 总宽 ÷ r = 3 × 6.5 × r）：
-  // 引力矩阵 360 塔 12 行时行宽约 400、外框 6.6:1，试到 20 行才够得着 3:1。考卷 6 条、放大 3 倍都还是 12，初始解不变
+  // 行数最多试到 12，大线再往上加到「3:1 时大约几行」+ 4（一行连通道约 6.5 格高：3:1 时 总宽 ÷ r = 3 × 6.5 × r）：大线 12 行时外框还是长条
   const rMax = Math.max(12, Math.ceil(Math.sqrt(total / 19.5)) + 4);
   for (let r = 1; r <= rMax; r++)
     for (const slack of [0, 4]) {
@@ -767,9 +742,8 @@ function verticalPartner(graph, st, bid, rand) {
 
 /**
  * 局部重排：挑一行（一半挑惩罚记下的块所在的行），连上下各一行共 2~3 行当窗口，只重新排列整个落在窗口里的单元
- * （对调两个、挪一个、反转一段），再只在窗口里断行、行数不变——窗口外的行一字不动。全局的动作每一步都会让后面整张重新断行，
- * 大线上低温细修时几乎每步都把图搅乱；这个动作是真正的「局部」。窗口里排不下（总宽变了）或没有可动的单元时返回 null。
- * 排出来的不是这条队的全局断行，没有它自己的 dp；带上 st 的 dp（记着算它的那条祖先的队），下一个全局动作拿它抄前缀，不用整张重算
+ * （对调两个、挪一个、反转一段），再只在窗口里断行、行数不变，窗口外的行一字不动（全局的动作每一步都让后面整张重新断行，低温细修时把图搅乱）。
+ * 窗口里排不下或没有可动的单元时返回 null。排出来的不是这条队的全局断行，带上 st 的 dp（祖先的），下一个全局动作拿它抄前缀
  */
 function localMove(graph, st, rand, hot, caps) {
   const cuts = st.cuts;
@@ -827,14 +801,14 @@ function localMove(graph, st, rand, hot, caps) {
 /**
  * 排版状态的邻域：换两组（三成，其中一半是竖着换：和上下相邻那行里横向重叠的一块对调）、把一组挪到别处（三成）、反转一段（两成）、
  * 相邻两组对调（一成）、行宽加减 1~6 列（一成）。
- * 有惩罚时一半挑和惩罚有关的组下手（hot：惩罚记下的块，同 master）。
+ * 有惩罚时一半挑和惩罚有关的组下手（hot：惩罚记下的块，同主干内核）。
  * stations（边缘放站时）：先抽一个数，一成半的动作改站位（bayNeighbor）；gapsOn（电力感应塔时）：再抽一个数，5% 的动作开关供电缝
- * （gapNeighbor）；再抽一个数，一成到六成（随退火进度）先试局部重排（localMove，窗口外的行不动）；其余照上面的比例。站位、供电缝跟着状态走
+ * （gapNeighbor）；再抽一个数，一成到六成（随退火进度）先试局部重排（localMove）；其余照上面的比例。站位、供电缝跟着状态走
  */
 export function typesetNeighbor(graph, st, rand, hot = null, usable = null, caps = null, stations = 0, gapsOn = false, aspect = null, progress = null) {
   if (stations > 0 && rand() < 0.15) return bayNeighbor(graph, st, rand, caps);
   if (gapsOn && rand() < 0.05) return gapNeighbor(graph, st, rand, hot, caps);
-  // 局部重排：窗口外的行一字不动；做不成（窗口里排不下、没有可动的单元）就照常走下面的全局动作。
+  // 局部重排做不成（窗口里排不下、没有可动的单元）就照常走下面的全局动作。
   // 比例随退火进度从一成升到六成（progress：这一轮走到第几成，place.js 传；没有时四成）：高温时多全局搜，低温时多局部细修
   if (rand() < (progress == null ? 0.4 : 0.1 + 0.5 * progress)) {
     const loc = localMove(graph, st, rand, hot, caps);
@@ -888,8 +862,7 @@ export function typesetNeighbor(graph, st, rand, hot = null, usable = null, caps
     const { lo, hi } = widthRange(graph, usable, aspect);
     W = Math.min(hi, Math.max(lo, W + (rand() < 0.5 ? -1 : 1) * (1 + Math.floor(rand() * 6))));
   }
-  // 增量断行：改动点之前的机器序不变，断行 DP 的前缀照抄（dpCache / breakRows）。st.dp 是上一次断行的 dp（局部重排出来的状态带的是祖先的，
-  // dp 记着自己的队；队在这里、局部重排、精修里都是先 slice 再改，不原地改）；宽度动作改了 W、站位 / 供电缝动作换了引用时，dpCache 自己会判出不能用、从头算
+  // 增量断行：st.dp 是上一次断行的 dp，前缀能抄就抄（见 dpCache）；队在这里、局部重排、精修里都是先 slice 再改，不原地改
   if (st.bays || st.gaps) return { seq, W, ...(st.bays ? { bays: st.bays } : {}), ...(st.gaps ? { gaps: st.gaps } : {}), ...typeset(graph, seq, W, caps, st.bays, st.gaps, st.dp) };
   return { seq, W, ...typeset(graph, seq, W, caps, null, null, st.dp) };
 }
@@ -902,8 +875,8 @@ export function typesetNeighbor(graph, st, rand, hot = null, usable = null, caps
 export function* polishCandidates(graph, st, hot, caps, usable = null, gapsOn = false, aspect = null) {
   const seq = st.seq;
   const n = seq.length;
-  // 候选大多是对同一条队 seq 的小扰动、行宽和供电缝不变：先算一份基准 dp（st 是 keep() 过的、没带 dp），各候选抄前缀。
-  // 行宽变了（W2 ≠ st.W）、供电缝换了数组时，dpCache 自己判出不能用、从头算，结果逐字不变
+  // 候选大多是对同一条队 seq 的小扰动、行宽和供电缝不变：先算一份基准 dp（st 是 keep() 过的、没带 dp），各候选抄前缀
+  // （行宽、供电缝变了的 dpCache 判出不能用、从头算）
   const base = typeset(graph, seq, st.W, caps, st.bays, st.gaps);
   const make = (s2, W2, gaps2 = st.gaps) => ({ seq: s2, W: W2, ...(st.bays ? { bays: st.bays } : {}), ...(gaps2 ? { gaps: gaps2 } : {}), ...typeset(graph, s2, W2, caps, st.bays, gaps2, base.dp) });
   const { lo, hi } = widthRange(graph, usable, aspect);

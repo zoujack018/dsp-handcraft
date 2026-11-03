@@ -1,8 +1,7 @@
 // 高架只保留在需要跨越的地方。沿既有走线降低高度，不新增绕路来抬高占用率。
 import { chainTiles } from '../emit/blueprint.js';
 import { sprayGuards } from './layout/elevation.js';
-import { RAMP_MAX_DZ, OVERPASS_Z, OVERPASS_ZMAX } from '../gamedata.js';
-import { DEFAULTS } from './route.js';
+import { RAMP_MAX_DZ } from '../gamedata.js';
 import { portRays } from './layout/shared.js';
 
 const key = (x, y, z = 0) => `${x},${y},${z}`;
@@ -10,42 +9,31 @@ const key = (x, y, z = 0) => `${x},${y},${z}`;
 export const GROUND_PER_BELT = 4;
 
 /**
- * 变层税（routeOptions.groundTax，默认关，细档开）：落地时一段高架变层越少越好，最好只在两头各变一次，不在层之间来回窜。
- * 没开时照旧（每格越低越便宜、没有变层次数的代价，一段 0→L→0 常被压成 0→2→5→1→0 这样的台阶，或半路落地再升起）。
+ * 变层税（routeOptions.groundTax，默认关，细档开）：落地时一段高架变层越少越好，最好只在两头各变一次，不在层之间来回窜
+ * （不开时每格越低越便宜、没有变层次数的代价，一段 0→L→0 常被压成 0→2→5→1→0 这样的台阶，或半路落地再升起）。
  * 开了以后每段沿原来的平面路径按下面的代价挑高度剖面（越小越好）：
- *   水平走一格  1 + taxAir·[z > 0] + taxHeight·max(0, z − 这一格最低能走的层)；最低能走的层：桥段在熔炉、制造台头顶是 OVERPASS_Z，别处 1。
- *               线性超高税（routeOptions.heightTax，搜索打分用，layout/score.js）也开着时，空中每格另加
- *               heightTopWeight·max(0, z − heightTopFrom + 1)（和打分里同一个第 5 层起的附加项，免得落地把带子往第 5 层上推）
+ *   水平走一格  1 + taxAir·[z > 0] + taxHeight·max(0, z − 这一格最低能走的层（第 1 层））。
  *   一次变层    同一格里一整叠单调的升或降（z → z′，中间每层都要空着、只在直行的格子里）：
  *               (1 + taxNode)·|z′ − z| + (两头都在空中 ? taxMid : taxGround)，这段第 k 次变层（k ≥ 3）再加 taxRepeat·(k − 2)。
  *               两头从地面升起、落回地面也算；同一格里不连着变两次（一叠就是一次）
- * 带子数已经在代价里（每格、每节各 1），不再用 GROUND_PER_BELT；按同一套代价，比原来那条路严格便宜才换
+ * 带子数已经在代价里（每格、每节各 1），不用 GROUND_PER_BELT；按同一套代价，比原来那条路严格便宜才换
  */
 export const GROUND_TAX = { taxGround: 2, taxMid: 16, taxNode: 1, taxRepeat: 24, taxAir: 0.3, taxHeight: 0.4 };
 /** 一段最多记到第几次变层（再往后不考虑：第 k 次另加 taxRepeat·(k − 2)，十几次早就不划算） */
 const TAX_CHANGES = 12;
 
 /**
- * routeOptions（或同样平铺的选项）→ 高架落地的选项：groundTax 没开时 null（照旧落地）。考卷的 ro.taxNode=1 会解析成 true，参数一律按数取。
- * heightTax 也开着时多带 heightTax、heightTopFrom、heightTopWeight（没写的取 route.js 的 DEFAULTS）；没开时没有这几项
+ * routeOptions（或同样平铺的选项）→ 高架落地的选项：groundTax 没开时 null（不加变层税）。ro.taxNode=1 这种写法可能解析成 true，参数一律按数取。
  */
 export function groundOptions(ro) {
   if (!ro?.groundTax) return null;
   const o = { groundTax: true };
   for (const [k, v] of Object.entries(GROUND_TAX)) o[k] = ro[k] == null ? v : Number(ro[k]);
-  if (ro.heightTax) {
-    o.heightTax = true;
-    for (const k of ['heightTopFrom', 'heightTopWeight']) o[k] = ro[k] == null ? DEFAULTS[k] : Number(ro[k]);
-  }
   return o;
 }
 
-/** 变层税：水平走进第 z 层的一格（need：这一格最低能走的层）；超高税开着时空中每格再加第 heightTopFrom 层起的附加项 */
-export const taxStep = (z, need, tax) => {
-  if (!(z > 0)) return 1;
-  const c = 1 + tax.taxAir + tax.taxHeight * Math.max(0, z - need);
-  return tax.heightTax ? c + tax.heightTopWeight * Math.max(0, z - tax.heightTopFrom + 1) : c;
-};
+/** 变层税：水平走进第 z 层的一格（need：这一格最低能走的层） */
+export const taxStep = (z, need, tax) => (z > 0 ? 1 + tax.taxAir + tax.taxHeight * Math.max(0, z - need) : 1);
 /** 变层税：同一格里从 z 升降到 nz，这是这段第 k 次变层 */
 export const taxChange = (z, nz, k, tax) => (1 + tax.taxNode) * Math.abs(nz - z) + (Math.min(z, nz) > 0 ? tax.taxMid : tax.taxGround) + (k >= 3 ? tax.taxRepeat * (k - 2) : 0);
 
@@ -120,7 +108,7 @@ export function taxProfile(n, max, z0, z1, free, straight, need, tax) {
 
 /**
  * 一串格子 [x, y, z]（头尾是段尾的 before、段首的 after）按变层税的代价，和 taxProfile 同样的顺序逐项累加
- * （同一条路两边算出来一字不差）。needAt(x, y)：这一格最低能走的层。同一格里一段单调的升或降算一次变层
+ * （同一条路两边算出来一样）。needAt(x, y)：这一格最低能走的层。同一格里一段单调的升或降算一次变层
  */
 export function taxCost(cells, needAt, tax) {
   let cost = 0;
@@ -155,10 +143,10 @@ export function taxCost(cells, needAt, tax) {
 }
 
 /**
- * opts：groundOptions 的结果，或同样平铺的 routeOptions（{ groundTax, taxGround, … }）；不传或 groundTax 没开时照旧落地。
+ * opts：groundOptions 的结果，或同样平铺的 routeOptions（{ groundTax, taxGround, … }）；不传或 groundTax 没开时不加变层税。
  * 只读写布局本身，外面拿一份布局 structuredClone 直接调也行
  */
-export function groundRoutes(L, opts = null, busGround = false) {
+export function groundRoutes(L, opts = null) {
   const tax = groundOptions(opts);
   const occupied = new Set();
   const solid = new Set();
@@ -167,18 +155,6 @@ export function groundRoutes(L, opts = null, busGround = false) {
     for (const cx of p.centers) for (let x = cx - hw; x <= cx + hw; x++) for (let y = L.rowCy[p.row] - p.g.bodyBelow; y <= L.rowCy[p.row] + p.g.bodyAbove; y++) solid.add(key(x, y));
   }
   for (const st of L.stations || []) for (let dx = -3; dx <= 3; dx++) for (let dy = -3; dy <= 3; dy++) solid.add(key(st.x + dx, st.y + dy));
-  // 桥（routeOptions.bridges）：熔炉、制造台的块（整段 x0..x1，含制造台之间的窄缝，和 layout/positions.js 选列时一样）本体那几行的格子。
-  // 桥段（leg.bridge）从这里过的格子只能留在原来那一层（第 4 层以上），窄缝里也不落地（放不下带子）；别处照常落地，
-  // 半路落地的，到工厂头顶前要再升回原来那一层。没有桥段时不建
-  let over = null;
-  if (L.legs.some((l) => l.bridge)) {
-    over = new Set();
-    for (const p of L.pos.values()) {
-      if (p.g.kind !== 'smelter' && p.g.kind !== 'assembler') continue;
-      const cy = L.rowCy[p.row];
-      for (let x = p.x0; x <= p.x1; x++) for (let y = cy - p.g.bodyBelow; y <= cy + p.g.bodyAbove; y++) over.add(key(x, y));
-    }
-  }
   for (const s of L.sorterList) {
     const p = L.pos.get(s.bid);
     const edge = L.rowCy[p.row] + (s.side === 'top' ? p.g.edgeAbove : -p.g.edgeBelow);
@@ -200,7 +176,7 @@ export function groundRoutes(L, opts = null, busGround = false) {
   for (const l of L.legs) {
     if (!l.cells.length) continue;
     if (l.spray) continue; // 喷涂机骑在这截高架上（layout/belts.js 的 legOut）：窗口那几格要在同一层直走，这段不落地
-    if (l.bus != null && !busGround) continue; // 侧边总线（layout/ports.js）整条留在高架上，几条并排走得整齐（routeOptions.busGround 开着时照常落地）
+    if (l.bus != null) continue; // 侧边总线（layout/ports.js）整条留在高架上，几条并排走得整齐
     const ch = L.chains.find((c) => c.parts.some((p) => p.leg === l.id));
     if (!ch) continue;
     const main = chainTiles(L, ch).main;
@@ -234,16 +210,14 @@ export function groundRoutes(L, opts = null, busGround = false) {
     const n = path.length * levels;
     const dist = new Float64Array(n).fill(Infinity);
     const prev = new Int32Array(n).fill(-1);
-    const bridgeZ = over && l.bridge ? l.level : 0; // 桥段从工厂头顶过的那几格只能在这一层（变层税开着时放宽成第 OVERPASS_Z~OVERPASS_ZMAX 层）
     const free = (i, z) => {
       const [x, y] = path[i];
       if ((i === 0 && z === before[2]) || (i === path.length - 1 && z === after[2])) return true;
-      if (bridgeZ > 0 && over.has(key(x, y))) return (tax ? z >= OVERPASS_Z && z <= OVERPASS_ZMAX : z === bridgeZ) && !occupied.has(key(x, y, z));
       return !occupied.has(key(x, y, z)) && !solid.has(key(x, y));
     };
     if (tax) {
       // 变层税：按同一套代价算原来那条路（0→L→0），动态规划的结果严格更便宜才换
-      const needAt = (x, y) => (bridgeZ > 0 && over.has(key(x, y)) ? OVERPASS_Z : 1);
+      const needAt = () => 1;
       const r = taxProfile(path.length, max, before[2], after[2], free, straight, path.map((p) => needAt(p[0], p[1])), tax);
       if (r && r.cost < taxCost([before, ...l.cells, after], needAt, tax)) {
         const cells = r.steps.slice(1, -1).map(([i, z]) => [path[i][0], path[i][1], z]);

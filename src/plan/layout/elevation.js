@@ -1,4 +1,4 @@
-// 高架：每段高架的格子、逐段分配高度（可请出重排）、升降落成原地竖直的一叠、路网统计
+// 高架：每段高架的格子、逐段分配高度、升降落成原地竖直的一叠、路网统计
 import { RAMP_MAX_DZ } from '../../gamedata.js';
 import { gk, line, portRays } from './shared.js';
 import { solveLevels, toCsr } from './levels.js';
@@ -55,7 +55,7 @@ function atScratch(n) {
 }
 
 // 只有高度变的段的平面格号（水平部分 pb、升降那一叠 ps、碰到固定东西的那几格）都依次排在这一个按线程复用的缓冲里，
-// 每段只记开头和个数（不再每段各开几个数组）。每次 liftLegs 从头用起；用满了换一个两倍大的（旧的内容抄过去）
+// 每段只记开头和个数。每次 liftLegs 从头用起；用满了换一个两倍大的（旧的内容抄过去）
 let geoBuf = new Int32Array(1024);
 let geoTop = 0;
 const geoPush = (v) => {
@@ -67,10 +67,8 @@ const geoPush = (v) => {
   geoBuf[geoTop++] = v;
 };
 
-// 两段之间的约束（不能同层 neq、必须更高 above）：原来每段一个 Set（n ≤ 512 时再用 n × n 的戳表挡掉重复的 add），
-// 现在按原来 add 的先后记成边（行 = 哪一段的表，值 = 对面那段），加完用 levels.js 的 toCsr 按行排成 CSR 交给 solveLevels。
-// toCsr 同一行按记下的先后、重复的只留第一次——和往 Set 里 add 一样（已有的再 add 不变，先后也不变），
-// 所以每行的元素和遍历顺序跟原来的 Set 一模一样，段数多少都成立，戳表也不要了。缓冲区按线程复用：边用满了换两倍大的，别的不够大才换
+// 两段之间的约束（不能同层 neq、必须更高 above）按加的先后记成边（行 = 哪一段的表，值 = 对面那段），加完用 levels.js 的 toCsr
+// 按行排成 CSR（同一行按记下的先后、重复的只留第一次）交给 solveLevels。缓冲区按线程复用：边用满了换两倍大的，别的不够大才换
 let neqE = new Int32Array(2048); // 第 t 条边：行 neqE[2t]、值 neqE[2t + 1]
 let neqTop = 0;
 let aboveE = new Int32Array(2048);
@@ -118,7 +116,7 @@ function pastY(cells, a, b, x, z) {
   for (let yy = a + st; yy !== b + st; yy += st) cells.push([x, yy, z]);
 }
 
-/** 没有走廊里多走的那一格时 cellsFor 结果的 pre / post：所有结果共用这一个空数组，只读（谁都不往里加） */
+/** cellsFor 结果里没有走廊里多走的那一格时的 pre / post：共用这一个空数组，只读 */
 const NO_CELLS = [];
 /**
  * 升降那一叠：在地面那一端（groundEnd 为 0 是 (x0, y0)，为 1 是 (x1, y1)）的格子上占 1..L−RAMP_MAX_DZ 层（影子格推进 r.shadow），
@@ -133,10 +131,10 @@ function ramp(r, L, x0, y0, x1, y1, groundEnd = 0) {
 }
 
 /**
- * 喷涂机空当（layout/belts.js 的 sprayGap）要护住的格子：别的高架段不许压在候选位置的头顶。
+ * 喷涂机空当（layout/belts.js 的 sprayGap）要护住的格子，别的高架段不许压在候选位置的头顶：
  *   guard2（第 1~2 层让开）：空当里喷涂机候选压着的 4 格——喷涂机身子两层高，取料孔在第 2 层；
  *   guard1（第 1 层让开）：两个取料格候选左右的邻格——增产剂带要从那里在第 1 层横穿进出。
- * 跨过这里的段只能去第 3 层以上（金字塔代价照算），搜索的几何和代价都算上了这块保护区。
+ * 跨过这里的段只能去第 3 层以上（金字塔代价照算）。
  */
 /** 一段喷涂空当的候选格（沿流向最多 4 格；被站列截短时更少）。前两格是取料格候选，骑的位置在取料格下游一格 */
 export function sprayGapCells(s) {
@@ -234,14 +232,12 @@ function makeCellsFor(c) {
   }
   // 结果：cells 水平部分、shadow 升降那一叠的影子格、rise / drop 两头升降的地面格、pre / post 走廊里多走的那一格，
   // varies：退回原地升降（格子里有随层数变长的竖直一叠），形状随层变；其余的段换层只是 z 变了。
-  // 结果对象开头就建好全部字段（不再另造一个 ends 再抄过来），没有 pre / post 时共用一个空数组（只读，没人往里加）
+  // 结果对象开头就建好全部字段，没有 pre / post 时共用 NO_CELLS。格子用 runX（横）、runY（竖）推进，两头升降那一叠用 ramp 记
   const cellsFor = (leg, L) => {
     const cells = [];
     const shadow = [];
     const r = { cells, shadow, rise: null, drop: null, pre: NO_CELLS, post: NO_CELLS, varies: false };
     if (leg.direct) return r;
-    // 沿方向 d 从 a 走到 b 的格子；b 在 a 的反方向时为空（runX 横着走、runY 竖着走，见文件开头）
-    // 升降那一叠在地面那一端的格子上：1..L−RAMP_MAX_DZ 层（RAMP_MAX_DZ = 0 时一直到第 L 层），见 ramp
     if (leg.kind === 'in') {
       const s = segments[leg.to];
       const d = Math.sign(s.entryX - leg.edge) || s.dir;
@@ -258,13 +254,11 @@ function makeCellsFor(c) {
         ramp(r, L, leg.edge, s.y, leg.edge + d, s.y);
       } else if (leg.bus != null) {
         // 侧边总线（layout/ports.js）：口在右边布局外最外那一列，原地升起往里走到自己那一列，沿这一列竖着走到段那一行，再往里走到段首落下。
-        // 排在左边的（busSide 'auto'）镜像：口在左边最外那一列，往里是往右
-        const di = leg.bus < leg.edge ? -1 : 1; // 往里走的方向
         const dy = Math.sign(s.y - leg.py);
-        runX(cells, leg.edge + di, leg.bus, di, leg.py, L);
+        runX(cells, leg.edge - 1, leg.bus, -1, leg.py, L);
         runY(cells, leg.py + dy, s.y, dy, leg.bus, L);
         runX(cells, leg.bus + d, s.entryX - d, d, s.y, L);
-        ramp(r, L, leg.edge, leg.py, leg.edge + di, leg.py);
+        ramp(r, L, leg.edge, leg.py, leg.edge - 1, leg.py);
       } else if (s.entryX === leg.edge) {
         // 段首就在走廊这一列（最靠左的那台工厂紧挨走廊）：沿走廊升起、走到段首前一格、斜坡落下
         const dy = Math.sign(s.y - leg.py);
@@ -385,7 +379,7 @@ function realizeLeg(l, c) {
 function realizeFlat(l, a, L) {
   const cells = a.cells;
   if (!cells.length) {
-    // 没有水平部分（出入口紧挨段首之类）：和以前一样不落升降，格子留空
+    // 没有水平部分（出入口紧挨段首之类）：不落升降，格子留空
     l.cells = cells;
     l.shadow = a.shadow;
     return;
@@ -393,9 +387,8 @@ function realizeFlat(l, a, L) {
   const k = L - RAMP_MAX_DZ;
   const pre = a.pre;
   const post = a.post;
-  // 第 1 层的格子和装它们的数组都是这一段独有的（cellsAt 按段、按层各算一份，落到实处以后别处不再用）：
-  // 落到第 L 层时原地把每格的 z 改成 L，不用再另造一份 [x, y, L]；最终的格子也直接拼在这个数组里——
-  // 开头让出 pre 和升起那一叠的位置（整体往后挪），末尾接上落下那一叠和 post，和另开一个数组依次推进去一模一样
+  // 第 1 层的格子和数组都是这一段独有的（cellsAt 按段、按层各算一份，落到实处以后别处不再用）：原地把每格的 z 改成 L，
+  // 最终的格子也直接拼在这个数组里——开头让出 pre 和升起那一叠的位置（整体往后挪），末尾接上落下那一叠和 post
   const n0 = cells.length;
   if (L !== 1) for (let i = 0; i < n0; i++) cells[i][2] = L;
   const nr = a.rise && k > 0 ? k : 0;
@@ -456,7 +449,7 @@ function roadStats(c) {
     const l = legs[li];
     const cells = l.cells;
     if (!cells?.length) continue;
-    // 竖直走过的列：列号都是整数坐标，和数组 includes 去重一样
+    // 竖直走过的列（列号都是整数，按 === 去重）
     let vx = vxBuf;
     let nv = 0;
     for (let i = 1; i < cells.length; i++) {
@@ -535,31 +528,24 @@ export function liftLegs(c) {
   /**
    * 高架段的节点（不含两端的地面格），按流向排列。这里先按「地面格的下一个节点直接在第 L 层」生成水平部分，
    * 升降的那一叠（地面那一端格子的 1..L 层，RAMP_MAX_DZ = 0 时）记在 shadow 里，分配高度时一并占用；
-   * 分配完再把 shadow 落成真正的一叠竖直带（见下面「升降落到实处」）。升降前后沿同一方向直走，
+   * 分配完再把 shadow 落成真正的一叠竖直带（realizeLeg、realizeFlat）。升降前后沿同一方向直走，
    * 拐弯只在地面或第 L 层上发生，不在升降的那一格拐（和游戏里手动拉的垂直传送带一样）。
    */
   const cellsFor = makeCellsFor(c);
   // 分配高度：先算出两两之间的约束（同格不能同层、压在别人升降叠上必须比它高），交给 levels.js 的 solveLevels，
   // 长的段尽量低、短的段去高层；maxLevel 层里放不下的放到更高的空层（加罚），再不行就记为断开（重罚），绝不重叠。
-  // （2026/10/07 以前是「长的先排、放不下把挡路的请出去重排」，引力矩阵每次都把请出的预算耗光，高层的段也不会再落下来。）
-  // 最高会试到 maxLevel + 24 层，固定乘 16 会把相邻格错误合并。
+  // 最高会试到 maxLevel + 24 层，所以每格按 maxLevel + 25 层编号（固定乘 16 会把相邻格错误合并）。
   const levelStride = opt.maxLevel + 25;
-  // 高架格的归属表：按 (x, y, z) 编成一维下标的 Int32Array（代替 Map），每格存「代际 × 4096 + 段 ID + 2」，
+  // 高架格的归属表：按 (x, y, z) 编成一维下标的 Int32Array，每格存「代际 × 4096 + 段 ID + 2」，
   // 代际不同就当没人占，这样每次 route() 不用清零整张表。退火里 isFree / place 要查几万次，这里是热点。
   const GM = 24; // 四周留的余量（高架可能走到布局外一两格）
   const GH = height + 2 * GM;
   // 右边从最靠外的出入口算起：侧边总线的口在布局外、每条原料带各占一列（layout/ports.js），原料带多的大线能排出去几十列。
-  // 下标只用到 GH，宽只管表开多大，所以没排出去的线一格不变。
-  // 左边从最靠外的总线口算起（busSide 'auto' 时总线可以排在左边布局外，口在 x < 0）：没有排到左边的总线时 xIn 是 0，表和下标都和原来一样
+  // 下标只用到 GH，宽只管表开多大。
   let xOut = xR;
-  let xIn = 0;
-  for (let i = 0; i < legs.length; i++) {
-    const e = legs[i].edge;
-    if (e > xOut) xOut = e;
-    else if (e < xIn && legs[i].bus != null) xIn = e;
-  }
-  const GX = GM - xIn; // x 方向左边留的余量
-  const GW = xOut - xIn + 2 + 2 * GM;
+  for (let i = 0; i < legs.length; i++) if (legs[i].edge > xOut) xOut = legs[i].edge;
+  const GX = GM; // x 方向左边留的余量
+  const GW = xOut + 2 + 2 * GM;
   const grid = ownerGrid(GW * GH * levelStride);
   const G = grid.buf;
   const gen = grid.gen;
@@ -663,11 +649,11 @@ export function liftLegs(c) {
     }
     return { cells, shadow, who };
   };
-  // 快速判断：多数高架段换高度只是 z 变了，路径不变。每段只算一次各格的格号，查某层时加上层号即可。
-  // 形状随不随层变由 cellsFor 直接告诉（varies，只有退回原地升降的那几种），不用再算一遍第 2 层逐格比较。
+  // 快速判断：多数高架段换高度只是 z 变了，路径不变。每段只算一次各格的格号，查某层时加上层号即可
+  // （形状随不随层变看 cellsFor 的 varies，只有退回原地升降的那几种）。
   // pb：水平部分各格的平面格号；ps：升降那一叠的平面格号（去重，按出现顺序）。第 L 层在归属表里的下标是 平面格号 × levelStride + L。
-  // 两串都放在 geoBuf 里（见文件开头），几何里记 geoBuf 里的开头和个数：pb 是 geoBuf[pbOff .. pbOff + pbLen)，ps 同理
-  // 段 ID → 几何。段 ID 就是 legs 的下标：先按段数占满（元素类型从头到尾不变，按 ID 乱序写入也不会变成有洞的数组）
+  // 两串都放在 geoBuf 里，几何里记开头和个数：pb 是 geoBuf[pbOff .. pbOff + pbLen)，ps 同理。
+  // 段 ID → 几何：段 ID 就是 legs 的下标，先按段数占满（按 ID 乱序写入也不会变成有洞的数组）
   geoTop = 0;
   const geoOf = [];
   for (let i = 0; i < legs.length; i++) geoOf.push(null);
@@ -757,16 +743,11 @@ export function liftLegs(c) {
   }
   const name = (l) => graph.items.get(l.itemId).name;
   const top = opt.maxLevel + 24;
-  // 桥段（leg.bridge，竖直那截从熔炉、制造台头顶过）：最低第 bridgeLevel 层，超过 bridgeMaxLevel 层才罚；普通段从第 1 层起、超过 maxLevel 罚。
-  // 桥关着时不读 leg.bridge。记 level 惩罚的两处照原来写在原地（2026/10/19 量过：换成一个共用的小函数，下面分层后那一圈
-  // 每段调一次，bench 的 route() 就慢 10%~35%，原因没查清）
-  const bridgeOn = !!opt.bridges;
-  const lowOf = (l) => (bridgeOn && l.bridge ? opt.bridgeLevel : 1);
-  const capOf = (l) => (bridgeOn && l.bridge ? opt.bridgeMaxLevel : opt.maxLevel);
+  // 记 level 惩罚的两处各写在原地：换成共用的小函数、在下面分层后那一圈每段调一次，route() 会明显变慢（原因没查清）
   const settle = (l, L) => {
     const c = cellsAt(l, L);
     place(l, L, c.cells, c.shadow);
-    const cap = bridgeOn && l.bridge ? opt.bridgeMaxLevel : opt.maxLevel;
+    const cap = opt.maxLevel;
     if (L > cap) addPenalty('level', P.level * (L - cap), `${name(l)} 的高架段和别的高架段撞在一起（${cap} 层都占满了，升到第 ${L} 层）`, itemBids(l.itemId));
   };
   const broken = (l) => {
@@ -775,7 +756,7 @@ export function liftLegs(c) {
     addPenalty('route', P.route * 4, `${name(l)} 的高架段无处可放`, itemBids(l.itemId));
   };
   // 形状随层变的段（退回原地升降之类，很少）先按长的先排、放最低的空层，当成固定的；其余（只有高度变）交给 solveLevels。
-  // 长的先排：按水平格数从多到少的稳定插入排序（一样长的保持原来的先后，和 Array.prototype.sort 的稳定排序同一个结果）
+  // 长的先排：按水平格数从多到少的稳定插入排序（一样长的保持原来的先后）
   const todo = [];
   const todoN = [];
   for (let li = 0; li < legs.length; li++) {
@@ -827,7 +808,7 @@ export function liftLegs(c) {
   for (let i = 0; i < todo.length; i++) {
     const l = todo[i];
     if (geo(l).flat && !l.spray) continue;
-    let L = lowOf(l);
+    let L = 1;
     if (l.spray) {
       while (L <= top && !(isFree(l, L) && winFree(l, L))) L++;
       if (L <= top) {
@@ -844,9 +825,7 @@ export function liftLegs(c) {
   neqTop = 0;
   aboveTop = 0;
   const bad = flat.map((l) => geo(l).dup);
-  // 每个平面格子上有哪些段：水平部分记 2k，升降那一叠记 2k + 1。
-  // 格子按第一次出现的顺序编槽号（逐对加约束的顺序和以前按 Map 插入顺序遍历一样），每槽的段按加入顺序串成链，
-  // 用平面临时表代替以格号为键的 Map 和每格一个小数组
+  // 每个平面格子上有哪些段：水平部分记 2k，升降那一叠记 2k + 1。格子按第一次出现的顺序编槽号，每槽的段按加入顺序串成链
   let nE = 0;
   for (let k = 0; k < n; k++) nE += geo(flat[k]).pbLen + geo(flat[k]).psLen;
   atScratch(nE);
@@ -879,7 +858,7 @@ export function liftLegs(c) {
     for (let i = g.psOff; i < g.psOff + g.psLen; i++) putAt(buf[i], 2 * k + 1);
   }
   const list = atList;
-  // 约束按原来 add 的先后记成边（neq 两边各一条，先 i 行后 j 行），加完排成 CSR
+  // 约束按加的先后记成边（neq 两边各一条，先 i 行后 j 行），加完排成 CSR
   for (let sl = 0; sl < nS; sl++) {
     const m = slotCnt[sl];
     if (m < 2) continue;
@@ -912,7 +891,7 @@ export function liftLegs(c) {
   // 之后每次只查它们。自己走回头路的段哪一层都不行（null）
   const touchOf = [];
   for (let k = 0; k < n; k++) touchOf.push(undefined); // 先占满（元素类型不变），undefined 表示还没挑
-  // 挑出来的那几格也接着排在 geoBuf 里（按原来的先后），记开头和个数
+  // 挑出来的那几格也接着排在 geoBuf 里（先后不变），记开头和个数
   const none = { pbOff: 0, pbLen: 0, psOff: 0, psLen: 0 };
   const touched = (off, len) => {
     for (let i = off; i < off + len; i++) {
@@ -937,17 +916,8 @@ export function liftLegs(c) {
     }
     return t !== null && flatFree(flat[k].id, t.pbOff, t.pbLen, t.psOff, t.psLen, L);
   };
-  // 有桥段时才给每段的最低层、不罚的最高层（关着时不建，solveLevels 照原来的走）
-  let minLevel = null;
-  let maxLevels = null;
-  for (let k = 0; bridgeOn && k < n; k++) {
-    if (!flat[k].bridge) continue;
-    minLevel = flat.map(lowOf);
-    maxLevels = flat.map(capOf);
-    break;
-  }
-  const lv = solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel: opt.maxLevel, top, minLevel, maxLevels, onGreedy: c.elevAsk ?? null, hookCtx: c });
-  if (lv === null) return; // 局部搜索之前那一问拒了（route.js 的 layout() 看 c.elevRejected，这次评估作废）
+  const lv = solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel: opt.maxLevel, top, onGreedy: c.elevAsk ?? null, hookCtx: c });
+  if (lv === null) return; // 局部搜索之前那一问（route.js 的 elevAsk）拒了：route.js 的 layout() 看 c.elevRejected，这次评估作废
   // 只有高度变的段：直接按第 1 层的格子落到分到的层（见 realizeFlat）。之后再没有人查归属表，不用再写
   const isFlat = new Uint8Array(legs.length);
   for (let k = 0; k < n; k++) {
@@ -959,7 +929,7 @@ export function liftLegs(c) {
     }
     isFlat[l.id] = 1;
     l.level = L;
-    const cap = bridgeOn && l.bridge ? opt.bridgeMaxLevel : opt.maxLevel;
+    const cap = opt.maxLevel;
     if (L > cap) addPenalty('level', P.level * (L - cap), `${name(l)} 的高架段和别的高架段撞在一起（${cap} 层都占满了，升到第 ${L} 层）`, itemBids(l.itemId));
   }
 
@@ -976,13 +946,13 @@ export function liftLegs(c) {
 }
 
 /**
- * 不用原地升降（route.js 的 noLift，用户 2026/10/28：最低配置默认没解锁「超级磁场发生器」，蓝图里不能有原地竖直升降）。
- * 每段高架的平面路径照旧（cellsFor 第 1 层的格子），高度改成逐格的剖面：相邻两格最多差 RAMP_STEP（半层）——没解锁时贴得上的坡
- * （docs/game-rules.md 第 38 条）；中间的格子在 0.5 层以上，或者落在空着的地面上（和 plan/ground.js 的落地一个意思，那一步这时不做）。
+ * 不用原地升降（route.js 的 noLift：没解锁「超级磁场发生器」时蓝图里不能有原地竖直升降）。
+ * 每段高架的平面路径照旧（cellsFor 第 1 层的格子），高度改成逐格的剖面：相邻两格最多差 RAMP_STEP（半层），没解锁时贴得上的坡
+ * （game-rules 第 38 条）；中间的格子在 0.5 层以上，或者落在空着的地面上（这时不做 plan/ground.js 的 groundRoutes）。
  * 高度用半层计（第 k 个半层 = z k/2，第 0 个是地面），同一格里两段至少隔一个半层（gamedata.js 的 LEVEL_GAP），这些不能用：
  *   物流站 7×7 的所有高度；分拣器手臂那几格（从带子到工厂边）的地面和 0.5 层（手臂离地约 0.7~1.0 m，0.5 层的带子会穿在一起，推断）；
- *   喷涂空当候选格的地面到 2.5 层、取料格两侧的地面和第 1 层（同 liftLegs 的保护区）；桥段在熔炉、制造台头顶低于第 bridgeLevel 层；
- *   地面上已经有东西的格（地面段、出入口和它们往外留空的那一行、工厂和储物仓本体）；每段两头那一格的 0.5 层留给它自己。
+ *   喷涂空当候选格的地面到 2.5 层、取料格两侧的地面和第 1 层（同 liftLegs 的保护区）；
+ *   地面上已经有东西的格（地面段、出入口和它们往外留空的那一行）；每段两头那一格的 0.5 层留给它自己。
  * 同一格前后两节都和别的段挨着走（同一条边）时，两段的上下不能在这条边上对调（不然在半路交叉）。
  * 排法：长的先排（同 liftLegs），每段在上面这些限制下做一遍动态规划挑剖面：每格每个半层计 RAMP_CELL、每变一次高度计 RAMP_CHANGE
  * （转弯那格变高度再加 RAMP_TURN），尽量低、少起伏。排不下的段算断开（同 liftLegs 的「无处可放」）；最高超过 maxLevel 按超出的层数计 level 罚。
@@ -996,12 +966,11 @@ const RAMP_TURN = 0.5;
 const RAMP_REPAIR = 8;
 const RAMP_RIVALS = 4;
 // rampLegs 的平面表（按线程复用）：每格一个戳，戳不是这一次的就当空着。blk 固定挡住的半层位，occ 已排的段占的半层位，
-// rsv 留给哪一段的 0.5 层（段号 + 1），ovr 桥段要垫高的工厂头顶，head 每格往 +x、+y 两条边上记的段（链表头，条目号 + 1）
+// rsv 留给哪一段的 0.5 层（段号 + 1），head 每格往 +x、+y 两条边上记的段（链表头，条目号 + 1）
 let rpStamp = new Int32Array(0);
 let rpBlk = new Int32Array(0);
 let rpOcc = new Int32Array(0);
 let rpRsv = new Int32Array(0);
-let rpOvr = new Uint8Array(0);
 let rpHead = new Int32Array(0);
 let rpGen = 0;
 // 边上的条目：下一条、哪一段、这条边小格号那头的半层、另一头的半层
@@ -1061,7 +1030,6 @@ export function rampLegs(c) {
     rpBlk = new Int32Array(m);
     rpOcc = new Int32Array(m);
     rpRsv = new Int32Array(m);
-    rpOvr = new Uint8Array(m);
     rpHead = new Int32Array(2 * m);
     rpGen = 0;
   }
@@ -1070,7 +1038,6 @@ export function rampLegs(c) {
   const BLK = rpBlk;
   const OCC = rpOcc;
   const RSV = rpRsv;
-  const OVR = rpOvr;
   const HEAD = rpHead;
   const at = (x, y) => (x < x0 || x > x1 || y < y0 || y > y1 ? -1 : (x - x0) * HH + (y - y0));
   const touch = (i) => {
@@ -1079,7 +1046,6 @@ export function rampLegs(c) {
       BLK[i] = 0;
       OCC[i] = 0;
       RSV[i] = 0;
-      OVR[i] = 0;
       HEAD[2 * i] = 0;
       HEAD[2 * i + 1] = 0;
     }
@@ -1090,8 +1056,7 @@ export function rampLegs(c) {
     touch(i);
     BLK[i] |= m;
   };
-  // 固定挡住的：物流站 7×7 的所有高度；喷涂空当候选格的地面到 2.5 层、取料格两侧的地面和第 1 层；
-  // 分拣器手臂那几格的地面和 0.5 层（下侧的分拣器从带子往上伸到工厂、上侧的往下）；地面上已经有东西的格（地面段、出入口和它们往外留空的那一行）
+  // 固定挡住的（见上面 rampLegs 的说明）；分拣器手臂那几格：下侧的分拣器从带子往上伸到工厂、上侧的往下
   for (const st of stations) for (let dx = -3; dx <= 3; dx++) for (let dy = -3; dy <= 3; dy++) blockAt(st.x + dx, st.y + dy, ALL);
   const guards = sprayGuards(segments, legs, true);
   for (const [x, y] of guards.guard2) blockAt(x, y, 0b111111);
@@ -1110,20 +1075,6 @@ export function rampLegs(c) {
   for (const q of ports) blockAt(q.x, q.y, 1);
   for (const [x, y] of portRays({ ports, width: c.xR + 1 })) if (x >= x0 && x <= x1) blockAt(x, y, 1);
   for (const t of todo) for (const q of [t.r.rise, t.r.drop, ...t.r.pre, ...t.r.post]) if (q) blockAt(q[0], q[1], 1); // 各段两头接地面的那一格、走廊里多走的那一格
-  // 桥段（route.js 的 bridges）：熔炉、制造台本体头顶的格子低于第 bridgeLevel 层不行
-  const lowBits = 2 ** Math.min(K + 1, 2 * (opt.bridgeLevel ?? 4)) - 1;
-  if (opt.bridges) {
-    pos.forEach((p) => {
-      if (p.g.kind !== 'smelter' && p.g.kind !== 'assembler') return;
-      const cy = rowCy[p.row];
-      for (let x = Math.max(p.x0, x0); x <= Math.min(p.x1, x1); x++) for (let y = cy - p.g.bodyBelow; y <= cy + p.g.bodyAbove; y++) {
-        const i = Number.isInteger(x) && Number.isInteger(y) ? at(x, y) : -1;
-        if (i < 0) continue;
-        touch(i);
-        OVR[i] = 1;
-      }
-    });
-  }
   // 每段不随排法变的东西：平面格号、地面那两头、转弯的格；两头那一格的 0.5 层先替它留着（坡从这里起；那一格空着的地面它自己也能用）
   for (const t of todo) {
     const { l, r, n } = t;
@@ -1216,9 +1167,8 @@ export function rampLegs(c) {
     const from = rpFrom;
     cost.fill(INF, 0, n * W);
     const me = t.idx + 1;
-    const bridge = !!l.bridge;
     let k0 = keys[0];
-    let bad = BLK[k0] | OCC[k0] | (RSV[k0] && RSV[k0] !== me ? 0b10 : 0) | (bridge && OVR[k0] ? lowBits : 0);
+    let bad = BLK[k0] | OCC[k0] | (RSV[k0] && RSV[k0] !== me ? 0b10 : 0);
     // 两头接地面那两条边也不能和已排的段对调上下（地面那头在第 0 个半层）
     const edgeOk = (p, q, kp, kq) => {
       edgeOf(p, q);
@@ -1233,7 +1183,7 @@ export function rampLegs(c) {
     for (let k = 0; k <= 1; k++) if (!(bad & (1 << k)) && (t.rise < 0 || edgeOk(t.rise, keys[0], 0, k))) cost[k] = RAMP_CELL * k + (k ? RAMP_CHANGE : 0);
     for (let i = 1; i < n; i++) {
       k0 = keys[i];
-      bad = BLK[k0] | OCC[k0] | (RSV[k0] && RSV[k0] !== me ? 0b10 : 0) | (bridge && OVR[k0] ? lowBits : 0);
+      bad = BLK[k0] | OCC[k0] | (RSV[k0] && RSV[k0] !== me ? 0b10 : 0);
       edgeOf(keys[i - 1], k0);
       const flip = eFlip;
       let e = HEAD[eSlot];
@@ -1377,22 +1327,20 @@ export function rampLegs(c) {
     }
     for (const q of r.post) cells[j++] = q;
     l.cells = cells;
-    const cap = opt.bridges && l.bridge ? opt.bridgeMaxLevel : opt.maxLevel;
+    const cap = opt.maxLevel;
     if (l.level > cap) addPenalty('level', P.level * (l.level - cap), `${name(l)} 的高架段和别的高架段撞在一起（${cap} 层都占满了，升到第 ${l.level} 层）`, itemBids(l.itemId));
   }
   c.roads = roadStats(c);
 }
 
 /**
- * 快速评估（route 的 quick 模式）：高度分配只做「长的先排、第一层不冲突就放」的一遍（不请出重排）。
- * 冲突按平面格子算，和完整算法同一套规则：两段高架经过同一格就不能同层；一段升降那一叠占 1..L 层，
- * 别的段从它上空经过必须更高（反过来，自己从别人的叠上经过必须更高）。排不进 maxLevel 层的按 level 计罚，
+ * 快速评估（route 的 quick 模式）：高度分配只做「长的先排、第一层不冲突就放」的一遍。
+ * 冲突按平面格子算，和完整算法同一套规则（见 levels.js 开头）。排不进 maxLevel 层的按 level 计罚，
  * 两头的约束互相矛盾（必须比对方低又比对方高）时也按多占一层计罚，一段自己走回头路按无处可放计罚。
- * 搜索的全局阶段用它：比完整评估省掉请出重排那部分时间，判断和完整算法基本一致（完整算法多一次请出重排，只会更好）。
+ * 搜索的全局阶段用它：比完整评估（liftLegs）省时间，判断基本一致。
  */
 export function estimateLegs(c) {
   const { P, addPenalty, graph, itemBids, legs, opt } = c;
-  const bridgeOn = !!opt.bridges; // 桥（见 liftLegs）：关着时不读 leg.bridge
   const cellsFor = makeCellsFor(c);
   const paths = []; // { l, r, keys, ends }
   for (const l of legs) {
@@ -1446,8 +1394,7 @@ export function estimateLegs(c) {
   };
   for (const p of paths) {
     const used = new Set();
-    const isBridge = bridgeOn && p.l.bridge === true;
-    let lo = isBridge ? opt.bridgeLevel : 1; // 桥段最低第 bridgeLevel 层（见 liftLegs 的 lowOf）
+    let lo = 1;
     let hi = Infinity;
     for (const k of p.keys) {
       const ls = at.get(k);
@@ -1462,20 +1409,12 @@ export function estimateLegs(c) {
     const w = winOf(p.l);
     let L = lo;
     while (used.has(L) || (w && winBlocked(w, L))) L++;
-    const cap = isBridge ? opt.bridgeMaxLevel : opt.maxLevel;
+    const cap = opt.maxLevel;
     let over = Math.max(0, L - cap);
-    if (L > hi) over += 1; // 两头的约束矛盾：完整算法要靠请出重排才可能放下，按多占一层计
+    if (L > hi) over += 1; // 两头的约束矛盾：按多占一层计
     p.l.level = L;
-    if (isBridge && L !== 1) {
-      // 桥段：水平部分按分到的层落实（别的段这里照旧按第 1 层的格子记，金字塔只数到两头那叠的顶上一格；
-      // 桥段打分按有效层（score.js），第 5 层的桥按第 2 层计金字塔，按第 1 层记格子会少算，和完整分层对不上）
-      const rL = cellsFor(p.l, L);
-      p.l.cells = rL.cells;
-      realizeLeg(p.l, rL);
-    } else {
-      p.l.cells = p.r.cells;
-      realizeLeg(p.l, p.r);
-    }
+    p.l.cells = p.r.cells;
+    realizeLeg(p.l, p.r);
     for (const k of p.keys) {
       if (!at.has(k)) at.set(k, []);
       at.get(k).push({ L, end: p.ends.has(k) });

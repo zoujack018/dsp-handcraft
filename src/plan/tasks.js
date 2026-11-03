@@ -6,8 +6,8 @@ import { buildGraph } from './graph.js';
 import { searchRounds, exactKey } from './place.js';
 import { finishOne, planLine } from './index.js';
 
-// 同一条产线的几份搜索活（同一段里分到这个线程的几轮、没达标接着搜的下一段）共用一张生产图：
-// 图只读，同一张图让 place.js 记下的初始解评估能接着用（那份记录按图认）
+// 同一条产线的几份搜索活（同一段里分到这个线程的几轮、没达标接着搜的下一段）共用一张生产图（只读）：
+// place.js 记下的初始解评估（candsMemo）按图认，同一张图才能接着用
 let graphMemo = null;
 function graphOf(calc) {
   const key = exactKey(calc);

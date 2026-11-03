@@ -282,7 +282,7 @@ export function neighbor(graph, st, rand, usable = null, streets = false, hot = 
     if (j >= i) j++;
     const keepId = list[i];
     const gone = list[j];
-    // 合起来超运力（caps）就不合，换成换行：这一块的料一条带运不过来，注定不可行；大线上合并省下的面积常比超运力的罚分多，退火会收下（2026/10/30）
+    // 合起来超运力（caps）就不合，换成换行：这一块的料一条带运不过来，注定不可行；大线上合并省下的面积常比超运力的罚分多，退火会收下
     if (caps && capMoves && st.blocks[keepId].n + st.blocks[gone].n > caps.get(st.blocks[keepId].gid)) return { ...st, rows: neighborRows(st.rows, rand, hot) };
     const next = removeBlock(st, gone);
     next.blocks[keepId] = { ...st.blocks[keepId], n: st.blocks[keepId].n + st.blocks[gone].n };
@@ -337,7 +337,7 @@ function neighborRows(rows, rand, hot = null) {
 }
 
 /**
- * 参数的逐字键：JSON 分不开的值（undefined、NaN、±Infinity、−0）单独标出来，有函数时返回 null（不记）。
+ * 参数的精确键：JSON 分不开的值（undefined、NaN、±Infinity、−0）单独标出来，有函数时返回 null（不记）。
  * 键一样，参数对 route() 来说就一模一样（键的先后不同只会算成不一样，少记几次，不会记错）
  */
 export function exactKey(value) {
@@ -351,23 +351,21 @@ export function exactKey(value) {
   return ok ? key : null;
 }
 
-// 初始解的评估记最近一份（同一张图、逐字一样的走线参数和初始排法）：没达标接着搜时换种子不换参数、多线程合并各轮时，
-// 不用再把十几个初始解各算一遍。route() 是确定的，记下的结果和重算的一模一样；初始解和结果都只读，不会被改
+// 初始解的评估记最近一份（同一张图、一样的走线参数和初始排法，键见 exactKey）：没达标接着搜时换种子不换参数、多线程合并各轮时，
+// 不用再把十几个初始解各算一遍。route() 是确定的，记下的和重算的一样；初始解和结果都只读
 let candsMemo = null;
 
 /**
  * 搜索的准备：初始解各算一遍、按代价排好，以及几个闭包。完全确定，各个线程各算一遍结果一样。
  * snapshotMs / onSnapshot：实时预览的快照钩子（网页「观摩退火」用）。每隔约 snapshotMs 毫秒把当前状态
- * 报给 onSnapshot，钩子只读：不碰随机数、不多算 evalState、不改任何搜索状态，开不开结果逐字一致。
+ * 报给 onSnapshot，钩子只读（不碰随机数、不多算 evalState、不改搜索状态），不影响结果。
  */
 function prepare(graph, { iterations = 5000, restarts = 4, seed = 7, routeOptions = {}, initial, candidateLimit = 12, snapshotMs = 0, onSnapshot = null, warm = null, masterWarm = null } = {}) {
   const evalState = (st) => route(graph, st.rows, routeOptions, st.pads, st.blocks, st.streets || []);
-  // 辅路（预留整列空地）默认不开：三个种子的对比里，小的物流站布局能省 1% 面积、少四成叠层，
-  // 但大产线在同样的迭代数下面积多 4%~8%（多出来的邻域动作把搜索搅散了）。需要时 routeOptions.streets = true。
+  // 辅路（预留整列空地）默认不开：大产线上多出来的邻域动作把搜索搅散了。需要时 routeOptions.streets = true。
   const useStreets = routeOptions.streets === true;
   // 限宽时一行里能放工厂的列数：紧凑布局去掉左右边缘各 1 列；物流站靠左侧时去掉站列和走廊 8 列、右边缘 1 列
   const usable = routeOptions.maxWidth ? routeOptions.maxWidth - (routeOptions.station ? STATION_COLS + 1 : 2) : null;
-  // 候选初始解先各算一遍，按成本排序，退火从最好的几个出发
   const key = exactKey([routeOptions, initial ?? null]);
   // 排版内核：每组一块最多几台（运力断块，typeset.js 的 blockCaps）；边缘放站时估要几座站，排版留站位
   const caps = routeOptions.core === 'typeset' ? blockCaps(graph, routeOptions) : null;
@@ -376,12 +374,12 @@ function prepare(graph, { iterations = 5000, restarts = 4, seed = 7, routeOption
   const masterCaps = routeOptions.core === 'typeset' ? null : blockCaps(graph, routeOptions, true);
   const stations = routeOptions.core === 'typeset' && routeOptions.stationHoles ? stationEstimate(graph, routeOptions) : 0;
   const gapsOn = routeOptions.core === 'typeset' && routeOptions.power === 'tesla'; // 供电缝（typeset.js 的 gapChunk）
-  // 目标长宽比（排版内核：行宽收到 √(长宽比 × 6.5 × 总宽) 附近，见 typeset.js 的 widthRange）
+  // 目标长宽比（排版内核用，见 typeset.js 的 widthRange）
   const aspect = routeOptions.core === 'typeset' ? routeOptions.aspectTarget ?? null : null;
   let cands;
   if (key !== null && candsMemo?.graph === graph && candsMemo.key === key) cands = candsMemo.cands;
   else {
-    // routeOptions.core = 'typeset'：排版内核（typeset.js，分支 explore/typeset），状态是一条组的队和行宽，布局由队排版出来
+    // routeOptions.core = 'typeset'：排版内核（typeset.js），状态是一条组的队和行宽，布局由队排版出来
     const states = routeOptions.core === 'typeset' ? typesetStates(graph, usable, caps, stations, gapsOn, aspect) : initialStates(graph, usable, masterCaps);
     cands = (initial ? [splitOver({ rows: initial, blocks: wholeBlocks(graph), pads: {} }, masterCaps)] : states)
       .map((st) => {
@@ -411,10 +409,8 @@ function prepare(graph, { iterations = 5000, restarts = 4, seed = 7, routeOption
   return { graph, routeOptions, evalState, useStreets, usable, cands, step, iterations, restarts, seed, candidateLimit, snapshotMs, onSnapshot, warmCand, caps, gapsOn, aspect };
 }
 
-// 提前把初始解算好（只为填 candsMemo，丢掉返回值）：planLineAsync 派完各轮退火后、等线程回来之前在主线程调它，
-// 这样初始解和搜索并行算（原来是各轮都回来、主线程才在 mergeRounds 里串行 route() 一遍，1~2 秒工作线程全空着）。
-// 必须和 mergeRounds 传同一个 options（planLineAsync 里的 req.options）：candsMemo 的键 exactKey([routeOptions, initial])
-// 只看这两项，timeLimit / onSnapshot 不在键里，所以键一样、命中。route() 确定，提前算和 mergeRounds 重算逐字一致。
+// 提前把初始解算好（只为填 candsMemo）：planLineAsync 派完各轮退火、等线程回来之前在主线程调它，初始解和搜索并行算。
+// 必须和 mergeRounds 传同一个 options（req.options）才命中：candsMemo 的键只看 routeOptions 和 initial，不看 timeLimit / onSnapshot
 export function precompute(graph, options = {}) {
   prepare(graph, options);
 }
@@ -438,9 +434,8 @@ const sameDict = (a, b, same) => {
 };
 const sameBlock = (a, b) => a === b || sameDict(a, b, (x, y) => x === y);
 /**
- * 邻域动作有时没改状态：空列改成原来的值、只有一块的行镜像、一块和自己交换、挪回原位……（退火里约 7%~11% 的步）。
- * route() 是确定的，只看行、块、空列和辅路，这时结果和当前状态的一模一样，不用再算一遍。
- * 键的先后次序也要一样（route 里遍历块、空列的次序会影响结果），比较得严一点只会少省几次，不会改结果。
+ * 邻域动作有时没改状态（空列改回原值、只有一块的行镜像、一块和自己交换、挪回原位……）：route() 确定、只看行、块、空列和辅路，
+ * 结果和当前状态的一样，不用再算。键的先后也要一样（route 里遍历块、空列的次序会影响结果），严一点只会少省几次
  */
 function sameState(a, b) {
   if (a.rows !== b.rows) {
@@ -454,14 +449,9 @@ const better = (a, b) => (a.feasible !== b.feasible ? a.feasible : a.cost < b.co
 /** 0..65535 的整数（−0 也算 0：route 里空列、台数、辅路的 −0 和 0 算出来一样） */
 const small = (v) => (v & 0xffff) === v;
 /**
- * 同一轮退火里评估过的排法：记下 route() 问过的代价下限（opt.rejectFloor 收到的 floor，按先后）和算完时的代价。
- * 冷下来以后当前状态常常几百步不动，邻域就那么些，同一个邻居会被提好几次（细档 8000 步：电磁涡轮、粒子容器约两成的评估、
- * 引力矩阵约 8%，快档 1500 步约 5%~13%），再被提出时按记下的数判，不用再算（见 runRound 的 evalSearch）。
- * 2026/10/07 量（单线程，同一进程里自己计时）：省下搜索里 route() 时间的 引力矩阵 30 塔 5%~6.5%、电磁涡轮 90 10%~16%、粒子容器 60 6%~15%（快档~细档），
- * 算键另花 1%~2%。
- * 键和 sameState 一样严：各行的块 ID（按先后）、空列和块（按对象里键的先后，块记组和台数，route 只读这两项）、辅路，
- * 逐字一样才算同一个排法。块 ID、组 ID 按第一次出现编成从 1 起的小整数，连同各段的个数和数值逐个编成一个字符
- * （都要是 0..65535 的整数，否则不记、照常算）。记下的只有下限和代价这几个数，不是布局本身，不占多少地方。
+ * 同一轮退火里评估过的排法：记下 route() 问过的代价下限（opt.rejectFloor 收到的 floor，按先后）和算完时的代价。冷下来以后
+ * 同一个邻居常被提好几次，再被提出时按记下的数判，不用再算（见 runRound 的 evalSearch）。键和 sameState 一样严，
+ * 块 ID、组 ID 按第一次出现编成小整数，连同各段的个数和数值逐个编成一个字符（都要是 0..65535 的整数，否则不记）。
  * 表满 limit 个就整张挪去旧表、开新表，最多记 2 × limit 个（同一个排法隔得最远的也就两千多次评估）
  */
 function stateMemo(limit = 2048) {
@@ -556,7 +546,7 @@ function runRound(P, s, roundEnd, archive, best) {
   const { graph, routeOptions, evalState, cands, step, iterations, seed, snapshotMs, onSnapshot, warmCand } = P;
   const rand = rng(seed + s * 1013);
   // 接力：偶数轮都从上一段最好那张（主干内核热启动时是排版内核最好那张）出发，起始温度低十倍，是在它附近细修；各轮靠各自的随机数分开。
-  // （以前第 2、4…轮先随机挪 1~5 步再退：大线挪一步整张重新断行，一条惩罚的图挪完常常变成几十条，低温退不回来）
+  // 不先随机挪几步：大线挪一步整张重新断行，一条惩罚的图挪完常常变成几十条，低温退不回来
   const relay = warmCand && s % 2 === 0;
   let st = relay ? warmCand.st : cands[s % cands.length].st;
   if (!relay && s >= cands.length) for (let k = 0; k < 10; k++) st = step(st, rand, null);
@@ -568,10 +558,8 @@ function runRound(P, s, roundEnd, archive, best) {
   const t0 = Math.max(20, cur.cost * (relay ? 0.005 : 0.05));
   const t1 = 0.5;
   let T = t0;
-  // 提前拒绝：评估邻域时 route() 的打分一步算到「代价下限 floor」就问一句（layout/score.js 的 rejectFloor）。
-  // floor 比当前代价高时，下面的接受判断一定会抽一个随机数 u，并且只在 u < exp((当前 − 代价) / T) 时接受；
-  // 先偷看这个 u（不往前走），按 floor 算都接受不了（留 1e-9 的余量，盖过 exp、log 的舍入）就一定被拒，后面最费时的几步不用算。
-  // 被拒的这一步照样抽掉这个 u，随机数序列和存档、best 都和算完再拒一模一样
+  // 提前拒绝：route() 一步算到代价下限 floor 就问一句 opt.rejectFloor（route.js 的 layout、layout/score.js 的 scoreLayout 里问）：
+  // 偷看接受判断要抽的随机数（不往前走），按 floor 都接受不了（留 1e-9 余量盖过舍入）就一定被拒，后面最费时的几步不用算；被拒的照样抽掉这个数
   const rejects = (floor) => floor > cur.cost && (cur.cost - floor) / T < Math.log(rand.peek()) - 1e-9;
   let floors = null; // 这次 route() 问过的下限（记进 memo）
   const searchOptions = {
@@ -581,12 +569,8 @@ function runRound(P, s, roundEnd, archive, best) {
       return rejects(floor);
     },
   };
-  // 同一个排法再被提出时（stateMemo），route() 是确定的，重算一定得到同样的下限和代价，所以按记下的数照原来的规则判：
-  //   记下的下限有一个现在会被提前拒绝 → 原来也在那一步返回 rejected；
-  //   都不拒、又算完过：接受判断按下面循环里的式子先偷看那个随机数，不接受 → 原来也是抽掉这个数、什么都不动，直接按 rejected 返回；
-  //   接受：是最近接受过的几个排法之一（逐字一样，键的先后也一样，和下面的 sameState 一样严）就直接用它当时的结果，
-  //         和上面「没改状态时沿用当前结果」同一个道理（平台上 A、B 代价相等，常来回接受）；否则、或者没算完过 → 照常调 route()，结果逐字一样。
-  // 按 rejected 返回时循环照样只抽掉一个随机数，随机数序列、状态、存档和 best 都和重算一模一样
+  // 同一个排法再被提出时（stateMemo），route() 确定，按记下的下限和代价照原来的规则判：有下限现在会被拒，或算完过、偷看随机数不接受 → rejected；
+  // 接受且是最近接受过的几个排法之一（平台上 A、B 代价相等，常来回接受）就用它当时的结果；否则照常调 route()。和重算一样只抽掉一个随机数
   const memo = stateMemo();
   const recent = [{ st, L: cur }]; // 最近接受的 4 个排法和结果（布局只读，共用不会被改）
   const evalSearch = (x) => {
@@ -605,7 +589,7 @@ function runRound(P, s, roundEnd, archive, best) {
     floors = null;
     return L;
   };
-  // 实时预览的快照：借每 32 步那次时间检查，到点把当前状态交给钩子（只读，开不开结果逐字一致）
+  // 实时预览的快照：借每 32 步那次时间检查，到点把当前状态交给钩子（只读，不影响结果）
   let nextSnap = onSnapshot && snapshotMs > 0 ? Date.now() + snapshotMs : Infinity;
   let accepted = 0;
   for (let i = 0; i < iterations; i++) {
@@ -648,7 +632,7 @@ const POLISH_PASSES = 3;
 /**
  * 定点精修：best 的单步邻域（围绕惩罚记下的单元）挨个评估，取最好的一步（可行优先、再比代价），有更好的就从它再来一遍。
  * 不抽随机数，只看排法本身；到时间上限就停。目前最好的那张可行时，route() 算到代价下限已经不比它低就提前收手
- * （layout/score.js 的 rejectFloor：下限不超过最终代价，被拒的一定比不上它；不可行时可行的哪怕代价高也算更好，就都算完）
+ * （opt.rejectFloor：下限不超过最终代价，被拒的一定比不上它；不可行时可行的哪怕代价高也算更好，就都算完）
  */
 function polish(P, best, archive, roundEnd) {
   const { graph, routeOptions } = P;
@@ -657,7 +641,7 @@ function polish(P, best, archive, roundEnd) {
     let pick = null;
     let n = 0;
     const ref = () => (pick ?? cur).layout;
-    // 这里被拒的候选不进存档（archive.remember），多拦一些就会改存档：不挪分拣器（route.js 的 earlySorters），被拒的和以前一样
+    // 这里被拒的候选不进存档（archive.remember），多拦一些就会改存档，所以不提前排分拣器（route.js 的 earlySorters）
     const fast = { ...routeOptions, earlySorters: false, rejectFloor: (floor) => ref().feasible && floor >= ref().cost };
     for (const st of polishCandidates(graph, cur, cur.layout.hot, P.caps, P.usable, P.gapsOn, P.aspect)) {
       if (++n > POLISH_BUDGET || ((n & 15) === 0 && Date.now() > roundEnd)) break;
@@ -678,8 +662,7 @@ function conclude(P, best, history, archive) {
   for (const c of cands) if (better({ feasible: c.feasible, cost: c.cost }, best.layout)) best = keep(c.st, c.L ?? evalState(c.st));
   const st = { rows: clone(best.rows), pads: { ...best.pads }, blocks: { ...best.blocks }, streets: [...(best.streets || [])] };
   let changed = false;
-  // 排版内核排出来的同组相邻块是按运力、供电缝切的，合回去会超运力（引力矩阵 180：铁块 23 + 22 合成 45 台、2700/分一条带，
-  // 不可行时只要代价没升就收下），不合
+  // 排版内核排出来的同组相邻块是按运力、供电缝切的，合回去会超运力（不可行时只要代价没升就会收下），不合
   const merge = P.routeOptions.core !== 'typeset';
   for (const row of merge ? st.rows : []) {
     for (let i = row.length - 1; i > 0; i--) {

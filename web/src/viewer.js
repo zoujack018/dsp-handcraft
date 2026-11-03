@@ -1,5 +1,5 @@
 // SVG 视口：坐标保持原样，仅改变观察范围；触控与鼠标共用相机。
-// 用户 2026-10-04：在页面上往下滑时图会跟着放大，很不方便。所以平时（预览）滚轮和触屏都交给页面滚动，
+// 平时（预览）滚轮和触屏都交给页面滚动（不然往下滑页面时图会跟着放大），
 // 只有「大图」铺满时滚轮、双指才缩放；按钮、键盘缩放和鼠标拖动平移任何时候都能用。
 export function zoomAround(camera, factor, anchor, width, height, fitScale) {
   const next = Math.min(24, Math.max(0.35, camera.zoom * factor));
@@ -53,7 +53,7 @@ export function createViewer({ box, enabled, onSelect, onFactory, onStation = ()
     e.preventDefault();
     box.focus({ preventScroll: true });
     const point = local(e);
-    // 按在工厂上（储物仓、储液罐、火力发电厂也画成 factory）记下它的介绍，就是悬停提示 <title> 那段字
+    // 按在工厂上（储物仓、储液罐也画成 factory）记下它的介绍，就是悬停提示 <title> 那段字
     const factory = e.target.closest('.factory')?.querySelector('title')?.textContent;
     const station = e.target.closest('[data-station]')?.dataset.station; // 按在物流站上：页面开站的简介
     const machine = e.target.closest('[data-machine]')?.dataset.machine; // 按在工厂上：页面开工厂的小窗

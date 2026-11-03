@@ -34,21 +34,16 @@ function splitFraction(targets, raw, recipes) {
   return { on, raw: isGoal || raw.includes('重氢') ? raw : [...raw, '重氢'], recipes: rest, isGoal };
 }
 
-// 搜索力度按空间利用率的目标分档：达到目标就停，没达到就把面积的权重加倍再搜，最多 retries 轮
-// （用户 2026-10-04：快 >50%、中 >70%、细 >85%；2026/10/07 改成 50 / 66 / 80，85 太高了）。细档不设时间上限，一百多台工厂的产线要几分钟。
-// 没达标（不可行或利用率不到这一档）就换种子接着搜，直到达标或到 untilTarget.maxMs（快 15 分钟、标准 60 分钟、细 200 分钟）。
-// 上限只防极端的长尾，按大约 95% 的人碰不到来定（用户 2026/10/07）；到点还没达标就交出搜到的最好那张，页面照常显示，状态栏说明没到这一档
-// 快档每轮 3000 步（2026/10/08，用户定）：云上和考卷都量过每轮步数是最管用的旋钮，1500 → 3000 不喷的 36 格面积少 4%~5%、利用率 +2 个百分点、
-// 放大 3 倍那套全部可行，线程时间 1.4~1.6 倍；每轮上限跟着 10 → 20 秒，不然 Mac 上引力矩阵 30 一轮（约 12 秒）会被截掉
-// 细档的 groundTax：高架落地加变层税，一段高架少在层之间来回变（src/plan/ground.js，分支 explore/bridges 的试验）
-// 细档的 heightTax：搜索打分里线性超高税代替金字塔，第 5 层起另加（src/plan/layout/score.js，分支 explore/bridges 的试验）
-// 细档的 bundleFee：开路费，高架竖直那截挑列时旁边没有别的竖直段就多计 8 格，带子挨着走成束（src/plan/layout/positions.js，分支 explore/bridges 的试验）
-// 细档的 openFee：走空地费，高架竖直那截穿过的行里既不压着也不挨着建筑的，每行多计 2 格，带子贴着建筑走（src/plan/layout/positions.js，分支 explore/bridges 的试验）
-// core：用哪个内核（src/plan/index.js 的 planCore；routeOptions.core 写明的为准），不写是主干内核。标准、美观档 'auto'：先排版内核，
-// 第 2 段搜完还不可行换主干内核、从排版内核最好那张热启动（考卷 2 的数在 docs/history.md「内核分档」）；快速档不用：考卷 2 上面积不省、线程时间 1.4 倍。
-// 美观档 autoSegments 4：排版内核搜满 4 段还不可行才换（考卷 3 的大线常在第 3、4 段才排出，换早了主干内核只排到五六成，2026/10/29）
-// 美观档 aspectTarget 1.78（16:9）：排版内核的行宽瞄着 16:9 横的（src/plan/index.js 的 planFrame；设了宽、长上限时不瞄，长宽比上限比它小时按上限）。
-// 用户 2026/10/28 要蓝图「长宽比最好符合电脑屏幕是横着的 16:9」；不瞄时大线上排版内核会挑 3 行、400 来格宽的长条，到后处理又排不成（考卷的数待补）
+// 搜索力度分档（quick 快、normal 标准、fine 细，细档也叫美观档）：空间利用率达到 targetSpace 就停，没达到就把面积的权重加倍再搜，最多 retries 轮。
+// 没达标（不可行或利用率不到这一档）就换种子接着搜，直到达标或到 untilTarget.maxMs；这个上限只防极端的长尾，按大约 95% 的人碰不到来定，
+// 到点还没达标就交出搜到的最好那张，页面照常显示，状态栏说明没到这一档。细档不设时间上限，一百多台工厂的产线要几分钟。
+// 快档每轮 3000 步（每轮步数是最管用的旋钮）；每轮上限 20 秒，不然引力矩阵 30 这样的线一轮会被截掉
+// 细档的 groundTax：高架落地加变层税，一段高架少在层之间来回变（src/plan/ground.js）
+// core：用哪个内核（src/plan/index.js 的 planCore；routeOptions.core 写明的为准），不写是主干内核。标准、细档 'auto'：先排版内核，
+// 第 2 段搜完还不可行换主干内核、从排版内核最好那张热启动（docs/history.md「内核分档」）；快档不用：面积不省、更费时。
+// 细档 autoSegments 4：排版内核搜满 4 段还不可行才换（大线常在第 3、4 段才排出）
+// 细档 aspectTarget 1.78：排版内核的行宽瞄着横的 16:9（src/plan/index.js 的 planFrame；设了宽、长上限时不瞄，长宽比上限比它小时按上限）；
+// 不瞄时大线上排版内核会挑 3 行、400 来格宽的长条，到后处理又排不成
 const EFFORT = {
   quick: { iterations: 3000, restarts: 2, timeLimit: 20000, targetSpace: 0.5, retries: 1, untilTarget: { maxMs: 15 * 60000 } },
   normal: { iterations: 3000, restarts: 4, timeLimit: 30000, targetSpace: 0.66, retries: 2, untilTarget: { maxMs: 60 * 60000 }, powerHoles: true, core: 'auto' },
@@ -121,19 +116,6 @@ function minimalExternal(targets, base, recipes = {}) {
   return ext;
 }
 
-/**
- * 目标产物的中间产物清单与依赖关系，供「外部供应」弹窗使用。
- *   goals：最终目标（第 0 层）。
- *   units：完整产线（不设外部供应）里除目标外的每种中间产物，带层级（离最近的目标最远几步）、所需工厂、
- *          当前是否仍在产线里（上游被设为外部供应后，它可能已经不需要了）、是否被设为外部供应。
- *          设成外部供应、可现在产线里已经没人用它（比如只有硫酸用精炼油，硫酸也设成了外部供应）的算 dropped：不画、不算进外部供应。
- *   edges：谁被谁消耗：from 物品 → to 物品（消费者），rate 为当前流量（不在产线里时为完整产线的流量），
- *          state = line（还在产线里）/ external（来源改为外部供应）/ dropped（消费者已不需要）/ raw（原料：原矿、黑雾掉落这类没有配方的）。
- *   raws：当前产线从外面进的原料（不含设成外部供应的中间产物），带物品编号、类别。
- *   byproducts：当前产线的副产物，ofId 是出它的那组工厂的产物。
- *   recipes：有新配方的物品，每个新配方带 ore（原料里的珍奇矿物，没有为 null）和 key（弹窗里给它配图标的物品）。
- *   suggested：让整条线可排的最少外部供应（基于当前选择补齐）。
- */
 /** 配方写成一行：可燃冰×2 → 石墨烯×2 + 氢×1 */
 const recipeLine = (r) => `${r.inputs.map((x) => `${ITEMS.get(x.id).name}×${x.count}`).join(' + ')} → ${r.outputs.map((x) => `${ITEMS.get(x.id).name}×${x.count}`).join(' + ')}`;
 
@@ -147,6 +129,19 @@ const withShared = (calc) =>
     ...(u.shared ?? []).map((id) => ({ ...u, itemId: id, item: ITEMS.get(id).name, outputRate: calc.flows.filter((f) => f.itemId === id && f.from === u.id).reduce((a, f) => a + f.rate, 0), coOf: u.itemId })),
   ]);
 
+/**
+ * 目标产物的中间产物清单与依赖关系，供「外部供应」弹窗使用。
+ *   goals：最终目标（第 0 层）。
+ *   units：完整产线（不设外部供应）里除目标外的每种中间产物，带层级（离最近的目标最远几步）、所需工厂、
+ *          当前是否仍在产线里（上游被设为外部供应后，它可能已经不需要了）、是否被设为外部供应。
+ *          设成外部供应、可现在产线里已经没人用它（比如只有硫酸用精炼油，硫酸也设成了外部供应）的算 dropped：不画、不算进外部供应。
+ *   edges：谁被谁消耗：from 物品 → to 物品（消费者），rate 为当前流量（不在产线里时为完整产线的流量），
+ *          state = line（还在产线里）/ external（来源改为外部供应）/ dropped（消费者已不需要）/ raw（原料：原矿、黑雾掉落这类没有配方的）。
+ *   raws：当前产线从外面进的原料（不含设成外部供应的中间产物），带物品编号、类别。
+ *   byproducts：当前产线的副产物，ofId 是出它的那组工厂的产物。
+ *   recipes：有新配方的物品，每个新配方带 ore（原料里的珍奇矿物，没有为 null）和 key（弹窗里给它配图标的物品）。
+ *   suggested：让整条线可排的最少外部供应（基于当前选择补齐）。
+ */
 function chain({ targets, raw: raw0 = [], recipes: recipes0 = {}, lab = 2901, labStack = 15 }) {
   const frac = splitFraction(targets, raw0, recipes0);
   const raw = frac.raw;
@@ -198,7 +193,7 @@ function chain({ targets, raw: raw0 = [], recipes: recipes0 = {}, lab = 2901, la
   // 目标重氢选了分馏阵列：单独一张分馏阵列蓝图，只吃外面来的氢（1 个氢出 1 个重氢），完整产线里做氢的那些都不画
   const fracGoal = frac.on && frac.isGoal && targets.length === 1;
   const goals = full.targets.map((t) => ({ ...describe(unitByItem.get(t.itemId)), out: t.rate }));
-  // 目标重氢选了分馏阵列：塔数、耗氢按分馏算（1 个氢分出 1 个重氢）
+  // 目标重氢选了分馏阵列：工厂、台数按分馏塔阵列算
   if (frac.on && frac.isGoal) for (const g of goals) if (g.id === DEUTERIUM) Object.assign(g, { factory: '分馏塔', count: arrayPlan(g.out).towers });
   const units = fracGoal ? [] : withShared(full).filter((u) => !goalIds.has(u.itemId)).map(describe);
   // 依赖边：只连中间产物和目标之间（原矿不在弹窗里）
@@ -259,9 +254,9 @@ function chain({ targets, raw: raw0 = [], recipes: recipes0 = {}, lab = 2901, la
   };
 }
 
-// 弹窗里不列的新配方（用户 2026/10/27：不常用）：有机晶体（原始）。有机晶体在弹窗右栏当珍奇（有矿脉）直接设外部供应
+// 弹窗里不列的新配方（不常用）：有机晶体（原始）。有机晶体在弹窗右栏当珍奇（有矿脉）直接设外部供应
 const UNLISTED_ALTS = new Set([54]);
-// 珍奇矿物（游戏里的稀有资源）：新配方那一栏按它们归拢，一种矿只列一次（用户 2026/10/27）
+// 珍奇矿物（游戏里的稀有资源）：新配方那一栏按它们归拢，一种矿只列一次
 const RARE_ORES = new Set([1011, 1012, 1013, 1014, 1015, 1016]); // 可燃冰、金伯利矿石、分形硅石、光栅石、刺笋结晶、单极磁石
 /**
  * 新配方的「关键原料」：ore 是原料里的珍奇矿物；key 是弹窗里给它配图标的物品——有珍奇就是珍奇，没有就是默认配方不用的第一种原料
@@ -417,7 +412,7 @@ async function poolReady() {
 
 // ---------- 测速 ----------
 // 页面打开、闲下来后测一次这台机器多快（页面发 { type: 'bench' }，每次打开页面一次，页面上不显示）：
-// 每个帮手线程同时跑同一段固定的搜索（粒子容器 60/分、精炼油外部供应、页面默认设置、快档第一段的第 0 轮，只跑 BENCH_STEPS 步、不设时间上限），
+// 每个帮手线程同时跑同一段固定的搜索（makeBenchTask：粒子容器 60/分、一组固定的设置、快档第一段的第 0 轮，只跑 BENCH_STEPS 步、不设时间上限），
 // 在帮手线程里计时、取中位数；开搜前的预计（estimateSeconds）按它和参照机同一段测速的比折算。只计时，不碰任何规划结果
 const BENCH_STEPS = 1000;
 const BENCH_TARGET = 1206; // 粒子容器
@@ -438,7 +433,6 @@ function makeBenchTask() {
     routeOptions: { belt: 3, sorter: 2013, maxAspect: 3, maxWidth: null, maxHeight: null },
     station: null,
     power: 'tesla',
-    burn: false,
     supply: null,
     storeLayers: 15,
     orient: 'h',
@@ -491,11 +485,10 @@ async function runBench() {
 
 /**
  * 开搜前的预计用时（秒），页面「预计约 X 秒」就是它（跑约一秒后进度条改用 previewer 的实测 liveEst，预计那个数不改）。
- * 2026/10/19 在 Mac mini（M6，8 线程）上按「打开页面先测速、再点生成」实跑快、标准、细三档，27 条线（300 座建筑以内）× 各种选项 618 份量出来：
+ * 系数是在参照机（Mac mini M6，8 线程）上按「打开页面先测速、再点生成」实跑三档量出来的：
  *   每段（一遍搜索 + 后处理）秒数 = 乘幂模型（组数、台数、物品种类，再加选项的倍数），乘每线程要跑几波；
- *   段数按开搜前的瓶颈规则（bottleneck：分拣器或带子运力不够、组数多）取每类的中位；
+ *   段数按开搜前的瓶颈规则（bottleneck：分拣器或带子运力不够、组数多）取每类的中位（有瓶颈的多半要搜十几段，偶尔一段就完，会估长）；
  *   别的机器按页面打开时的测速（runBench）和参照机同一段测速的比折算。
- * 整条线留一：每段误差中位 13%、80% 分位 23%；总用时中位 19%、80% 分位 45%（没瓶颈的 17%、36%；有瓶颈的多半要搜十几段，偶尔一段就完，会估长）。
  */
 const TIME_MODEL = {
   ref: { benchMs: 294, threads: 8 }, // 参照机（Mac mini M6，8 线程）上同一段测速的中位毫秒
@@ -511,7 +504,7 @@ const sorterStackOf = (p) => (Number(p.sorter) === 2014 ? PILE_SORTER_TECH[piler
 const FINISH_SHARE = 0.02; // 每段里算给后处理的份额（previewer 的 liveEst 要加上它）
 
 /**
- * 开搜前的瓶颈：某组每台的进料或出料超过一根 1 格分拣器速度的八成（快档 536 份里判没瓶颈的 425 份只有 2 份卡住，按 1 倍判漏 16 份）、某条带的流量超过运力 1.5 倍、或者组数很多。
+ * 开搜前的瓶颈：某组每台的进料或出料超过一根 1 格分拣器速度的八成（按 1 倍判会漏）、某条带的流量超过运力 1.5 倍、或者组数很多。
  * 有瓶颈的线往往一段搜不达标，要多搜好几段
  */
 function bottleneck(graph, p) {
@@ -520,8 +513,8 @@ function bottleneck(graph, p) {
   let sorterLoad = 0;
   let beltLoad = 0;
   for (const it of graph.items.values()) {
-    // 物流站出的原料能叠；产物带默认过自动集装机（route.js 的 pilers），运力和规划器排的一样（plan/piling.js 的 pileCapOf，
-    // route.js 的 pileModel 不写时按 4 条带算；最低配置不放集装机，earlyGame）；集装分拣器叠层时按 cap0 × 层数、不再算集装机（sorterStackOf，同 layout/belts.js 的 pileCap）
+    // 运力和规划器排的一样：物流站出的原料能叠；产物带默认过自动集装机（route.js 的 pilers、plan/piling.js 的 pileCapOf，最低配置 earlyGame 不放）；
+    // 集装分拣器叠层时按 cap0 × 层数、不算集装机（sorterStackOf，同 layout/belts.js 的 pileCap）
     const cap = it.producer === 'RAW' ? (p.station ? cap0 * Number(p.pile || 1) : cap0) : sorterStackOf(p) > 1 ? cap0 * sorterStackOf(p) : Math.max(earlyGame(p) ? cap0 : Math.max(cap0, pileCapOf(cap0, ROUTE_DEFAULTS.pileModel)), cap0);
     const toGroup = new Map();
     for (const c of it.consumers) {
@@ -609,10 +602,9 @@ function tracked(helpers, id, est, restarts, preview = null) {
 /**
  * 实时预览（观摩退火）+ 实测估时，同一条快照通道两用。
  * 帮手线程每半秒把「这一轮搜到第几步」连同温度、代价报上来（见 onmessage 的 task 分支），这里：
- *   1）数字全转发给页面（type 'preview'）；绘图模型只转发页面正在看的那一轮——自动模式看利用率最高的那一轮，
- *      但不频繁切换（autowatch.js：别的轮连续领先够久才切，两次切换有间隔下限）；页面发 { type: 'watch', round } 指定看第几轮（'auto' 传 null）；
- *   2）跑满约一秒后用实测速度估剩余时间（剩余步数 ÷ 速度，几轮并行取最慢的那轮），自动适应不同 CPU、
- *      线程数和浏览器；第一秒之前页面沿用 estimateSeconds 的公式。
+ *   1）数字全转发给页面（type 'preview'）；绘图模型只转发页面正在看的那一轮（自动模式见 autowatch.js 的 autoWatcher）；
+ *      页面发 { type: 'watch', round } 指定看第几轮（'auto' 传 null）；
+ *   2）跑满约一秒后用实测速度估剩余时间（剩余步数 ÷ 速度，几轮并行取最慢的那轮）；第一秒之前页面沿用 estimateSeconds 的公式。
  * 没达标接着搜（untilTarget）时每段搜索是新一段（gen），上一段的快照不再理会。
  */
 function previewer(id, est, restarts, threads, maxMs) {
@@ -661,7 +653,7 @@ function previewer(id, est, restarts, threads, maxMs) {
     let model = p.model;
     if (model) {
       const sel = ctl.watch === 'auto' ? auto : ctl.watch;
-      // 页面只画正在看的那一轮，其余轮只发数字；图每 PREVIEW_EVERY 才换一张（用户 2026/10/07：别频繁更新），
+      // 页面只画正在看的那一轮，其余轮只发数字；图每 PREVIEW_EVERY 才换一张（别频繁更新），
       // 页面上点了别的轮马上给一张；长宽比离谱、超出宽长上限的排法不给（autowatch.js 的 previewShapeOk）
       if (sel !== p.s || (!ctl.forceNext && now - ctl.lastSent < PREVIEW_EVERY) || !previewShapeOk(model, task.options?.routeOptions)) model = null;
       else {
@@ -680,18 +672,18 @@ const cancelled = new Set(); // 页面取消了的请求（取消本轮生成）
 const PREVIEW_EVERY = 25000; // 预览的图多久换一张
 
 /**
- * 全部选最低配置（用户 2026/10/28）：不放供电或电力感应塔、传送带或传送带 + 箱子（不接物流站）、普通传送带、电弧熔炉、制造台 Mk.I、不喷增产剂。
+ * 全部选最低配置：不放供电或电力感应塔、传送带或传送带 + 箱子（不接物流站）、普通传送带、电弧熔炉、制造台 Mk.I、不喷增产剂。
  * 当作还没解锁「超级磁场发生器」：高架不用原地竖直升降（route.js 的 noLift），检查按没解锁的存档查（check.js 的 noTech）；
  * 自动集装机多半也没解锁：带上不叠（route.js 的 pilers）
  */
 const earlyGame = (p) => !p.station && (!p.power || p.power === 'tesla') && String(p.belt) === '1' && String(p.smelter) === '2302' && String(p.assembler) === '2303' && !Number(p.spray || 0);
-/** 页面的「箱子」+「物流配送器」→ plan/storage.js 的 SUPPLY 键：side-s / side-l 是左侧一列仓组（2026/10/26），放配送器就是 sdist-s / sdist-l；以前的 box-s / box-l 照旧认 */
+/** 页面的「箱子」+「物流配送器」→ plan/storage.js 的 SUPPLY 键：side-s / side-l 是左侧一列仓组，放配送器就是 sdist-s / sdist-l；box-s / box-l 也照旧认 */
 const supplyOf = (p) => (!p.station && p.supply ? (p.dist === '1' ? p.supply.replace(/^box/, 'dist').replace(/^side/, 'sdist') : p.supply) : null);
 /** 页面参数 → calculate() 的参数。chemwide：左栏「化工厂、精炼厂高纬度间距展开」，默认化工厂、量子化工厂、原油精炼厂按赤道的紧凑间距排（只在赤道附近放得下），开了才加宽（任何纬度都能放） */
 function lineInput(p, targets, frac) {
   // 供货（不接物流站时）：原料、成品换成排进行里的储物仓（plan/storage.js 的 storeUnits），液体照旧在外面接储液罐
   const supply = supplyOf(p);
-  const store = supply ? { supply, storeSorter: Number(p.sorter), storeLayers: Number(p.labstack || 15), storeBelt: Number(p.belt || 3), burn: Array.isArray(p.burn) && p.burn.length ? p.burn.map(Number) : false } : null;
+  const store = supply ? { supply, storeSorter: Number(p.sorter), storeLayers: Number(p.labstack || 15), storeBelt: Number(p.belt || 3) } : null;
   return { targets, assembler: Number(p.assembler), smelter: Number(p.smelter), chemical: Number(p.chemical || 2309), lab: Number(p.lab || 2901), labStack: Number(p.labstack || 15), raw: frac.raw, recipes: frac.recipes, spray: Number(p.spray || 0), latitude: p.chemwide === '1' ? 'high' : 'equator', ...store };
 }
 
@@ -708,21 +700,20 @@ async function run(p, id = 0) {
   const effort = EFFORT[p.effort || 'normal'];
   // 各轮退火分给各线程：轮数补成线程数的整数倍，墙上时间不变，搜得更广（4 线程时细档 6 轮补成 8 轮）
   const restarts = pool ? Math.ceil(effort.restarts / pool.size) * pool.size : effort.restarts;
-  // 网页不切块（用户 2026/10/27 去掉了「自动切分」）：大产线切块只在命令行、考卷里（src/plan/modules.js）
+  // 网页不切块：大产线切块只在命令行和 tools/exam 里（src/plan/modules.js）
   const est = estimateSeconds(calculate(input), effort, p, pool ? pool.size : 1);
   activeId = id;
-  // 实时预览 + 实测估时
   const preview = previewer(id, est, restarts, pool ? pool.size : 1, effort.untilTarget?.maxMs ?? null);
   curPreview = preview;
   if (pool && preview) pool.onProgress = (task, snap) => preview.take(task, snap);
   const helpers = tracked(pool, id, est, restarts, preview);
-  // 每搜完一轮（含没达标接着搜的）报一次：第几轮、目前最好的利用率、可不可行
+  // 每搜完一轮（含没达标接着搜的）报一次
   const onRound = (r) => self.postMessage({ type: 'progress', id, round: r.round, best: r.space, feasible: r.feasible, target: r.target });
   return planOne(calculate(input), p, helpers, effort, restarts, onRound, preview);
 }
 
 /**
- * 生成前的预告（用户 2026/10/26：选完目标、改了选项就看到，写在「生成蓝图」下面），参数和 run() 一样：
+ * 生成前的预告（选完目标、改了选项就看到，写在「生成蓝图」下面），参数和 run() 一样：
  *   machines、byFactory：建筑几台、按工厂分（研究站按实际台数，叠起来的每层都是一台）；
  *   seconds：预计用时，同开搜前的 estimateSeconds（帮手线程还没开时照 makePool 的条件猜几个）；分馏塔阵列不用搜，为 0；
  *   power：工厂满负荷用电（还没排，分拣器、喷涂机、物流站不算）；
@@ -748,7 +739,7 @@ function forecast(p) {
     if (frac.on && frac.isGoal) {
       if (targets.length > 1) return { error: '重氢选了分馏塔阵列时，目标只能是重氢一种。', chainItems, supplied };
       // 分馏塔阵列：照 fractionRun 生成一遍数塔（几毫秒）；一座站带不动时这张图要贴几份，塔数、用电都乘上
-      // 退火排法（新）：不在预告里退火，按稳态够数要几座塔、几台集装机和喷涂机估（annealedEstimate）
+      // 退火排法：不在预告里退火，按稳态够数要几座塔、几台集装机和喷涂机估（annealedEstimate）
       const r = p.fracengine === 'anneal' ? annealedEstimate(targets[0].rate, { spray: Number(p.spray || 0) }) : fractionatorArray(targets[0].rate, { spray: Number(p.spray || 0), ...arrayLimits(p) });
       const k = r.plan.copies;
       const e = fracEnergy(r);
@@ -794,7 +785,7 @@ async function planOne(calc, p, helpers, effort, restarts, onRound = null, previ
         maxWidth: p.maxwidth ? Number(p.maxwidth) : null,
         maxHeight: p.maxheight ? Number(p.maxheight) : null,
         ...(p.core ? { core: p.core } : {}), // 内核 master / typeset / auto（src/plan/index.js 的 planCore），页面上没有开关；不写按档位（EFFORT 的 core）
-        // 传送带重走（src/plan/reroute.js）：各档都开，只重走挑中的那张、哪一项都不比原来差才换上（用户 2026/10/29 要在网页上审）
+        // 传送带重走（src/plan/reroute.js）：各档都开，只重走挑中的那张、哪一项都不比原来差才换上
         reroute: true,
         ...(earlyGame(p) ? { noLift: true, pilers: false } : {}), // 全部选最低配置：当作没解锁超级磁场、自动集装机
         ...(sorterStackOf(p) > 1 ? { sorterStack: sorterStackOf(p) } : {}), // 集装分拣器往带上叠几层（route.js 的 sorterStack），1 层时不写
@@ -802,13 +793,12 @@ async function planOne(calc, p, helpers, effort, restarts, onRound = null, previ
       },
       station: p.station ? { place: p.station === 'ils-side' ? 'side' : 'edge', stack: Number(p.pile || 1), slots: { warper: p.warper === '1', keepFree: Number(p.spray || 0) > 0 } } : null,
       power: p.power || null,
-      burn: Array.isArray(p.burn) && p.burn.length ? p.burn.map(Number) : false, // 要就地烧掉的副产物（plan/burn.js；网页上的开关 2026/10/26 拿掉了，页面不再传）
       // 供货：不接物流站时原料、成品接储物仓 / 储液罐（plan/storage.js 的 SUPPLY）；左栏「物流配送器」选了放在仓顶就是 dist-s / dist-l
       supply: supplyOf(p),
       storeLayers: Number(p.labstack || 15), // 储物仓最多叠几层：按「研究站最多叠几层」（推断同一个「垂直建造」科技管）
       orient: p.orient || 'h',
       onRound,
-      // 同样的输入再点一次「生成蓝图」换一个种子（app.js 记这是第几次，用户 2026/10/24）；第一次用规划器默认的种子，和命令行、考卷一样
+      // 同样的输入再点一次「生成蓝图」换一个种子（app.js 记这是第几次）；第一次用规划器默认的种子，和命令行一样
       ...(p.again > 0 ? { seed: 7 + AGAIN_SEED * p.again } : {}),
     };
     if (preview) {
@@ -852,7 +842,7 @@ async function planOne(calc, p, helpers, effort, restarts, onRound = null, previ
 }
 
 /**
- * 蓝图里各座物流站的设置（页面点站看简介、在简介里改，用户 2026/10/27）：存储格（物品、本地 / 星际 0 仓储 1 供应 2 需求、上限）、
+ * 蓝图里各座物流站的设置（页面点站看简介、在简介里改）：存储格（物品、本地 / 星际 0 仓储 1 供应 2 需求、上限）、
  * 12 个站口（dir 1 出站 2 进站、接第几格）、出货叠几层；顺序和图上 T1、T2… 一样（出蓝图时按 layout.stations 的顺序放）
  */
 const isStation = (b) => b.itemId === 2104 || b.itemId === 2103;
@@ -869,7 +859,7 @@ function stationCfg(str) {
     return [];
   }
 }
-/** 分馏阵列自带的站（照用户的图，不经 emitBlueprint）：翘曲器格、增产剂格也按存过的设置改 */
+/** 分馏阵列自带的站（照原图，不经 emitBlueprint）：翘曲器格、增产剂格也按存过的设置改 */
 function withPrefs(str, prefs) {
   if (!prefs?.warper && !prefs?.spray && !prefs?.station) return str;
   const bp = fromStr(str);
@@ -880,6 +870,37 @@ function withPrefs(str, prefs) {
     }
   return toStr(bp);
 }
+/**
+ * 看现成的蓝图（量产计算器「生成无带蓝图」排好带过来的，handoff.js 的 beltless）：解开、独立检查，给页面画图要的那点东西；不排、不改蓝图。
+ * buildings 每个建筑：编号、物品、两头坐标 [x, y, z]、朝向、下游 out / 上游 in（建筑编号，没有是 -1）、配方出得最多的那样产物（等离子精炼画精炼油）、
+ * 分拣器筛的物品、带子上的标签物品
+ */
+function inspectBlueprint(str) {
+  const bp = fromStr(str.trim());
+  const check = checkBlueprint(str);
+  const productOf = (id) => {
+    if (!(id > 0)) return 0;
+    try {
+      const outs = recipeOf(id).outputs;
+      return outs.reduce((a, x) => (x.count > a.count ? x : a), outs[0]).id;
+    } catch {
+      return 0; // 这边没有的配方：图上不画产物图标
+    }
+  };
+  const buildings = bp.buildings.map((b) => ({
+    index: b.index,
+    itemId: b.itemId,
+    at: b.localOffset.map((o) => [o.x, o.y, o.z]),
+    yaw: b.yaw?.[0] ?? 0,
+    out: b.outputObjIdx,
+    in: b.inputObjIdx,
+    product: productOf(b.recipeId),
+    filter: b.filterId || 0,
+    label: b.parameters?.iconId || 0,
+  }));
+  return { buildings, check: { ok: check.ok, errors: check.errors, warnings: check.warnings } };
+}
+
 /** 在简介里改了第 k 座站的存储格（storage[i] 为空的那格不动）、整站设置（set，整张图的站都改）：改这张蓝图里的参数，重出字符串 */
 function patchStation({ str, k, storage = [], set = null }) {
   const bp = fromStr(str);
@@ -966,9 +987,6 @@ function describePlan(plan, calc, p, effort, threadCount) {
         : null,
     },
     groups: plan.graph.groups.map((g) => ({ letter: labels.get(g.id) ?? g.letter, item: g.item, factory: g.factory, count: g.count, levels: g.levels ?? 1 })),
-    // 就地烧掉的副产物（plan/burn.js）：烧什么、每分钟多少、几台火力发电厂、满负荷发多少电；没烧成的原因
-    burn: (L.burners || []).map((b) => ({ item: ITEMS.get(b.itemId).name, rate: b.rate, plants: b.plants.length, mw: b.mw, cols: b.cols, depth: b.depth })),
-    burnNotes: L.burnNotes ?? [],
     // 化工厂、精炼厂按赤道的紧凑间距排的（左栏默认；页面检查栏写一句：只在赤道附近放得下）
     latitude: (() => {
       const gs = plan.graph.groups.filter((x) => hasHighLatitude(x.factoryId));
@@ -1012,7 +1030,7 @@ function energyOf(calc, L, p) {
   return { ...energyTexts(e), detail: `${e.byFactory.map((f) => `${f.name} ${f.count} 台 ${fmtWatts(f.watts)}`).join('、')}${e.stations ? `；物流站充电另算，最多 ${fmtWatts(e.stationCharge)}` : ''}` };
 }
 /**
- * 用电卡片、标题栏的文字（用户 2026/10/26）：待机、工作、喷涂另加（没喷为 null）、最大（满负荷总数）、物流站充电最多多少；
+ * 用电卡片、标题栏的文字：待机、工作、喷涂另加（没喷为 null）、最大（满负荷总数）、物流站充电最多多少；
  * gens：最大用电按额定功率折成几台火力发电厂 / 微型聚变发电站 / 人造恒星（两位小数）
  */
 function energyTexts(e) {
@@ -1030,18 +1048,17 @@ function energyTexts(e) {
 }
 
 /**
- * 分馏阵列也照左栏的宽度、长度、长宽比上限（用户 2026/10/26；src/fractionate/array.js 按上限挑每份几个循环）。
- * 一律照原图竖着出（2026/10/30）：以前「化工厂、精炼厂高纬度间距展开」关着时横放（整张转 90°），塔距 4 格、循环两头最外面那条带离塔心 2 格
- * 都到了东西向，用户在游戏里贴了报「最边上的传送带无法建造」——按游戏的碰撞体东西向格宽不到赤道的 98.7%（赤道带里约 9° 以外）那条带就撞塔，
- * 以前只算了塔撞塔（89.5%），说明里写的「只有几条纬度带贴不上」不对。竖着出的在任何纬度都能贴（array.js 的 checkArray 按最窄纬度查过）
+ * 分馏阵列也照左栏的宽度、长度、长宽比上限（src/fractionate/array.js 按上限挑每份几个循环）。
+ * 一律照原图竖着出：横着放时塔距和循环两头最外面那条带都到了东西向，离开赤道就撞（game-rules 第 42 条）；
+ * 竖着出的在任何纬度都能贴（array.js 的 checkArray 按最窄纬度查过）
  */
 const arrayLimits = (p) => ({ maxWidth: p.maxwidth ? Number(p.maxwidth) : null, maxHeight: p.maxheight ? Number(p.maxheight) : null, maxAspect: p.aspect ? Number(p.aspect) : null, orient: 'v' });
-/** 分馏阵列退火排法（src/fractionate/anneal.js）每档的步数、重启几次：macmini 上 1000~5000/分 × 不喷 / Mk.III 量的，quick 0.35~1.4 秒、normal 0.37~1.8 秒、fine 0.55~4.1 秒 */
+/** 分馏阵列退火排法（src/fractionate/anneal.js）每档的步数、重启几次（每档几秒以内） */
 const EFFORT_ARRAY = { quick: { steps: 200, restarts: 1 }, normal: { steps: 300, restarts: 1 }, fine: { steps: 600, restarts: 2 } };
 /** 分馏塔阵列：结果的字段和普通产线一样，页面照常画图、出检查和说明 */
 function fractionRun(rate, spray = 0, limits = {}, prefs = null, anneal = null) {
   const t0 = performance.now();
-  // anneal：用退火排法（物流站在上、方形左右对称；宽、长、长宽比上限这一版不管，说明里写）
+  // anneal：用退火排法（物流站在上、方形左右对称；不管宽、长、长宽比上限，说明里写一句）
   const r = anneal ? annealedArray(rate, { spray, ...anneal }) : fractionatorArray(rate, { spray, ...limits });
   if (anneal && (limits.maxWidth != null || limits.maxHeight != null || limits.maxAspect != null)) r.notes.push('宽度、长度、长宽比上限对新排法不起作用（这一版只排成接近方形）。');
   const check = checkArray(r.str);
@@ -1207,7 +1224,7 @@ self.onmessage = async (ev) => {
     return;
   }
   if (msg.type === 'cancel') {
-    // 取消本轮生成：帮手线程只能整个停掉（正在跑的退火没法中途叫停），没做完的活按出错退回，planOne 那边见 cancelled 就不再单线程重来；下次生成再新开线程池。
+    // 取消本轮生成：停掉帮手线程（makePool 的 stop），planOne 那边见 cancelled 就不再单线程重来。
     // 单线程回退（没有帮手线程）时正在跑的 planLine 停不下来，这条消息等它跑完才轮到，结果照常发出去，页面那边编号已经加了一、不认
     cancelled.add(msg.id);
     if (activeId === msg.id) {
@@ -1221,6 +1238,16 @@ self.onmessage = async (ev) => {
     else if (msg.type === 'chain') self.postMessage({ type: 'chain', id: msg.id, data: chain(msg.params) });
     else if (msg.type === 'forecast') self.postMessage({ type: 'forecast', id: msg.id, data: forecast(msg.params) });
     else if (msg.type === 'patch') self.postMessage({ type: 'patched', id: msg.id, data: patchStation(msg) });
+    else if (msg.type === 'inspect') {
+      // 看现成的蓝图：出错也回 inspected（不能走最后那个 catch：它回的 result 会被当成排布的结果）
+      let data;
+      try {
+        data = inspectBlueprint(msg.str);
+      } catch (e) {
+        data = { error: e.message };
+      }
+      self.postMessage({ type: 'inspected', id: msg.id, data });
+    }
     else if (msg.type === 'plan') {
       planning++;
       let data;

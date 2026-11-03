@@ -5,10 +5,13 @@
 //   ext: [物品 ID]                                      外部供应
 //   recipes: { 物品 ID: 配方 ID }                        指定配方
 //   assembler / smelter / chemical / lab: 建筑 ID；belt: 1~3；sorter: 分拣器 ID；pile: 物流站出货叠几层 1~4；labstack: 1~15
-//   auto: 到了就自动生成一次（默认是）
+//   auto: 到了就自动生成一次（默认是；false 时只填好，等用户改好数量自己点）
 //   from: 来源网页的名字（页面上显示「从 xx 带过来的方案」）
+//   beltless: 那边排好的无带蓝图（蓝图字符串，量产计算器「生成无带蓝图」带过来的）：这边照常填好目标等，图纸先画这张、能看数、检查、复制，
+//             复制了才发 dsphc-done（kind: 'beltless'）；点「生成蓝图」另排一张带传送带的
 //   defs: { items: [{ ID, Name }], recipes: [{ ID, Type, Factories, Name, Items, ItemCounts, Results, ResultCounts, TimeSpend, Proliferator }] }
 //         来源网页自己的物品和配方（写法同 data/Vanilla.json）。配方以那边为准：没有的加进来，数不一样的换成那边的；物品只加没有的（src/gamedata.js 的 addGameData）
+// 每排好一张，页面发 dsphc-done 事件（detail: { targets: [{ id, rate }] 这一张的目标, ok: 检查都过了没有, kind: 无带蓝图是 'beltless' }），嵌在别的网页里时 bridge.js 转给那边
 
 const OPTION_KEYS = ['assembler', 'smelter', 'chemical', 'lab', 'belt', 'sorter', 'pile'];
 
@@ -31,7 +34,8 @@ export function readHandoff(hash) {
   const options = {};
   for (const k of OPTION_KEYS) if (p[k] != null && p[k] !== '') options[k] = String(p[k]);
   const labstack = Number(p.labstack) > 0 ? Number(p.labstack) : null;
-  return { targets, ext, recipes, options, labstack, defs: readDefs(p.defs), auto: p.auto !== false, from: typeof p.from === 'string' ? p.from.slice(0, 40) : null };
+  const beltless = typeof p.beltless === 'string' && p.beltless.startsWith('BLUEPRINT:') && p.beltless.length < 8e6 ? p.beltless : null;
+  return { targets, ext, recipes, options, labstack, defs: readDefs(p.defs), auto: p.auto !== false && !beltless, from: typeof p.from === 'string' ? p.from.slice(0, 40) : null, beltless };
 }
 
 /** 带过来的物品和配方（defs）：只留字段齐全、类型对的，按 Vanilla.json 的写法整理；一条都没有返回 null。页面存下的那份读回来时也过一遍 */

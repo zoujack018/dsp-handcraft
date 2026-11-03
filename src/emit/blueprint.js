@@ -2,32 +2,23 @@
 //
 // 记录格式沿用 antian369/dsp-calc 已在游戏里验证过的写法：
 //   - 工厂：中心坐标，yaw 0，parameters {acceleratorMode: 0}，recipeId。
-//   - 分拣器：起点/终点分别落在传送带格子或工厂边缘（熔炉、制造台中心上下 1 格），
-//     下侧槽位 中心+1/0/-1 = 6/7/8，上侧槽位 中心-1/0/+1 = 0/1/2（0 号已实测）；
-//     化工厂下侧落在中心 −1 再往上 0.284、槽位 中心-1/0/+1 = 6/5/4，上侧落在中心 +2、槽位 0/1/2，
-//     向上 yaw 0、向下 yaw 180，parameters {length}。
+//   - 分拣器：起点/终点分别落在传送带格子和工厂一端的槽位（gamedata.js 的 slotPoint），向上 yaw 0、向下 yaw 180，parameters {length}。
 //   - 传送带：方向完全由 outputObjIdx 链决定，这里 yaw 写实际朝向，便于阅读。
-//   - 高架：同一格里 z 差 1 的两节带子直接相连就是垂直升降。错开的写法照游戏里手动拉的官方垂直传送带
-//     （2026/10/03 用户贴的蓝图）：一叠里按流向，进入的那一节往来路方向错开最多（还剩几节到出口就错几个 0.0016），
-//     逐节往前挪，出口那一节正好在格子中心。抬升、落下都这样，带子在游戏里看起来是一根往前走的直的垂直带。
-//     antian 原来的写法落下时往去路方向错开，一叠里的节点会先往前再往回，游戏里画出来是折返的。
+//   - 高架：同一格里 z 差 1 的两节带子直接相连就是垂直升降。错开的写法照游戏里手动拉的官方垂直传送带（game-rules 第 6 条）：
+//     一叠里按流向，进入的那一节往来路方向错开最多（还剩几节到出口就错几个 0.0016），逐节往前挪，出口那一节正好在格子中心。
+//     抬升、落下都这样，带子在游戏里看起来是一根往前走的直的垂直带（往去路方向错开的话，画出来是折返的）。
 import buildingsData from '../../data/Buildings.json' with { type: 'json' };
 import { toStr } from '../codec/parser.js';
-import { BELT_IDS, realItem, slotPoint, THERMAL_PLANT, THERMAL_BANK, STORE_BODY, DISTRIBUTOR_LIFT, TANK_STUB, LEVEL_M, BELT_LINK_M } from '../gamedata.js';
+import { BELT_IDS, realItem, slotPoint, STORE_BODY, DISTRIBUTOR_LIFT, TANK_STUB, LEVEL_M, BELT_LINK_M } from '../gamedata.js';
 import { coaterYaw } from '../plan/addons.js';
-import { bankSorters } from '../plan/burn.js';
 import { rotateBlueprint } from './rotate.js';
 
 const TEMPLATE = new Map(Object.values(buildingsData.buildings).map((b) => [b.itemId, b]));
-// 自动集装机不在 antian 的模板里，照用户的分馏阵列蓝图补上（modelIndex 257，口位 14/15 和别的设备一样）
+// 自动集装机不在 antian 的模板里，照参考蓝图（分馏阵列）补上（modelIndex 257，口位 14/15 和别的设备一样）
 if (!TEMPLATE.has(2040)) {
   TEMPLATE.set(2040, { index: -1, itemId: 2040, modelIndex: 257, areaIndex: 0, localOffset: [{ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }], yaw: [0, 0], tilt: 0, pitch: 0, tilt2: 0, pitch2: 0, outputObjIdx: -1, inputObjIdx: -1, outputToSlot: 14, inputFromSlot: 15, outputFromSlot: 15, inputToSlot: 14, outputOffset: 0, inputOffset: 0, recipeId: 0, filterId: 0, parameters: null });
 }
-// 火力发电厂也不在 antian 的模板里，照用户 2026/10/07 贴来的那张（test/fixtures/ref-thermal-bank.bp.txt）补上
-if (!TEMPLATE.has(THERMAL_PLANT)) {
-  TEMPLATE.set(THERMAL_PLANT, { index: -1, itemId: THERMAL_PLANT, modelIndex: THERMAL_BANK.modelIndex, areaIndex: 0, localOffset: [{ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }], yaw: [THERMAL_BANK.yaw, THERMAL_BANK.yaw], tilt: 0, pitch: 0, tilt2: 0, pitch2: 0, outputObjIdx: -1, inputObjIdx: -1, outputToSlot: 0, inputFromSlot: 0, outputFromSlot: 0, inputToSlot: 0, outputOffset: 0, inputOffset: 0, recipeId: 0, filterId: 0, parameters: null });
-}
-// 储物仓、储液罐、物流配送器（箱子供货，plan/storage.js）：照用户 2026/10/18 的蓝图（test/fixtures/ref-box.bp.txt）写，
+// 储物仓、储液罐、物流配送器（箱子供货，plan/storage.js）：照参考蓝图 test/fixtures/ref-box.bp.txt 写，
 // 一律用这份（antian 的模板里小型储物仓是从一叠里抄的，inputObjIdx 指着别的建筑）
 for (const [itemId, modelIndex] of [[2101, 51], [2102, 52], [2106, 121], [2107, 371]]) {
   TEMPLATE.set(itemId, { index: -1, itemId, modelIndex, areaIndex: 0, localOffset: [{ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }], yaw: [0, 0], tilt: 0, pitch: 0, tilt2: 0, pitch2: 0, outputObjIdx: -1, inputObjIdx: -1, outputToSlot: 14, inputFromSlot: 15, outputFromSlot: 15, inputToSlot: 14, outputOffset: 0, inputOffset: 0, recipeId: 0, filterId: 0, parameters: null });
@@ -117,11 +108,6 @@ export function chainTiles(layout, chain) {
 }
 
 /**
- * @param graph 生产图
- * @param layout route() 的结果
- * @param {{belt?: 1|2|3, sorter?: number, title?: string, targetId?: number}} opt
- */
-/**
  * 物流站整站的设置（游戏里「物流站设置」那几项，蓝图里都有）：只留认识的、在游戏范围里的。单位同 codec 解出来的：
  * 最大充能功率 MW（星际站 30~300）、运输机最远路程 °（20~180）、运输船最远路程 光年（1~60，10000 是无限）、曲速启用路程 AU（0.5~60）、
  * 运输机 / 运输船起送量 %（1~100）、轨道采集器、翘曲器必备
@@ -138,6 +124,11 @@ export function stationSettings(x) {
   return out;
 }
 
+/**
+ * @param graph 生产图
+ * @param layout route() 的结果
+ * @param {{belt?: 1|2|3, sorter?: number, title?: string, targetId?: number}} opt
+ */
 export function emitBlueprint(graph, layout, opt = {}) {
   const beltId = BELT_IDS[opt.belt ?? 3];
   const sorterId = opt.sorter ?? 2013;
@@ -155,7 +146,7 @@ export function emitBlueprint(graph, layout, opt = {}) {
     { x: x + ox, y: y + oy, z },
   ];
 
-  // 一叠储物仓 / 储液罐（叠法和设置照用户的蓝图 test/fixtures/ref-box.bp.txt）：每格都设成那种物品（玩家一看就知道放什么、成品也只进这种）；
+  // 一叠储物仓 / 储液罐（叠法和设置照参考蓝图 test/fixtures/ref-box.bp.txt）：每格都设成那种物品（玩家一看就知道放什么、成品也只进这种）；
   // dist 时顶上放物流配送器管这一种，原料那边向其他配送器需求、成品那边供应。返回最下面那个（分拣器、带子接它）
   const stackStores = (type, layers, x, y, itemId, dist, kind) => {
     let below = null;
@@ -214,7 +205,7 @@ export function emitBlueprint(graph, layout, opt = {}) {
 
   // ---------- 物流站 ----------
   // 存储：原料设为需求（本地、星际都需求），成品设为供应；站口：出站 dir 1、进站 dir 2，storageIdx 从 1 起
-  // opt.stationPrefs：玩家在页面上改过、记住的设置（用户 2026/10/27 要下次套用）：翘曲器格、增产剂格（{ warper, spray: { localRole, remoteRole, max } }）
+  // opt.stationPrefs：玩家在页面上改过、记住下次套用的设置：翘曲器格、增产剂格（{ warper, spray: { localRole, remoteRole, max } }）
   // 和整站设置（station，见 stationSettings）
   const SPRAY_ITEMS = new Set([1141, 1142, 1143]); // 增产剂 Mk.I~III
   const pref = (k) => {
@@ -231,13 +222,13 @@ export function emitBlueprint(graph, layout, opt = {}) {
     const params = Object.assign(structuredClone(tpl), stationSettings(opt.stationPrefs?.station)); // 整站设置：玩家改过、记住的
     params.storage = params.storage.map(() => ({ itemId: 0, localRole: 0, remoteRole: 0, max: 0, lockAmount: 0 }));
     st.items.forEach((it, i) => {
-      // 翘曲器格（左栏「物流站格子」）：本地仓储、星际需求，站自己的运输船用；上限 1000（用户 2026/10/07）
+      // 翘曲器格（左栏「物流站格子」）：本地仓储、星际需求，站自己的运输船用；上限 1000
       if (it.role === 'warper') {
         params.storage[i] = { itemId: it.itemId, localRole: 0, remoteRole: 2, max: 1000, ...pref('warper'), lockAmount: 0 };
         return;
       }
       const role = it.role === 'supply' ? 1 : 2;
-      // 喷涂用的增产剂（需求）上限 1000（用户 2026/10/07），别的物品 5000
+      // 喷涂用的增产剂（需求）上限 1000，别的物品 5000
       const spray = role === 2 && SPRAY_ITEMS.has(realItem(it.itemId));
       const max = spray ? 1000 : 5000;
       params.storage[i] = { itemId: realItem(it.itemId), localRole: role, remoteRole: role, max, ...(spray ? pref('spray') : null), lockAmount: 0 };
@@ -248,8 +239,7 @@ export function emitBlueprint(graph, layout, opt = {}) {
     b.parameters = params;
     stationB.push(add(b));
   }
-  // ---------- 箱子供货的储物仓、储液罐、物流配送器（plan/storage.js），叠法和设置照用户的蓝图 ----------
-  // 储物仓每格都设成那种物品（玩家一看就知道放什么、成品也只进这种）；配送器管这一种，原料那边向其他配送器需求、成品那边供应
+  // ---------- 箱子供货的储物仓、储液罐、物流配送器（plan/storage.js），叠法和设置见上面的 stackStores ----------
   const storeB = (layout.stores || []).map((st) => {
     const stack = (x, y) => stackStores(st.type, st.layers, x, y, st.itemId, st.dist, st.kind);
     return { boxes: st.boxes.map(([x, y]) => stack(x, y)), tank: st.tank ? stack(st.tank.x, st.tank.y) : null };
@@ -360,7 +350,7 @@ export function emitBlueprint(graph, layout, opt = {}) {
       last.outputObjIdx = stationB[outStation.k].index;
       last.outputToSlot = outStation.slot;
     }
-    // 储液罐（箱子供货）：原料带的头一节从罐口出来、成品带的最后一节进罐口，这一节放在口上（坐标带小数，照用户的蓝图）
+    // 储液罐（箱子供货）：原料带的头一节从罐口出来、成品带的最后一节进罐口，这一节放在口上（坐标带小数，照参考蓝图）
     for (const part of chain.parts) {
       const st = part.leg != null ? layout.stores?.[layout.legs[part.leg].store] : null;
       if (!st?.tank || !bs.length) continue;
@@ -450,12 +440,11 @@ export function emitBlueprint(graph, layout, opt = {}) {
       issues.push(`${p.g.item}#${s.building} 的分拣器在 (${s.col},${seg.y}) 找不到传送带，已略过`);
       continue;
     }
-    // 分拣器在工厂一端的落点：熔炉、制造台中心 ±1；化工厂下侧中心 −1 再往上挪 0.284，上侧中心 +2；
-    // 研究站、对撞机的槽位不在整格上（x ±0.8 这类、y ±1.83），整根分拣器对齐到槽位的 x，带子那头接最近那格
+    // 分拣器在工厂一端的落点（gamedata.js 的 slotPoint）：研究站、对撞机的槽位不在整格上，整根分拣器对齐到槽位的 x，带子那头接最近那格
     const pt = slotPoint(p.g, s.side, s.col - s.cx);
     const slot = pt.slot;
     if (s.stub) {
-      // 排进行里的储液罐：罐口出两节带子（口上那节、外 1.99 格那节，位置高度照用户的蓝图），拐进通道里这条带的头一格
+      // 排进行里的储液罐：罐口出两节带子（口上那节、外 1.99 格那节，位置高度照参考蓝图），拐进通道里这条带的头一格
       const sgn = s.side === 'bottom' ? -1 : 1;
       const port = fresh(beltId);
       port.localOffset = at(s.cx, cy + sgn * TANK_STUB.port, TANK_STUB.zPort);
@@ -495,7 +484,7 @@ export function emitBlueprint(graph, layout, opt = {}) {
     add(so);
   }
   // 研究站夹带的侧面分拣器（plan/layout/belts.js 的 labGaps）：横着、长 1，从研究站左右两侧的槽位往夹带那一列放产物，
-  // 整根对齐槽位的 y，带子那头在夹带那一列（照用户 2026/10/04 的参考蓝图 test/fixtures/ref-lab-collider.bp.txt）
+  // 整根对齐槽位的 y，带子那头在夹带那一列（照参考蓝图 test/fixtures/ref-lab-collider.bp.txt）
   for (const g of layout.labGaps || []) {
     for (const t of g.taps) {
       const p = layout.pos.get(t.bid);
@@ -522,7 +511,7 @@ export function emitBlueprint(graph, layout, opt = {}) {
     }
   }
 
-  // ---------- 箱子供货：储物仓和进料带之间的分拣器（原料从仓口放上带、成品从带上取进仓口），长 1，照用户的蓝图 ----------
+  // ---------- 箱子供货：储物仓和进料带之间的分拣器（原料从仓口放上带、成品从带上取进仓口），长 1，照参考蓝图 ----------
   (layout.stores || []).forEach((st, k) => {
     for (const s of st.sorters) {
       const beltB = beltAt.get(key(s.belt[0], s.belt[1], 0));
@@ -541,40 +530,6 @@ export function emitBlueprint(graph, layout, opt = {}) {
       add(so);
     }
   });
-
-  // ---------- 就地烧副产物的火力发电厂（plan/burn.js），摆法和分拣器照用户的蓝图 ----------
-  for (const bank of layout.burners || []) {
-    const plantB = bank.plants.map(([x, y]) => {
-      const b = fresh(THERMAL_PLANT);
-      b.localOffset = at(x, y);
-      return add(b);
-    });
-    for (const s of bankSorters(bank)) {
-      const so = fresh(2014); // 集装分拣器（蓝图里用的就是它）
-      so.localOffset = [{ x: s.p0[0] + ox, y: s.p0[1] + oy, z: 0 }, { x: s.p1[0] + ox, y: s.p1[1] + oy, z: 0 }];
-      so.yaw = [180, 180];
-      so.parameters = { length: 1 };
-      so.filterId = 0;
-      so.outputObjIdx = plantB[s.to].index;
-      so.outputToSlot = s.toSlot;
-      so.inputToSlot = 1;
-      so.outputFromSlot = 0;
-      if (s.from === 'belt') {
-        const beltB = beltAt.get(key(s.beltX, bank.feedY, 0));
-        if (!beltB) {
-          issues.push(`火力发电厂的进料分拣器在 (${s.beltX},${bank.feedY}) 找不到传送带，已略过`);
-          continue;
-        }
-        so.inputObjIdx = beltB.index;
-        so.inputFromSlot = -1;
-      } else {
-        so.inputObjIdx = plantB[s.from].index;
-        so.inputFromSlot = s.fromSlot;
-        so.inputOffset = 56; // 蓝图里发电厂之间的分拣器就是这个值
-      }
-      add(so);
-    }
-  }
 
   // ---------- 供电 ----------
   if (layout.power) {

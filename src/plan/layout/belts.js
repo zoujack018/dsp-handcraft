@@ -4,16 +4,15 @@ import { CH_PITCH, STATION_COLS, TOL, permutations } from './shared.js';
 import { pileCapOf } from '../piling.js';
 
 /**
- * 喷增产剂（opt.sprayAll）时给喷涂机留的直带空当：入口（原料）或最后一个生产访问的段尾，
- * 在原来 1 格出入口之外再多留这么多格地面直带。空当连着原来那格一共 1 + SPRAY_GAP 格直带：
- * 喷涂机压着的 3 格 + 前后各 1 格都不转弯不升降（coaterFits），取料格（上游那格）上没有分拣器，
- * 留 4 格刚好有两个能骑的位置（头顶被别的高架压住一个还有备胎）。
+ * 喷增产剂（opt.sprayItems）时给喷涂机留的直带空当：入口（原料）或最后一个生产访问的段尾，在 1 格出入口之外再多留这么多格，
+ * 连着那格一共 1 + SPRAY_GAP 格直带：喷涂机压着的 3 格 + 前后各 1 格都不转弯不升降（coaterFits），取料格（上游那格）上没有分拣器，
+ * 留 4 格刚好有两个能骑的位置（头顶被别的高架压住一个还有备胎）
  */
 const SPRAY_GAP = 4;
 /**
- * 喷涂机骑在高架上（用户 2026/10/08 实测：喷涂机能骑在高架带上，增产剂带在它上一层横穿）：最后一个生产访问的段尾不再在地面
- * 多留 4 格空当，喷涂机骑在接下去那截高架段紧挨段尾的 5 格水平走行上（layout/elevation.js 的 legWindow），
- * 所以那截高架的竖直列离段尾至少 LEG_WINDOW 格。opt.sprayOnLegs 关掉时回到地面空当
+ * 喷涂机骑在高架上（实测：喷涂机能骑在高架带上，增产剂带在它上一层横穿）：最后一个生产访问的段尾不在地面留空当，
+ * 喷涂机骑在接下去那截高架段紧挨段尾的 5 格水平走行上（layout/elevation.js 的 sprayGapCells），
+ * 所以那截高架的竖直列离段尾至少 LEG_WINDOW 格。opt.sprayOnLegs 关掉时用地面空当
  */
 const LEG_WINDOW = 5;
 /** 喷涂时放料段和取料段在地面接成一条（见 consider 里的 joinCost）：cols 里这一截不是竖直列，用这个标记 */
@@ -28,7 +27,7 @@ const byTmin = (p, q) => p.p.tmin - q.p.tmin;
 const byChTmin = (a, b) => a.ch - b.ch || a.tmin - b.tmin;
 
 // 热路径里的循环都写成下标循环：for…of 在 routeFlow、planChain、commitChain 这几个大函数里没被优化掉，
-// 每个循环都建一个迭代器、每一步一个 {value, done}（2026/10/25 量过：光挂通道时那两处就占每次 route() 约 10 KB）
+// 每个循环都建一个迭代器、每一步一个 {value, done}
 
 // 每台工厂分拣器那三列的中间一列是 x + (p.g.tap ?? 0)，x 是 p.centers 里工厂的中心（一般就是工厂中心；对撞机偏在左边）。
 // 下面标「中间那列」的几处都按这个算，不另建数组
@@ -38,7 +37,7 @@ const PERM_IDX = [];
 const permIdx = (k) => (PERM_IDX[k] ??= permutations(Array.from({ length: k }, (_, i) => i)));
 
 /**
- * 一条带里各访问的取放事件，放在池子里（不必每个事件建一个对象；访问只在这一条带里用，每条带开头清空）：
+ * 一条带里各访问的取放事件池（不必每个事件建一个对象，每条带开头清空）：
  * 访问 v 的事件是 [v.e0, v.e1) 这一段，EX 是分拣器所在的列、EV 是放（+）取（−）的量，先后是挂上的先后
  */
 let EX = new Float64Array(256);
@@ -56,7 +55,7 @@ const pushEv = (x, val) => {
   EX[nEv] = x;
   EV[nEv++] = val;
 };
-/** 块 p 每台工厂的中间那列（x + tap，见下面「中间那列」）各记一个事件，量都是 val */
+/** 块 p 每台工厂的中间那列（x + tap，见文件开头）各记一个事件，量都是 val */
 const pushCenters = (p, tap, val) => {
   const cs = p.centers;
   for (let i = 0; i < cs.length; i++) pushEv(cs[i] + tap, val);
@@ -67,7 +66,7 @@ let SV = new Float64Array(512);
 let nSv = 0;
 /**
  * 访问 v 的取放事件按流向排好：顺流 x 从小到大、同一列先放后取（v 从大到小），每个访问只排一次（退火里这里是热点）。
- * 向右流：事件是一块块按 x 递增的小段拼起来的，几乎有序，直接插入排序（稳定，和 sort 的结果一样）；
+ * 向右流：事件是一块块按 x 递增的小段拼起来的，几乎有序，直接插入排序（稳定）；
  * 向左流：把向右流的按 x 分组倒过来、组内次序不变，就是 x 从大到小、同一列仍 v 从大到小
  */
 const sortEv = (v) => {
@@ -116,16 +115,13 @@ const scratch = (slot, Type, n) => {
   if (!a || a.length < n) a = SCRATCH[slot] = new Type(Math.max(n, 64));
   return a;
 };
-/**
- * 同样各次调用共用的普通数组（放对象，或者要保持小整数的数）：以前每次 route() 都新建二十来个、再一格格长大（2026/10/25 压分配）。
- * 用到的都是先写后读（按个数或下标，只读这一次写过的那几项），上一次留下的东西读不到
- */
+/** 同样各次调用共用的普通数组（放对象，或者要保持小整数的数）：都是先写后读，只读这一次写过的那几项 */
 const LISTS = [];
 const list = (slot) => (LISTS[slot] ??= []);
 
 /**
- * 访问（挂在一个通道上的一组生产者、消费者）放在池子里：只在这一条带（routeFlow）里用——planChain、commitChain 读它的字段，
- * 段、高架段里存的是抄过去的值，原料带试算过的方案也只存到这条带结束——所以每条带开头从头复用（nVisit 归零），每个字段都重写
+ * 访问（挂在一个通道上的一组生产者、消费者）放在池子里：只在这一条带（routeFlow）里用（段、高架段里存的是抄过去的值），
+ * 所以每条带开头从头复用（nVisit 归零），每个字段都重写
  */
 const VISITS = [];
 let nVisit = 0;
@@ -145,8 +141,8 @@ const visitAt = (ch, key, P, C, e0, e1, tmin, tmax) => {
   return v;
 };
 /**
- * planChain 的结果（一条带的方案）也放在池子里，和访问一样每条带开头从头复用（nPlan 归零）：方案、它的各段（geo）、cols、br 都不再每次新建。
- * 各段、cols、br 只有前 k、k − 1、k − 1 项是这个方案的（k 是段数；commitChain 原来按数组长度读的地方改按 k 读），每个字段都在 planChain 里重写
+ * planChain 的结果（一条带的方案）也放在池子里，和访问一样每条带开头从头复用（nPlan 归零）：
+ * 各段 geo、竖直列 cols 只有前 k、k − 1 项是这个方案的（k 是段数），每个字段都在 planChain 里重写
  */
 const PLANS = [];
 let nPlan = 0;
@@ -157,21 +153,17 @@ let nFace = 0;
 /** route() 的一步：读写共享的布局上下文 c */
 export function routeItems(c) {
   const { P, R, addLoad, addPenalty, atPort, bestColumn, blocksOf, entryCol, exitCol, graph, itemBids, opt, pos, rows, side, xL, xR } = c;
-  // 喷增产剂：走线给要喷的带留出喷涂机的空当，见 SPRAY_GAP 和下面标 sprayHere 的几处。opt.sprayItems 给了时只喷这几种物品
-  // （最终产物的直接原料），而且喷涂机要放在 opt.sprayTo 那几组（最终产物）取料之前、别的消费者都取完之后（用户 2026/10/18：
-  // 上游吃到喷过的料不起作用，增产剂白耗）：这种带的访问排成「生产 → 别的消费者 → 最终那几组」，空当留在最终那几组前面；
-  // 原料带给最终那几组单开入口，只喷那条。没给时每条进工厂的带都喷（sprayScope 'all'）
-  const sprayAll = !!opt.sprayAll;
-  const bridges = !!opt.bridges; // 桥：竖直列能穿过熔炉、制造台的块（positions.js 的 bestColumn），桥段记 leg.bridge
+  // 喷增产剂：只喷 opt.sprayItems 这几种物品（最终产物的直接原料），喷涂机要放在 opt.sprayTo 那几组（最终产物）取料之前、
+  // 别的消费者都取完之后（上游吃到喷过的料不起作用，增产剂白耗）：这种带的访问排成「生产 → 别的消费者 → 最终那几组」，
+  // 空当（SPRAY_GAP，见下面标 sprayHere 的几处）留在最终那几组前面；原料带给最终那几组单开入口，只喷那条。没给时不喷
   const leftEnds = side || !!opt.leftPorts; // 原料段要朝右流、成品段要朝左流：靠左侧站列，或出入口都在左边（route.js 的 leftPorts）
-  const sprayItems = sprayAll && opt.sprayItems ? new Set(opt.sprayItems) : null;
+  const sprayItems = opt.sprayItems ? new Set(opt.sprayItems) : null;
   const sprayTo = sprayItems ? new Set(opt.sprayTo ?? []) : null;
   const toFinal = (cc) => sprayTo.has(cc.p.gid); // 这个消费者是最终那几组（吃喷过的料）
   let sprayHere = false; // 当前这条带喷不喷（routeFlow 开头定）
   let legSpray = false; // 当前这条带的中间产物喷涂机骑在段尾那截高架上（见 LEG_WINDOW）
-  let rawSpray = false; // 当前这条原料带的入口留喷涂机空当（planChain 里定：只喷最终那几组时，只有全是最终那几组取料的原料带喷）
-  // 实验开关（考卷量上界用，网页不暴露）：opt.sprayGapOff 写 'in' / 'mid'（可用 + 连），那种地面空当不留、喷涂机也不放（配合 routeOptions.allowMissed）
-  // （没给时两样都不关，不用每次拆一遍空字符串）
+  let rawSpray = false; // 当前这条原料带的入口留喷涂机空当（planChain 里定：只有全是最终那几组取料的原料带喷）
+  // 实验开关（网页不暴露）：opt.sprayGapOff 写 'in' / 'mid'（可用 + 连），那种地面空当不留、喷涂机也不放（配合 routeOptions.allowMissed）
   const gapOff = opt.sprayGapOff ? new Set(String(opt.sprayGapOff).split(/[+,]/).filter(Boolean)) : null;
   const offIn = gapOff !== null && gapOff.has('in');
   const offMid = gapOff !== null && gapOff.has('mid');
@@ -183,7 +175,7 @@ export function routeItems(c) {
   const legs = []; // 高架段：in 原料入口→段，link 段→段，out 段→成品出口
   const chains = []; // 每种物品按流向排列的 [{leg}|{seg}]
   // 地面段、高架段的 id 是它在 segments、legs 里的下标，高架段另有 cells（落实高度时填）：都写在对象字面量的末尾
-  // （属性的先后和建好以后再逐个加上时一样，免得每个对象再长一块属性表）
+  // （不在建好以后再加，免得每个对象再长一块属性表）
   const addSeg = (s) => {
     segments.push(s);
     return s;
@@ -211,7 +203,7 @@ export function routeItems(c) {
     return n;
   };
   // 每个块两侧的 sides 表，和对面一行里横向重叠的块朝着这边那一侧的表（below、above 的前 nBelow、nAbove 项）：
-  // 布局定了就不变，按需各算一次（colDemand 是热点）。这些对象和数组放在池子里（FACES，每次 routeItems 从头用），只在这一步里用
+  // 布局定了就不变，按需各算一次（colDemand 是热点）。这些对象和数组放在池子里（FACES，每次 routeItems 从头用）
   const faceMemo = new Map();
   nFace = 0;
   const faceOf = (p) => {
@@ -234,19 +226,17 @@ export function routeItems(c) {
     const ms = low ? fc.below : fc.above;
     const nm = low ? fc.nBelow : fc.nAbove;
     for (let i = 0; i < nm; i++) face = Math.max(face, ms[i].size);
-    // 新碰撞规则下上下两侧可以共用一列（只要轨道错开），列数主要受多的那一侧限制。
-    // 三个种子的基准均值：own + face 面积 5882、带 2142；max 面积 5757、带 2033；own + face/2 更差。
+    // 上下两侧可以共用一列（只要轨道错开，game-rules 第 1 条），列数主要受多的那一侧限制：取大的，比两侧相加省地
     return Math.max(own, face);
   };
-  // 两段之间的竖直列（c.bestColumn）：本步里同样的参数大量重复，用数字键记下来，colLoad 一变（addLoad）就清空。
-  // bestColumn0 只在 xL..xR+1 里找两头各隔至少 1 格的列：出段、进段的方向把这个范围夹空了时，不用扫列也知道是 null
+  // 两段之间的竖直列（c.bestColumn）：本步里同样的参数大量重复，用数字键记下来，addLoad 一调就清空。
+  // bestColumn 只在 xL..xR+1 里找两头各隔至少 1 格的列：出段、进段的方向把这个范围夹空了时，不用扫列也知道是 null
   const XO = 16;
   const XW = xR + 2 * XO + 2;
   const CHN = R + 1;
   const colMemo = new Map();
-  let loadVer = 0; // addLoad 调过几次：试算过的方案在这之后没变过 colLoad 就还能直接用
-  // noBridge：这一截不走桥（opt.bridges 打开时才有区别，见 positions.js 的 bestColumn）
-  const column = (xs, d0, xd, d1, c1, c2, g0min = 1, noBridge = false) => {
+  let loadVer = 0; // addLoad 调过几次：试算过的方案在这之后没再调过就还能直接用
+  const column = (xs, d0, xd, d1, c1, c2, g0min = 1) => {
     let lo = xL;
     let hi = xR + 1;
     if (d0 > 0) lo = Math.max(lo, xs + g0min);
@@ -256,10 +246,10 @@ export function routeItems(c) {
     else if (d1 < 0) lo = Math.max(lo, xd + 1);
     else return null;
     if (lo > hi) return null;
-    if (!(xs + XO >= 0 && xs + XO < XW && xd + XO >= 0 && xd + XO < XW && c1 >= 0 && c1 < CHN && c2 >= 0 && c2 < CHN)) return bestColumn(xs, d0, xd, d1, c1, c2, g0min, noBridge);
-    const key = ((((((xs + XO) * XW + xd + XO) * 3 + d0 + 1) * 3 + d1 + 1) * CHN * CHN + c1 * CHN + c2) * 2 + (g0min > 1 ? 1 : 0)) * 2 + (noBridge ? 1 : 0);
+    if (!(xs + XO >= 0 && xs + XO < XW && xd + XO >= 0 && xd + XO < XW && c1 >= 0 && c1 < CHN && c2 >= 0 && c2 < CHN)) return bestColumn(xs, d0, xd, d1, c1, c2, g0min);
+    const key = ((((((xs + XO) * XW + xd + XO) * 3 + d0 + 1) * 3 + d1 + 1) * CHN * CHN + c1 * CHN + c2) * 2 + (g0min > 1 ? 1 : 0));
     let r = colMemo.get(key);
-    if (r === undefined) colMemo.set(key, (r = bestColumn(xs, d0, xd, d1, c1, c2, g0min, noBridge)));
+    if (r === undefined) colMemo.set(key, (r = bestColumn(xs, d0, xd, d1, c1, c2, g0min)));
     return r;
   };
   const addLoadM = (x, c1, c2) => {
@@ -267,7 +257,7 @@ export function routeItems(c) {
     colMemo.clear();
     loadVer++;
   };
-  // 竖直列的代价（positions.js 的 bestColumn0）是两头的横向距离（各至少 1 格）、离得太近的 +3，加上 crowd × crowdWeight：
+  // 竖直列的代价（positions.js 的 bestColumn）是两头的横向距离（各至少 1 格）、离得太近的 +3，加上 crowd × crowdWeight：
   // crowdWeight 不为负时它不小于 max(2, 两头的距离)，试算可以按下界提前放弃（见 planChain 的 consider）
   const canPrune = opt.crowdWeight >= 0;
   // 挂通道时每个通道的统计（通道号 0..R），各种物品、各轮共用
@@ -288,14 +278,12 @@ export function routeItems(c) {
     return load;
   };
   const beltCap = BELT_SPEED[opt.belt] * opt.stack * 60;
-  // 物流站输出原料时可以集装（科技解锁后 1~4 层），原料带的运力随之翻倍；成品由分拣器放上带，不集装
+  // 物流站输出原料时可以集装（科技解锁后 1~4 层），原料带的运力随之翻倍；产物带见下面的 pileCap
   const rawCap = beltCap * Math.max(1, opt.station?.stack ?? opt.externalStack ?? 1);
-  // 自动集装机（opt.pilers，用户 2026/10/26）：分拣器放上带的是单个物品，带上每放约 1700/分过一台集装机，产物带一条最多运 pileCap，
-  // 不到这个量不拆带（集装机放在哪儿是后处理，plan/addons.js 的 stackPilers）。一台只把相邻两个合成一个（用户 2026/10/30），
-  // 以前按一台叠满 4 层算的单条带 4 倍（7200）要很多台才接近；opt.pileModel 写 k 按一条带最多放 k 台够得着的算（plan/piling.js 的 pileCapOf），
-  // 不写照旧 4 倍。关掉集装机时和单条带一样。集装分拣器放上带的本来就叠 sorterStack 层（route.js 的 DEFAULTS），不靠集装机运单条带格位 × 层数；
-  // 叠 2、3 层时就按这个拆带、不再指望集装机叠到 4 倍（用户 2026/11/01：铁块 7200 在「集装分拣器改良」1~4 级一条带要 4~7 台集装机、放不下，
-  // 搜索看不见集装机放不放得下）；叠 4 层时两种算法都是 4 倍，层数 1 时不变
+  // 产物带一条最多运 pileCap，不到这个量不拆带。自动集装机（opt.pilers）：分拣器放上带的是单个物品，带上每放约 1700/分过一台集装机
+  // （放在哪儿是后处理，plan/addons.js 的 stackPilers），一条带按 plan/piling.js 的 pileCapOf 算（opt.pileModel）；关掉时和单条带一样。
+  // 集装分拣器放上带的本来就叠 sorterStack 层（route.js 的 DEFAULTS）：大于 1 时按单条带格位 × 层数拆带、不指望集装机
+  // （那要一条带好几台集装机，搜索看不见放不放得下）
   const pileCap = (opt.sorterStack || 1) > 1 ? Math.max(beltCap, BELT_SPEED[opt.belt] * 60 * opt.sorterStack) : Math.max(opt.pilers ? Math.max(beltCap, pileCapOf(BELT_SPEED[opt.belt] * 60, opt.pileModel)) : beltCap, BELT_SPEED[opt.belt] * 60);
   // 排物品的顺序：只能走某一个通道的先排，能二选一的后排（让它们去轨道少的那边）；原料入口随时可以多开，最后排
   const flex = (f) => {
@@ -368,8 +356,7 @@ export function routeItems(c) {
   /**
    * 精确分带：生产者按位置排好，切成连续的 k 段（每段不超过一条带），切点在等分点附近各试前后两块；每种切法把消费者按需求从大到小
    * 放进「放得下里剩得最少」的带（放不下就放剩得最多的），再一步一步挪一个、换两个，压各条带的缺口合计。取缺口最小的切法
-   * （一样时离得近的），比原来的缺口小才用。整台工厂取整，生产 60/分一台、消费 45/分一台时，等分常常凑不齐（引力矩阵 180 铁块 23 + 22
-   * 台差 15~60/分），换成 21 + 24 台就正好
+   * （一样时离得近的），比原来的缺口小才用。整台工厂取整，生产 60/分一台、消费 45/分一台时，等分常常凑不齐，换一种切法就正好
    */
   const exactBins = (prods, cons, per, k) => {
     const P = prods.slice().sort((a, b) => a.row - b.row || a.x0 - b.x0);
@@ -518,10 +505,10 @@ export function routeItems(c) {
   };
 
   // 当前这条带：物品 f、是不是原料、送到成品出口的量、带上的流量（产物）。
-  // 下面 routeFlow、planChain、commitChain 各物品、各条带共用，读这几个量，不必每种物品重建一遍闭包
+  // 下面 routeFlow、planChain、commitChain 读这几个量，各物品共用，不必每种物品重建一遍闭包
   let f = null;
   let isRaw = false;
-  // 原料带的入口只许在哪一边（−1 左、1 右、0 不限）：一种原料有几条带时都从同一边进（用户 2026/10/24，routeFlow 里定）
+  // 原料带的入口只许在哪一边（−1 左、1 右、0 不限）：一种原料有几条带时都从同一边进（routeFlow 里定）
   let rawSide = 0;
   let outRate = 0;
   let rate = 0;
@@ -590,7 +577,7 @@ export function routeItems(c) {
   };
   /**
    * 按侧拆开的一半：访问 v 里下方那行（row ≠ v.ch，lower 为真）或上方那行接的生产者、消费者，先后不变。
-   * 单独写成函数：原来的过滤函数直接写在 routeFlow 的循环里、读循环里的 ch，那一层循环每转一圈都要建一个作用域对象（不拆段时也建）
+   * 单独写成函数：过滤函数写在 routeFlow 的循环里、读循环里的 ch 的话，那一层循环每转一圈都要建一个作用域对象（不拆段时也建）
    */
   const sideHalf = (v, lower) =>
     makeVisit(
@@ -599,9 +586,8 @@ export function routeItems(c) {
       v.C.filter((c) => (c.p.row !== v.ch) === lower),
     );
 
-  // 原料带试算过的方案（plan）：之后没调过 addLoad、colLoad 没变，就和重算的一样，直接用。按（哪一组访问——groups 里的那个数组本身，rawSide）找，
-  // 第 j 条记在 TRV、TRS、TRL（算的时候的 loadVer）、TRB 的第 j 项；只在一条原料带里用，routeFlow 里每条开头 nTr 归零
-  // （原来每条原料带建三个 Map、每条记录一个 {ver, best}；同一个键再算一遍时原地改写，和 Map 的 set 一样）
+  // 原料带试算过的方案（plan）：之后没调过 addLoad 就和重算的一样，直接用。按（哪一组访问——groups 里的那个数组本身，rawSide）找，
+  // 第 j 条记在 TRV、TRS、TRL（算的时候的 loadVer）、TRB 的第 j 项，同一个键再算一遍时原地改写；只在一条原料带里用，routeFlow 里每条开头 nTr 归零
   const TRV = list(18);
   const TRS = list(19);
   const TRL = list(20);
@@ -621,7 +607,7 @@ export function routeItems(c) {
     TRB[j] = best;
     return best;
   };
-  /** 几组原料带试算的代价合计，每组再加一个入口（串不串通道时比；加法的先后和原来 reduce 的一样） */
+  /** 几组原料带试算的代价合计，每组再加一个入口（串不串通道时比） */
   const price = (gs) => {
     let a = 0;
     for (let i = 0; i < gs.length; i++) a = a + plan(gs[i]).cost + opt.entryWeight;
@@ -635,12 +621,9 @@ export function routeItems(c) {
   const routeFlow = (prodBlocks, cons, nCons, out, r) => {
     outRate = out;
     rate = r;
-    // 这条带喷不喷：全喷时都喷；只喷最终那几组时，要喷的物品、而且这条带上有最终那几组取料
-    sprayHere = sprayAll;
-    if (sprayItems) {
-      sprayHere = false;
-      if (sprayItems.has(baseItem(f.itemId))) for (let i = 0; i < nCons; i++) if (toFinal(cons[i])) sprayHere = true;
-    }
+    // 这条带喷不喷：要喷的物品、而且这条带上有最终那几组取料
+    sprayHere = false;
+    if (sprayItems?.has(baseItem(f.itemId))) for (let i = 0; i < nCons; i++) if (toFinal(cons[i])) sprayHere = true;
     legSpray = sprayHere && opt.sprayOnLegs !== false;
     nEv = 0; // 上一条带的访问用完了，事件池从头用
     nSv = 0;
@@ -689,10 +672,9 @@ export function routeItems(c) {
         sCols[r] += Math.max(0, dem[2 * i] + 1 - p.g.colCap);
         if (!p.g.noTop) sCols[r + 1] += Math.max(0, dem[2 * i + 1] + 1 - p.g.colCap);
       }
-      // 覆盖得多的通道优先；一样多时，先挑分拣器列更宽裕的通道（每台工厂一侧只有 3 列，
-      // 这一侧和对面那一行在这里接的物品数，多的那一侧超过列数就排不开），
-      // 再挑这一段范围内已有地面段更少的通道（少占轨道），再挑有生产者的，最后挑通道号大的（全序，和遍历先后无关）
-      // （地面段数只在前两项打平时才用得上，用到才数；pl 为 −1 是还没数）
+      // 覆盖得多的通道优先；一样多时先挑分拣器列更宽裕的（每台工厂一侧只有 3 列，这一侧和对面那一行在这里接的物品数，
+      // 多的那一侧超过列数就排不开），再挑这一段范围内已有地面段更少的（少占轨道）、有生产者的，最后挑通道号大的（全序）。
+      // 地面段数只在前两项打平时才用得上，用到才数（pl 为 −1 是还没数）
       let ch = -1;
       let pv = 0;
       let pc = 0;
@@ -767,10 +749,9 @@ export function routeItems(c) {
       }
       nl = nl2;
       const v = visitAt(ch, ch, TP.slice(0, np), TC.slice(0, nc), e0, nEv, tmin, tmax);
-      // 开喷增产剂时一个访问里不能生产者、消费者交错（喷涂机要在全部放料之后、全部取料之前，
-      // 而段内取放的先后由工厂位置定，保证不了）：拆成先 P 后 C 两个访问，中间走一截高架，
-      // 喷涂机骑在 P 访问段尾的空当上（见 planChain 里的 SPRAY_GAP）。
-      // 只喷最终那几组时消费者也不能和最终那几组交错：再拆成别的消费者、最终那几组两个访问（原料带就是两个入口）
+      // 喷增产剂时一个访问里生产者、消费者不能交错（喷涂机要在全部放料之后、全部取料之前，段内取放的先后由工厂位置定，保证不了）：
+      // 拆成先 P 后 C 两个访问，中间走一截高架，喷涂机骑在 P 访问段尾的空当上。
+      // 别的消费者和最终那几组也不能交错：再拆成两个访问（原料带就是两个入口）
       if (sprayHere && v.C.length) {
         let nF = 0;
         if (sprayTo) for (let i = 0; i < v.C.length; i++) if (toFinal(v.C[i])) nF++;
@@ -783,7 +764,7 @@ export function routeItems(c) {
           } else TV[nv++] = makeVisit(ch, [], v.C);
         } else TV[nv++] = v;
       } else if (opt.sideSplit && !(isRaw && (opt.stationHoles || opt.station)) && sideApart(v)) {
-        // 接物流站时原料不拆：每多一段原料就多一个站口（引力矩阵 360、黄棒 30 站+塔：站口不够用、2 条带没接上站）
+        // 接物流站时原料不拆：每多一段原料就多一个站口，站口会不够用
         // 按侧拆段（opt.sideSplit）：下方那行（row = ch − 1）接的一段、上方那行接的一段，中间走高架
         TV[nv++] = sideHalf(v, true);
         TV[nv++] = sideHalf(v, false);
@@ -841,7 +822,7 @@ export function routeItems(c) {
       let tot = 0;
       for (let i = 0; i < byCh.length; i++) {
         const u = byCh[i];
-        if (i === 0 || i - g0 >= opt.rawChain || tot + u.total > rawCap + TOL || (sprayHere && sprayTo && rankOf(u) !== rankOf(byCh[g0]))) {
+        if (i === 0 || i - g0 >= opt.rawChain || tot + u.total > rawCap + TOL || (sprayHere && rankOf(u) !== rankOf(byCh[g0]))) {
           if (i > 0) merged.push(byCh.slice(g0, i));
           g0 = i;
           tot = 0;
@@ -851,13 +832,11 @@ export function routeItems(c) {
       merged.push(byCh.slice(g0));
       if (merged.length < nUnits && price(merged) < price(groups)) groups = merged;
     }
-    // 几条带（几个入口）时都从同一边进（用户 2026/10/24：一种原料不要从几个方向进，要在一处）：左右各试算一遍取便宜的那边。
-    // 接物流站（站列、边缘放站）时入口不在左右边缘，不限
-    // 开侧边总线（groupPorts，layout/ports.js）时一律从右边进：总线排在右边布局外，左边没有往外排的余地。
-    // 总线可以排左边（busSide 'auto'，试验开关）时照样左右各试算一遍，总线排到这种原料进的那一边。
-    // 出入口都在左边（leftPorts）时不限：下面的方向约束已经让原料都从左边进
+    // 几条带（几个入口）时都从同一边进（一种原料不要从几个方向进，要在一处）：左右各试算一遍取便宜的那边。
+    // 接物流站（站列、边缘放站）时入口不在左右边缘，出入口都在左边（leftPorts）时方向约束已经让原料都从左边进，这两种都不限；
+    // 开侧边总线（groupPorts，layout/ports.js）时一律从右边进：总线排在右边布局外，左边没有往外排的余地
     if ((opt.sameSide || opt.groupPorts) && groups.length > 1 && !side && !opt.freeEnds && !opt.leftPorts) {
-      if (opt.groupPorts && opt.busSide !== 'auto') rawSide = 1;
+      if (opt.groupPorts) rawSide = 1;
       else {
         let best = null;
         for (const sd of [-1, 1]) {
@@ -878,9 +857,8 @@ export function routeItems(c) {
   let capK = 0; // 下面的临时数组够几个访问用
   let vk = 0; // 访问个数
   let gapAt = -1; // 喷涂机的空当留在第几段的段尾（−1：不留）
-  // 原料带、这些访问的取放量都是有限数（planChain 里定）：前缀里 acc 从 Infinity 起，Infinity 加有限数还是 Infinity，
-  // worst 取 min(worst, Infinity) 不变，逐个事件累加什么也不改，跳过。flow 是这些量的总和取负，它有限就说明没有 NaN、±Infinity
-  // （有一个不是有限数，和就成了 NaN 或 ±Infinity，再加有限数也回不到有限）
+  // 原料带、这些访问的取放量都是有限数时（flow 是它们的和取负，有限就说明每项都有限；planChain 里定）：前缀里 acc 从 Infinity 起，
+  // 加有限数还是 Infinity，worst 也不变，逐个事件累加什么也不改，跳过
   let rawSkip = false;
   // segOf 的结果（见 segOf）：段的两端、空当被站列截短没有、算过没有。
   // 段的两端和下面的进口、出口 x 会写进段对象、传给 bestColumn，用普通数组存（整数仍是小整数，不变成浮点数）
@@ -909,7 +887,6 @@ export function routeItems(c) {
   let AP = null; // 这个顺序下第 i 截竖直列跨过的通道折成的长度：|mCh[i] − mCh[i + 1]| · CH_PITCH，和 mask 无关
   let RT = null; // rest 里第 i 截那一项（见 consider），按两段的方向位记在 RT[i * 4 + 方向位]，和 lk 一一对应
   const cols = list(13); // 当前方案各段之间竖直列的 x
-  const colsBr = list(14); // 桥（opt.bridges 打开时才写）：当前方案第 i 截的竖直列是不是桥
   const lk = list(15);
   // 目前最好的方案（has 为假时还没有）：找到更好的就照抄过来，最后才建 best
   let has = false;
@@ -927,7 +904,6 @@ export function routeItems(c) {
   let bAt = null; // 各段 segOf 的下标（劈开的是 −1）、第几个访问
   let bJ = null;
   const bCols = list(16);
-  const bBr = list(17);
   /**
    * 访问 j 排在第 i 个、流向 d（back = d < 0）时的段只取决于 j、i、d：各种顺序、各种流向组合共用一份。
    * 返回下标 at = (j·k + i)·2 + back：段的两端是 GA[at]、GB[at]，GH[at] 第 0 位是喷涂机的空当被站列截短了、
@@ -943,17 +919,14 @@ export function routeItems(c) {
     const exit = i < vk - 1 || outRate > 0;
     let a = v.tmin;
     let b = v.tmax;
-    // 喷涂机的空当：原料在入口那头、中间产物在最后一个生产访问的段尾，各多留 SPRAY_GAP 格直带；
-    // 中间产物骑高架（legSpray）时段尾不留，窗口在接下去那截高架上
+    // 喷涂机的空当：原料在入口那头、中间产物在最后一个生产访问的段尾，各多留 SPRAY_GAP 格直带；中间产物骑高架（legSpray）时段尾不留
     let gIn = rawSpray && i === 0 && !offIn ? SPRAY_GAP : 0;
     const gOut = i === gapAt && !legSpray ? SPRAY_GAP : 0;
     // 原料的喷涂机骑在入口那截高架上（legIn）：不留地面空当时的段头离入口列至少 LEG_WINDOW + 1 格（高架在段头前水平走够 5 格），
-    // 窗口就是紧挨段头的那 5 格；不够长时（段头贴着边缘 / 走廊）照旧留地面空当。
-    // 边缘放站（freeEnds）时入口没有高架、站用 A* 直接接到段头，没处骑，照旧留地面空当。
-    // 不接站时这一行地面到边缘都空着的话，layout/ports.js 会把段在地面一直接到边缘（高架作废）：窗口那几格就成了段里的地面直带，
-    // 喷涂机落地骑在原来段头前的那几格上（sprayGuards 按地面空当护着）
-    // 不接站（没有站列、也不是边缘放站）时原料入口的空当一律不留在地面：高架够长就骑高架（legIn），不够长时喷涂机骑在
-    // 入口往外接出的两三节上（'edgeIn'，plan/addons.js 的 pre：那几格在图外的边距里，比段头多留 4 格便宜）
+    // 窗口就是紧挨段头的那 5 格。不够长时：靠左侧站列的留地面空当；不接站的骑在入口往外接出的两三节上
+    // （'edgeIn'，plan/addons.js 的 pre：那几格在图外的边距里，比段头多留 4 格便宜）。
+    // 边缘放站（freeEnds）时入口没有高架、站用 A* 直接接到段头，没处骑，留地面空当。
+    // layout/ports.js 把段在地面一直接到边缘时（高架作废），窗口那几格成了段里的地面直带，喷涂机落地骑在那里（sprayGuards 按地面空当护着）
     let win = 0;
     if (gIn && legSpray && !opt.freeEnds) {
       const head = d > 0 ? (side ? Math.max(v.tmin - 1, STATION_COLS - 1) : v.tmin - 1) : v.tmax + 1;
@@ -981,7 +954,7 @@ export function routeItems(c) {
   };
   /**
    * 顺序 ix 下枚举各段流向，逐个和最好的比；m 不是 null 时第 0 段从 m 劈开（和流向无关，mask 第 0 位恒为 0），cont 是继续往下走的那一半。
-   * 劈开的那段只记几个数（sA … sExitX），成了最好的方案才抄进 bS*，最后建段时才建对象（原来每试一次劈法建一个段对象、一个 {m, cont}）
+   * 劈开的那段只记几个数（sA … sExitX），成了最好的方案才抄进 bS*，最后建段时才建对象
    */
   const consider = (ix, m, cont) => {
     const k = vk;
@@ -1044,9 +1017,8 @@ export function routeItems(c) {
       // 下面按方向位查第 0 段出口的地方（rest 的初值）：劈开的段和流向无关，两格都是它
       TO[0] = TO[1] = mOut[0];
     }
-    // 枚举流向时 mask 的低位变得最快，同一个前缀只算一次；每个量的加法先后和逐个方案从头算时一样，结果逐位相同。
-    // 第 i 段两个流向的 segOf 在这一层开头各调一次：原来在 p = 0、p = 2^i 时第一次调（第一次排事件、写 GA/GB/GH/GD），
-    // 两次之间没有别的 segOf，排事件只写这个访问自己那块 SX/SV，所以副作用的先后、读到的值都一样；结果记进 TA、TI、TO、mCh
+    // 枚举流向时 mask 的低位变得最快，同一个前缀只算一次（每个量的加法先后和逐个方案从头算时一样）。
+    // 第 i 段两个流向的 segOf 在这一层开头各调一次，结果记进 TA、TI、TO、mCh
     for (let i = i0; i < k; i++) {
       const off = (2 << i) - 2;
       const prev = (1 << i) - 2;
@@ -1066,11 +1038,11 @@ export function routeItems(c) {
       const sv = SV; // 这一层的排事件都在上面，之后 SV 不会再换
       for (let back = 0; back < 2; back++) {
         const at = back ? at1 : at0;
-        // 这一段按流向排好的取放事件（segOf 里排过）；sh、len 的增量和原来每个前缀现算的式子一样
+        // 这一段按流向排好的取放事件（segOf 里排过）
         const es = back ? v.s + n : v.s;
         const dsh = GH[at] & 1;
         const dlen = GB[at] - GA[at] + 1;
-        // p 从小到大，和原来一圈走完 [0, 2^(i+1)) 的先后一样（这一半的 p 第 i 位都是 back）
+        // p 从小到大（这一半的 p 第 i 位都是 back）
         for (let p = back << i; p < (back + 1) << i; p += step) {
           let acc = isRaw ? Infinity : 0;
           let worst = 0;
@@ -1136,7 +1108,7 @@ export function routeItems(c) {
       if (leftEnds && isRaw && mD[0] !== 1) bad++;
       let shortfall = -worst;
       if (!isRaw && outRate > 0) shortfall += Math.max(0, outRate - acc);
-      // 到成品出口那一截和中间的竖直列无关：先算出来给下界用，照原来的先后最后才加进 len
+      // 到成品出口那一截和中间的竖直列无关：先算出来给下界用，最后才加进 len
       let outBad = 0;
       let outLen = -1;
       if (outRate > 0) {
@@ -1149,7 +1121,7 @@ export function routeItems(c) {
         }
       }
       // 喷涂：最后一个生产访问（gapAt）和紧接着的第一个消费访问在同一个通道、同向，消费的第一个口在最后一个放料口下游
-      // 至少 1 + SPRAY_GAP 格（空当留得下）时，两段在地面接成一条、喷涂机骑在中间，不升起绕高架、不占竖直列（用户 2026/10/08，待办 3 第一步）。
+      // 至少 1 + SPRAY_GAP 格（空当留得下）时，两段在地面接成一条、喷涂机骑在中间，不升起绕高架、不占竖直列。
       // 这一截的代价就是中间补的直带（可能是 −1、−2：放料段尾留的空当和取料段的进口重叠），比任何竖直列都便宜，所以能接就接
       let canJoin = false;
       let joinCost = 0;
@@ -1180,29 +1152,26 @@ export function routeItems(c) {
       let cut = false;
       for (let i = 0; i < k - 1; i++) {
         // 下界剪枝：已经算出的代价加上后面至少还要的，比最好的好不到 TOL（再留 1 格的余量盖住浮点误差）就不再找竖直列，
-        // 这个方案按原来的比法也不会被选上
+        // 这个方案本来也不会被选上
         if (prune && !(shortfall * 1000 + (bad + outBad) * 5000 + sprayShort * 5000 + len + (outLen >= 0 ? outLen : 0) + rest[i] < bCost - TOL + 1)) {
           cut = true;
           break;
         }
         if (canJoin && i === gapAt) {
           cols[i] = JOIN;
-          if (bridges) colsBr[i] = false;
           len += joinCost;
           continue;
         }
         const li = i * 4 + ((mask >> i) & 3);
         let bc = lk[li];
-        // 段尾骑喷涂机的那截高架（legSpray 的 gapAt）：竖直列离段尾至少 LEG_WINDOW 格，窗口的 5 格直带才放得下；
-        // 这截也不走桥（桥段在第 4 层以上，喷涂机的窗口和保护区都跟着抬高，规则没验证过）
+        // 段尾骑喷涂机的那截高架（legSpray 的 gapAt）：竖直列离段尾至少 LEG_WINDOW 格，窗口的 5 格直带才放得下
         if (bc === undefined) {
-          bc = lk[li] = column(mOut[i], mDout[i], mIn[i + 1], mD[i + 1], mCh[i], mCh[i + 1], legSpray && i === gapAt ? LEG_WINDOW : 1, legSpray && i === gapAt);
-          // 之后的方案在 rest 里照找到的算：式子和原来每次读 lk 时一样（没找到 5000，找到了按竖直列的代价加 dy，至多 5000）
+          bc = lk[li] = column(mOut[i], mDout[i], mIn[i + 1], mD[i + 1], mCh[i], mCh[i + 1], legSpray && i === gapAt ? LEG_WINDOW : 1);
+          // 之后的方案在 rest 里照找到的算（没找到 5000，找到了按竖直列的代价加 dy，至多 5000）
           if (bc !== undefined) RT[li] = bc === null ? 5000 : Math.min(5000, bc.cost + (AP[i] + 2));
         }
         const x = bc?.x ?? null;
         cols[i] = x;
-        if (bridges) colsBr[i] = x !== null && bc.bridge === true;
         if (x === null) bad++;
         else len += bc.cost + AP[i] + 2;
       }
@@ -1229,7 +1198,6 @@ export function routeItems(c) {
           bJ[i] = ix[i];
         }
         for (let i = 0; i < k - 1; i++) bCols[i] = cols[i];
-        if (bridges) for (let i = 0; i < k - 1; i++) bBr[i] = colsBr[i];
       }
     }
   };
@@ -1248,10 +1216,10 @@ export function routeItems(c) {
     return (v.cuts = cuts);
   };
   /**
-   * 访问排在第几档：0 有生产者，1 别的消费者（只喷最终那几组、这条带要喷时），2 其余的消费者（最终那几组）。
+   * 访问排在第几档：0 有生产者，1 别的消费者（这条带要喷时），2 其余的消费者（喷时是最终那几组）。
    * 喷涂时各访问按档排（喷涂机在第 1 档之后、第 2 档之前），不喷时只分有没有生产者
    */
-  const rankOf = (v) => (v.P.length ? 0 : sprayHere && sprayTo && !v.C.every(toFinal) ? 1 : 2);
+  const rankOf = (v) => (v.P.length ? 0 : sprayHere && !v.C.every(toFinal) ? 1 : 2);
   /** 访问多于 4 个时不全排列，只试两种：按档（有生产者的在前），同一档按通道号从小到大或从大到小 */
   const bigOrders = (visits, k) => {
     const byCh = (dir) => (a, b) => rankOf(a) - rankOf(b) || dir * (a.ch - b.ch);
@@ -1269,12 +1237,10 @@ export function routeItems(c) {
         flow -= t;
       }
     }
-    // 顺序用访问的下标表示（和直接排列访问一一对应、先后相同）
+    // 顺序用访问的下标表示
     const orders = k <= 4 ? permIdx(k) : bigOrders(visits, k);
-    // 喷增产剂：生产的访问都要排在消费的访问之前（喷涂机放在两者之间才能喷到全部的料），
-    // 空当留在最后一个生产访问（第 nP−1 个）的段尾；原料带的空当留在入口那头。
-    // 只喷最终那几组时，别的消费者的访问（nN 个）排在生产的之后、最终那几组之前，空当留在第 nP + nN − 1 个的段尾；
-    // 原料带只有全是最终那几组取料的才喷
+    // 喷增产剂：访问排成「生产 → 别的消费者（nN 个）→ 最终那几组」（喷涂机在全部生产之后、最终那几组之前，才能喷到它们的全部料），
+    // 空当留在第 nP + nN − 1 个访问的段尾；原料带的空当留在入口那头，只有全是最终那几组取料的才喷
     let nP = 0;
     let anyC = false;
     for (let j = 0; j < k; j++) {
@@ -1282,7 +1248,7 @@ export function routeItems(c) {
       if (visits[j].C.length) anyC = true;
     }
     let nN = 0;
-    if (sprayHere && sprayTo) {
+    if (sprayHere) {
       anyC = false;
       for (let j = 0; j < k; j++) {
         const v = visits[j];
@@ -1293,7 +1259,7 @@ export function routeItems(c) {
     vk = k;
     rawSkip = isRaw && Number.isFinite(flow); // 见 rawSkip
     gapAt = sprayHere && !isRaw && anyC ? nP + nN - 1 : -1;
-    rawSpray = sprayHere && isRaw && (!sprayTo || !nN);
+    rawSpray = sprayHere && isRaw && !nN;
     has = false;
     if (k > capK) {
       // 临时数组按访问个数取够长的（这一步里只在访问个数变多时重取）
@@ -1354,8 +1320,8 @@ export function routeItems(c) {
       }
     }
     if (!has) return null;
-    // 最好的方案（从池子里取，见 PLANS）：k 段、k − 1 截竖直列（cols）、桥（br，opt.bridges 打开时才写）
-    const res = (PLANS[nPlan++] ??= { cost: 0, shortfall: 0, bad: 0, sprayShort: 0, k: 0, geo: [], cols: [], br: [], flow: 0 });
+    // 最好的方案（从池子里取，见 PLANS）：k 段、k − 1 截竖直列（cols）
+    const res = (PLANS[nPlan++] ??= { cost: 0, shortfall: 0, bad: 0, sprayShort: 0, k: 0, geo: [], cols: [], flow: 0 });
     res.cost = bCost;
     res.shortfall = bShortfall;
     res.bad = bBad;
@@ -1395,7 +1361,6 @@ export function routeItems(c) {
       g.gap = rawSpray && i === 0 ? (offIn ? null : GH[at] & 2 ? 'legIn' : GH[at] & 4 ? 'edgeIn' : 'in') : i === gapAt ? (bCols[i] === JOIN ? (offMid ? 'join' : 'mid') : 'out') : null;
     }
     for (let i = 0; i < k - 1; i++) res.cols[i] = bCols[i];
-    if (bridges) for (let i = 0; i < k - 1; i++) res.br[i] = bBr[i]; // 各截竖直列是不是桥
     return res;
   };
   /** 把方案落实：记惩罚、加地面段和高架段 */
@@ -1452,8 +1417,7 @@ export function routeItems(c) {
       const ns = 2 * chSegN[v.key]++;
       cs[ns] = a;
       cs[ns + 1] = b;
-      // 挂通道时已经按同一侧记过；只有同一个块又产又耗这种物品时（selfLoop）两次记的值可能不同，要按这里的先后再记一遍，
-      // 否则这里记的和原来的一样，Map 里已有的键再 set 同样的值什么也不变
+      // 挂通道时已经按同一侧记过；只有同一个块又产又耗这种物品时（selfLoop）两次记的值可能不同，要按这里的先后再记一遍
       if (selfLoop) {
         for (let j = 0; j < v.P.length; j++) sides.get(v.P[j].bid)[sideOf(v.P[j], v.ch)].set(f.itemId, 'out');
         for (let j = 0; j < v.C.length; j++) sides.get(v.C[j].p.bid)[sideOf(v.C[j].p, v.ch)].set(f.itemId, 'in');
@@ -1475,9 +1439,7 @@ export function routeItems(c) {
       if (g2) i++; // 下一个访问已经并进这一段
       if (i < k - 1) {
         pending = addLeg({ itemId: f.itemId, kind: 'link', from: seg.id, xv: best.cols[i] ?? (g.dout > 0 ? xR + 1 : xL), rate: flow, id: legs.length, cells: [], to: -1 });
-        // 竖直那截穿过熔炉、制造台的块（桥）：分层时整段至少在第 bridgeLevel 层（layout/elevation.js）
-        if (bridges && best.br[i]) pending.bridge = true;
-        if (seg.sprayGap === 'legOut') pending.spray = { seg: seg.id, side: 'out' }; // 这截高架紧挨段尾的 5 格骑喷涂机（elevation.js 的 legWindow）
+        if (seg.sprayGap === 'legOut') pending.spray = { seg: seg.id, side: 'out' }; // 这截高架紧挨段尾的 5 格骑喷涂机（elevation.js 的 sprayGapCells）
         TQ[nq++] = { leg: pending.id };
       } else if (outRate > 0) {
         const l = addLeg({ itemId: f.itemId, kind: 'out', from: seg.id, edge: exitCol(g.dout), rate: outRate, id: legs.length, cells: [] });
@@ -1487,10 +1449,10 @@ export function routeItems(c) {
     chains.push({ itemId: f.itemId, parts: TQ.slice(0, nq) });
   };
 
-  // 研究站夹带（宇宙矩阵，plan/graph.js 的 sideItem；用户 2026/10/30）：产物不挂通道。同一块里第 2k、2k+1 台（中心隔 6）中间那一列夹一条往北流的带，
+  // 研究站夹带（宇宙矩阵，plan/graph.js 的 sideItem，game-rules 第 40 条）：产物不挂通道。同一块里第 2k、2k+1 台（中心隔 6）中间那一列夹一条往北流的带，
   // 左边那台从右侧、右边那台从左侧往上放（gamedata.js 的 LAB_GAP），带在研究站那一行最上面那格原地升起，接一段 'out' 高架到成品出口
   // （layout/elevation.js 的 cellsFor）。夹带不进 segments（分轨、通道里的分拣器、喷涂、集装都不碰它），记在 c.labGaps，
-  // 纵向的格子等 layout/tracks.js 定了行的 y 再填。第一版每条夹带各自一条带、各自一个出口，出口取左右离得近的那边
+  // 纵向的格子等 layout/tracks.js 定了行的 y 再填。每条夹带各自一条带、各自一个出口，出口取左右离得近的那边
   const labGaps = [];
   const routeGaps = (prodBlocks, out, count) => {
     for (let bi = 0; bi < prodBlocks.length; bi++) {
@@ -1515,7 +1477,7 @@ export function routeItems(c) {
     }
   };
 
-  // 物品按 flex 从小到大排（同一档保持原来的先后，和稳定排序一样）。items、flexOf 只用前 nItems 项
+  // 物品按 flex 从小到大排（同一档保持 graph.items 的先后）。items、flexOf 只用前 nItems 项
   const CA = list(22);
   const items = list(23);
   const flexOf = list(24);
@@ -1533,7 +1495,7 @@ export function routeItems(c) {
       const fcons = f.consumers;
       for (let j = 0; j < fcons.length; j++) if (fcons[j].to === f.producer) selfLoop = true;
       const prodAll = isRaw ? NO_BLOCKS : blocksOf.get(f.producer);
-      // 消费者的块先放在 CA 里：CA 和里面的 {p, d} 各物品共用（只在这一种物品里用，访问、方案里存的是它，段里抄的是它的字段值），逐项重写
+      // 消费者的块先放在 CA 里：CA 和里面的 {p, d} 各物品共用、逐项重写（访问、方案只在这一种物品里用它，段里抄的是它的字段值）
       let nCons = 0;
       let outAll = 0;
       for (let j = 0; j < fcons.length; j++) {

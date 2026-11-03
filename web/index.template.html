@@ -3,221 +3,224 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>产线蓝图生成器</title>
 <link rel="icon" href="favicon.ico">
 <style>
+/*
+ * 左栏、图纸下面的卡片用量产计算器那一套（字号、间距、控件、按下去的反馈；白天的强调色是图纸蓝，黑夜同计算器的金橙），图纸下面的卡片方角；
+ * 顶上一排下拉、图纸、两个弹窗用它们自己的一套颜色、字体（.stage 和 dialog 上定义），黑夜里换成深色
+ */
 :root {
-  --desk: #e4e9f0;
-  --paper: #f6f8fb;
+  color-scheme: light dark;
+  --bg: #e4e9f0; /* 页面底色（图纸四周） */
+  --side: #f9fbfd;
+  --card: #fff;
+  --raised: #ebf0f6;
+  --hover: #f4f7fb;
+  --track: #e6ecf3;
+  --groove: #e6ecf3; /* 左栏选项的浅槽：黑夜里 --track 和左栏底一样深，单给一档 */
+  --wash: rgb(16 42 74 / 0.05); /* 浅色面上指上去铺的一层 */
+  --knob: #fff;
+  --line: rgb(16 42 74 / 0.09);
+  --line-2: rgb(16 42 74 / 0.16);
+  --line-3: rgb(16 42 74 / 0.32);
+  --text: #0f1d2e;
+  --text-2: #435468;
+  --text-3: #617388;
+  --accent: #1f5fae;
+  --accent-hover: #1a5299;
+  --on-accent: #fff;
+  --accent-ink: #1a5299;
+  --accent-soft: rgb(31 95 174 / 0.1);
+  --ok: #16a34a;
+  --err: #dc2626;
+  --pop: 0 12px 32px rgb(15 23 42 / 0.1), 0 2px 6px rgb(15 23 42 / 0.06);
+  --ui: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --paper: #112f52; /* 图纸的深蓝（物品表里色条的底） */
+  /* 线条图标（lucide，ISC 许可）：当遮罩用，颜色跟着文字 */
+  --u-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  --u-right: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 18 6-6-6-6'/%3E%3C/svg%3E");
+  --u-plus: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12h14M12 5v14'/%3E%3C/svg%3E");
+  --u-minus: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12h14'/%3E%3C/svg%3E");
+  --u-x: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18 6 6 18M6 6l12 12'/%3E%3C/svg%3E");
+  --u-back: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M19 12H5M12 19l-7-7 7-7'/%3E%3C/svg%3E");
+  --u-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
+  --u-alert: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01'/%3E%3C/svg%3E");
+  --u-search: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m20 20-3.5-3.5'/%3E%3C/svg%3E");
+  --u-like: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 10v12M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z'/%3E%3C/svg%3E");
+  --u-expand: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7'/%3E%3C/svg%3E");
+  --u-shrink: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7'/%3E%3C/svg%3E");
+  --u-fit: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2'/%3E%3Crect x='7' y='8' width='10' height='8' rx='1'/%3E%3C/svg%3E");
+}
+/* 黑夜：页面、左栏、卡片、按钮用一组深浅不一的黑，不用纯黑，--k0 到 --k6 一层比一层浅（页面底 k0、左栏 k1、卡片 k3、按钮和输入框 k4、指上去 k5、选中 k6）；
+   图纸和图上的线另有一套（文件最后那段 --cv-*）：画图的代码不动，按颜色把图上的深蓝、网格、细线换掉 */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --k0: #0c0c0e;
+    --k1: #101012;
+    --k2: #141416;
+    --k3: #19191c;
+    --k4: #202024;
+    --k5: #28282d;
+    --k6: #313137;
+    --bg: var(--k0);
+    --side: var(--k1);
+    --card: var(--k3);
+    --raised: var(--k4);
+    --hover: #1c1c20;
+    --track: var(--k1);
+    --groove: #1d1d21;
+    --wash: rgb(255 255 255 / 0.05);
+    --knob: var(--k6);
+    --line: rgb(255 255 255 / 0.07);
+    --line-2: rgb(255 255 255 / 0.13);
+    --line-3: rgb(255 255 255 / 0.26);
+    --text: #ededef;
+    --text-2: #a6a6ad;
+    --text-3: #85858c;
+    --accent: #f0913a;
+    --accent-hover: #f5a052;
+    --on-accent: #141415;
+    --accent-ink: #f5a052;
+    --accent-soft: rgb(240 145 58 / 0.14);
+    --ok: #4cc38a;
+    --err: #e5484d;
+    --pop: 0 12px 32px rgb(0 0 0 / 0.5), 0 2px 6px rgb(0 0 0 / 0.3);
+    --paper: var(--k2);
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { background: var(--bg); }
+body { margin: 0; color: var(--text); background: var(--bg); font: 14px/20px var(--ui); -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+body.viewer-expanded { overflow: hidden; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { -webkit-tap-highlight-color: transparent; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ico, .ico-btn::before { display: inline-block; flex: none; width: 16px; height: 16px; background-color: currentColor; -webkit-mask: var(--i) center / contain no-repeat; mask: var(--i) center / contain no-repeat; }
+.i-plus { --i: var(--u-plus); }
+.i-minus { --i: var(--u-minus); }
+.i-x { --i: var(--u-x); }
+.i-back { --i: var(--u-back); }
+.i-check { --i: var(--u-check); }
+.i-alert { --i: var(--u-alert); }
+.i-search { --i: var(--u-search); }
+.i-like { --i: var(--u-like); }
+.i-expand { --i: var(--u-expand); }
+.i-fit { --i: var(--u-fit); }
+.num { font-variant-numeric: tabular-nums; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+/* 物品图示：有 icons/ 目录或网站给图标时是游戏图标，否则是自绘线条图形 */
+.gl { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+.gl.pic { object-fit: contain; }
+.gl.pic + .gl { display: none; }
+
+/* ---------- 左栏贴边到底，右边（顶上一排下拉、图纸，下面蓝图字符串和检查）。最上面那条「返回计算器」由 bridge.js 加在页面最前面 ---------- */
+.app { display: grid; grid-template-columns: 280px minmax(0, 1fr); min-height: 100dvh; }
+.side { position: sticky; top: 0; height: 100dvh; overflow-y: auto; display: flex; flex-direction: column; gap: 20px; margin: 0; padding: 20px 20px 24px; background: var(--side); border-right: 1px solid var(--line); }
+.side > * { flex: none; min-width: 0; }
+/* 右边的间距：上 14、右 14、下 24，离左栏 12；按钮条和图纸隔 8，图纸和下面的卡片隔 12 */
+.main { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-content: start; padding: 14px 14px 24px 12px; }
+
+/* ---------- 左栏 ---------- */
+.field, .seg { display: block; min-width: 0; margin: 0; padding: 0; border: 0; }
+.field-label, .field > label, .seg > legend { display: block; margin: 0 0 8px; padding: 0; font-size: 12px; line-height: 16px; color: var(--text-3); }
+.hint { margin: 8px 0 0; font-size: 12px; line-height: 18px; color: var(--text-3); }
+/* 目标：一张卡一个，左边物品格 + 名字（点了换），中间每分钟产量，右边移除 */
+.goals { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.goal { display: grid; grid-template-columns: minmax(0, 1fr) 76px 24px; align-items: center; gap: 4px; padding: 4px; background: var(--card); border: 1px solid var(--line-2); border-radius: 12px; }
+.goal:has(.rm[hidden]) { grid-template-columns: minmax(0, 1fr) 76px; }
+.target-btn { display: flex; align-items: center; gap: 8px; min-width: 0; height: 40px; padding: 2px 6px 2px 2px; text-align: left; background: transparent; border: 0; border-radius: 8px; cursor: pointer; transition: background-color 0.15s var(--ease); }
+.target-btn:hover { background: var(--raised); }
+.target-btn:active { background: var(--track); }
+.ibox { display: inline-grid; place-items: center; flex: none; width: 36px; height: 36px; border-radius: 8px; background: var(--raised); }
+.ibox .gl { width: 28px; height: 28px; }
+.target-btn:hover .ibox { background: var(--card); }
+.pick-name { min-width: 0; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rate { position: relative; display: block; }
+.rate input { width: 100%; height: 36px; padding: 0 30px 0 8px; font-size: 15px; font-weight: 500; text-align: right; font-variant-numeric: tabular-nums; background: var(--raised); border: 1px solid transparent; border-radius: 8px; -moz-appearance: textfield; appearance: textfield; transition: border-color 0.15s var(--ease), background-color 0.15s var(--ease); }
+.rate input::-webkit-inner-spin-button, .rate input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.rate input:hover { border-color: var(--line-2); }
+.rate input:focus { outline: none; border-color: var(--accent); background: var(--card); }
+.rate > span { position: absolute; right: 8px; top: 8px; font-size: 12px; line-height: 20px; color: var(--text-3); pointer-events: none; }
+.field.labstack .rate input { padding-left: 12px; text-align: left; } /* 研究站层数：数靠左 */
+.rm, .chips li button { display: grid; place-items: center; width: 24px; height: 28px; padding: 0; font-size: 0; color: var(--text-3); background: transparent; border: 0; border-radius: 6px; cursor: pointer; transition: background-color 0.15s var(--ease), color 0.15s var(--ease); }
+.rm::before, .chips li button::before { content: ""; width: 16px; height: 16px; background: currentColor; -webkit-mask: var(--u-x) center / contain no-repeat; mask: var(--u-x) center / contain no-repeat; }
+.rm:hover, .chips li button:hover { color: var(--text); background: var(--raised); }
+.add-goal { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; height: 36px; margin-top: 8px; font-size: 14px; color: var(--text-2); background: transparent; border: 1px dashed var(--line-2); border-radius: 12px; cursor: pointer; transition: border-color 0.15s var(--ease), color 0.15s var(--ease), transform 0.12s var(--ease); }
+.add-goal:hover { color: var(--text); border-color: var(--line-3); }
+.add-goal:active { transform: scale(0.98); }
+/* 外部供应：实线的小块，× 改回自己做；「调整」开弹窗 */
+.ext-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.chips { list-style: none; margin: 0; padding: 0; display: contents; }
+.chips li { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; height: 30px; padding: 0 2px 0 6px; font-size: 13px; background: var(--card); border: 1px solid var(--line-2); border-radius: 8px; }
+.chips li .gl { width: 18px; height: 18px; }
+.chips li button { width: 24px; height: 24px; }
+.chips .none { padding: 0 4px 0 0; font-size: 13px; color: var(--text-3); background: none; border: 0; }
+.btn-2, .linkish { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 30px; padding: 0 10px; font-size: 13px; color: var(--text); white-space: nowrap; background: var(--card); border: 1px solid var(--line-2); border-radius: 8px; cursor: pointer; transition: border-color 0.15s var(--ease), background-color 0.15s var(--ease), transform 0.12s var(--ease); }
+.btn-2:hover, .linkish:hover { border-color: var(--line-3); }
+.btn-2:active, .linkish:active { transform: scale(0.97); background: var(--raised); }
+/* 选项：同计算器挑物品弹窗里的「物品 / 建筑」，一条浅槽里滑块 */
+.seg .opts { display: flex; gap: 2px; padding: 2px; background: var(--groove); border-radius: 8px; }
+.seg label { position: relative; flex: 1 1 0; min-width: 0; }
+.seg label > input[type="radio"] { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+/* 宽度、长度上限的第一格：能填的数（0 是不限），选中时同别的格的滑块；单选藏起来、不挡输入框 */
+.seg .limit-own > input[type="radio"] { width: 1px; height: 1px; pointer-events: none; }
+.limit-num { display: block; width: 100%; height: 28px; padding: 0 6px; font-size: 13px; text-align: center; font-variant-numeric: tabular-nums; color: var(--text-2); background: transparent; border: 1px solid transparent; border-radius: 6px; -moz-appearance: textfield; appearance: textfield; transition: background-color 0.15s var(--ease), color 0.15s var(--ease), border-color 0.15s var(--ease), box-shadow 0.15s var(--ease); }
+.limit-num::-webkit-inner-spin-button, .limit-num::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.limit-own:hover > .limit-num { color: var(--text); background: var(--wash); }
+.limit-own:has(input:checked) > .limit-num { color: var(--text); font-weight: 500; background: var(--knob); box-shadow: 0 1px 2px rgb(0 0 0 / 0.08); }
+.limit-num:focus { outline: none; color: var(--text); background: var(--card); border-color: var(--accent); }
+.seg label > span { display: block; height: 28px; padding: 0 6px; font-size: 13px; line-height: 28px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-2); border-radius: 6px; transition: background-color 0.15s var(--ease), color 0.15s var(--ease), box-shadow 0.15s var(--ease), transform 0.12s var(--ease); }
+.seg label:hover > input:not(:checked) + span { color: var(--text); background: var(--wash); }
+.seg label:active > span { transform: scale(0.97); }
+.seg input:checked + span { color: var(--text); font-weight: 500; background: var(--knob); box-shadow: 0 1px 2px rgb(0 0 0 / 0.08); }
+.seg input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: -2px; }
+.seg span[data-short] { font-size: 0; }
+.seg span[data-short]::before { content: attr(data-short); font-size: 13px; }
+.modern-option { display: none; }
+/* 生成：金橙按钮（同计算器的「生成蓝图」），下面预告、进度、取消、状态 */
+.actions { display: grid; gap: 8px; padding-bottom: 20px; border-bottom: 1px solid var(--line); } /* 生成按钮这一块和下面的布局细节隔开 */
+.go { height: 40px; padding: 0 16px; font-size: 14px; font-weight: 500; color: var(--on-accent); background: var(--accent); border: 0; border-radius: 10px; cursor: pointer; box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.25), 0 1px 2px rgb(15 23 42 / 0.08); transition: background-color 0.2s var(--ease), color 0.2s var(--ease), box-shadow 0.2s var(--ease), transform 0.12s var(--ease); }
+.go:hover { background: var(--accent-hover); }
+.go:active { transform: scale(0.98); }
+.go[disabled] { color: var(--text-3); background: var(--raised); box-shadow: none; cursor: progress; transform: none; }
+.forecast { margin: 0; font-size: 12px; line-height: 18px; color: var(--text-3); }
+.forecast:empty { display: none; }
+.progress { height: 4px; overflow: hidden; background: var(--track); border-radius: 2px; }
+.progress-bar { width: 0; height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.3s linear; }
+.progress.slow .progress-bar { background: repeating-linear-gradient(45deg, var(--accent) 0 6px, color-mix(in srgb, var(--accent) 55%, transparent) 6px 12px); }
+.cancel { justify-self: start; height: 24px; padding: 0; font-size: 12px; color: var(--text-2); background: none; border: 0; cursor: pointer; text-decoration: underline; text-decoration-color: var(--line-3); text-underline-offset: 3px; }
+.cancel:hover { color: var(--text); text-decoration-color: currentColor; }
+.status { margin: 0; font-size: 12px; line-height: 18px; color: var(--text-2); }
+.status:empty { display: none; }
+.status.err { color: var(--err); }
+.suggest { min-height: 36px; padding: 8px 12px; font-size: 13px; line-height: 18px; text-align: left; color: var(--text); background: var(--card); border: 1px solid var(--line-2); border-radius: 10px; cursor: pointer; transition: border-color 0.15s var(--ease), transform 0.12s var(--ease); }
+.suggest:hover { border-color: var(--accent); }
+.suggest:active { transform: scale(0.98); }
+
+/* ---------- 顶上一排下拉、图纸（下拉的白底、描边是变量，好让黑夜换深色） ---------- */
+.stage {
   --ink: #172d46;
   --ink-2: #65768a;
   --rule: #c8d1de;
   --sheet: #163a63;
   --sheet-deep: #112f52;
   --line: #e6f0ff;
-  --line-2: rgba(230, 240, 255, 0.62);
-  --alert: #b4351f;
-  --ok: #2f6b4f;
   --ui: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
-  --num: "DIN Alternate", "DIN Condensed", "Bahnschrift", "Roboto Condensed", var(--ui);
+  --num: "DIN Alternate", "DIN Condensed", "Bahnschrift", "Roboto Condensed", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --p-card: #fff; /* 下拉按钮、菜单的底 */
+  --p-edge: #c8d1de; /* 下拉按钮的描边 */
+  --p-edge-2: #9fb1c6; /* 指上去的描边 */
+  --p-hover: #eef3f9; /* 菜单里指上去 */
+  --p-shadow: 0 6px 20px rgba(17, 47, 82, 0.22);
+  font: 14px/1.6 var(--ui);
+  color: var(--ink);
 }
-* { box-sizing: border-box; }
-[hidden] { display: none !important; }
-html { background: var(--desk); }
-body { margin: 0; color: var(--ink); font: 14px/1.6 var(--ui); background: var(--desk); }
-.page { max-width: 1480px; margin: 0 auto; padding: 24px 24px 48px; }
-
-.masthead { display: flex; align-items: baseline; gap: 20px; flex-wrap: wrap; margin-bottom: 18px; }
-.masthead h1 { margin: 0; font-size: 22px; line-height: 1.25; font-weight: 600; letter-spacing: 0.02em; }
-.masthead p { margin: 0; color: var(--ink-2); max-width: 64ch; }
-
-.desk { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 20px; align-items: start; }
-
-/* 左侧规格栏 */
-.spec { background: var(--paper); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 14px 16px; display: grid; gap: 12px; }
-.field { display: grid; gap: 4px; }
-.field > label, .field-label, .seg legend { font-size: 13px; font-weight: 500; color: var(--ink-2); padding: 0; }
-.field input { font: 15px/1.4 var(--ui); color: var(--ink); background: #fff; border: 1px solid var(--rule); border-radius: 4px; padding: 7px 9px; width: 100%; }
-.field input[type="number"] { font-family: var(--num); font-size: 17px; }
-.field input:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; border-color: var(--sheet); }
-.hint { font-size: 12px; color: var(--ink-2); margin: 0; }
-.chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
-.chips li { display: flex; align-items: center; gap: 6px; font-size: 13px; background: #fff; border: 1px dashed var(--sheet); border-radius: 3px; padding: 2px 2px 2px 6px; }
-.chips li .gl { width: 18px; height: 18px; }
-.chips button { font: 14px/1 var(--ui); color: var(--ink-2); background: transparent; border: 0; padding: 2px 6px; cursor: pointer; border-radius: 2px; }
-.chips button:hover { color: var(--alert); }
-.chips button:focus-visible { outline: 2px solid var(--sheet); }
-.chips .none { border: 0; background: transparent; padding: 2px 0; color: var(--ink-2); }
-.seg { border: 0; margin: 0; padding: 0; display: grid; gap: 4px; min-width: 0; }
-.seg .opts { display: flex; flex-wrap: wrap; border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; background: #fff; }
-.seg label { flex: 1 1 auto; position: relative; }
-.seg input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
-.seg span { display: block; text-align: center; padding: 6px 8px; font-size: 13px; white-space: nowrap; border-right: 1px solid var(--rule); cursor: pointer; }
-.seg label:last-child span { border-right: 0; }
-.seg input:checked + span { background: var(--sheet); color: var(--line); }
-.seg input:focus-visible + span { outline: 2px solid var(--sheet); outline-offset: -3px; }
-.seg input:checked:focus-visible + span { outline-color: var(--line); }
-.go { margin-top: 2px; font: 600 15px/1 var(--ui); color: var(--line); background: var(--sheet); border: 0; border-radius: 4px; padding: 12px 14px; cursor: pointer; }
-.go:hover { background: var(--sheet-deep); }
-.go:focus-visible { outline: 3px solid #7fb0e8; outline-offset: 2px; }
-.go[disabled] { opacity: 0.6; cursor: progress; }
-.status { margin: 0; min-height: 1.6em; color: var(--ink-2); font-size: 13px; }
-.status.err { color: var(--alert); }
-.suggest { font: 13px/1.3 var(--ui); color: var(--sheet); background: #fff; border: 1px solid var(--sheet); border-radius: 4px; padding: 6px 10px; cursor: pointer; justify-self: start; }
-
-/* 物品图示（自绘线条图形） */
-.gl.pic { object-fit: contain; }
-.gl.pic + .gl { display: none; }
-.gl { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
-
-/* 规格里的目标按钮 */
-.target-btn { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 12px; align-items: center; width: 100%; text-align: left; font: inherit; color: inherit; background: #fff; border: 1px solid var(--rule); border-radius: 6px; padding: 8px; cursor: pointer; }
-.target-btn:hover { border-color: var(--sheet); }
-.target-btn:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; }
-.target-btn .tile { width: 64px; cursor: inherit; }
-.target-btn .tile .gl { width: 32px; height: 32px; }
-.tb-label { display: block; font-size: 12px; color: var(--ink-2); }
-.pick-name { display: block; font-size: 17px; font-weight: 600; line-height: 1.3; }
-.tb-hint { display: block; font-size: 12px; color: var(--sheet); }
-/* 多个目标：每个一行，图标按钮（点开物品面板更换）、产量、移除 */
-.goals { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 8px; }
-.goal { display: grid; grid-template-columns: minmax(0, 1fr) 84px 30px; gap: 6px; align-items: stretch; }
-.goal .target-btn { grid-template-columns: 44px minmax(0, 1fr); gap: 10px; padding: 6px; }
-.goal .target-btn .tile { width: 44px; }
-.goal .target-btn .tile .gl { width: 24px; height: 24px; }
-.goal .pick-name { font-size: 15px; }
-.goal input { width: 100%; min-width: 0; font: 600 15px/1 var(--num, inherit); padding: 0 8px; border: 1px solid var(--rule); border-radius: 6px; }
-.goal .rm { font: 18px/1 var(--ui); color: var(--ink-2); background: transparent; border: 1px solid var(--rule); border-radius: 6px; cursor: pointer; }
-.goal .rm:hover { color: var(--alert); border-color: var(--alert); }
-.goal .rm[hidden] { display: none; }
-
-.add-goal { margin-top: 0; }
-.seg[hidden] { display: none; }
-.ext-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.linkish { font: 13px/1 var(--ui); color: var(--sheet); background: transparent; border: 1px solid var(--sheet); border-radius: 4px; padding: 5px 10px; cursor: pointer; }
-.linkish:hover { background: #e8eef6; }
-.linkish:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; }
-
-/* 方块：图示 + 名称；色条表示类别 */
-.tile {
-  --cat: #9aa5b1;
-  aspect-ratio: 1; position: relative; min-width: 0; border: 1px solid var(--rule); border-radius: 4px; background: #fff;
-  padding: 5px 2px 3px; display: grid; grid-template-rows: 1fr auto; justify-items: center; align-items: center; overflow: hidden; cursor: pointer;
-  font: 11px/1.15 var(--ui); color: var(--ink); text-align: center;
-}
-.tile::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; background: var(--cat); }
-.tile .nm { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; max-width: 100%; }
-.tile:hover { border-color: var(--sheet); }
-.tile:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; }
-.tile.st-partial::after { content: ""; position: absolute; top: 0; right: 0; border-style: solid; border-width: 0 10px 10px 0; border-color: transparent #c4882b transparent transparent; }
-.tile.is-target { background: var(--sheet); color: var(--line); border-color: var(--sheet); }
-.tile.is-off { opacity: 0.35; cursor: not-allowed; }
-.tile.is-dim { opacity: 0.15; }
-.tile.is-hit { box-shadow: 0 0 0 2px #7fb0e8; }
-
-/* 弹窗 */
-dialog { border: 0; padding: 0; border-radius: 8px; background: var(--paper); color: var(--ink); box-shadow: 0 18px 48px rgba(17, 47, 82, 0.35); max-width: min(940px, calc(100vw - 32px)); width: 100%; }
-dialog::backdrop { background: rgba(17, 47, 82, 0.45); }
-.dlg { display: grid; gap: 12px; padding: 18px 20px 18px; }
-.dlg-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.dlg-head h2 { margin: 0; font-size: 17px; font-weight: 600; flex: 1 1 auto; }
-.dlg-head p { margin: 0; flex-basis: 100%; color: var(--ink-2); font-size: 13px; }
-.close { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; font: 22px/1 var(--ui); color: var(--ink-2); background: #fff; border: 1px solid var(--rule); border-radius: 6px; cursor: pointer; }
-.close:hover { color: #fff; background: #e5484d; border-color: #e5484d; } /* 弹窗右上角的叉：平时白的，指上去变红（用户 2026/10/27） */
-.close:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; }
-.toggle { display: flex; border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; background: #fff; }
-.toggle button { font: 13px/1 var(--ui); padding: 7px 12px; border: 0; border-right: 1px solid var(--rule); background: transparent; color: var(--ink); cursor: pointer; }
-.toggle button:last-child { border-right: 0; }
-.toggle button[aria-pressed="true"] { background: var(--sheet); color: var(--line); }
-.toggle button:focus-visible { outline: 2px solid var(--sheet); outline-offset: -3px; }
-.find { font: 13px/1.3 var(--ui); color: var(--ink); background: #fff; border: 1px solid var(--rule); border-radius: 4px; padding: 6px 9px; width: 160px; }
-.find:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; }
-.slots { display: grid; grid-template-columns: repeat(14, minmax(44px, 1fr)); gap: 3px; overflow: auto; max-height: min(64vh, 640px); padding: 1px; }
-.slot { aspect-ratio: 1; border-radius: 4px; background: #e3e8ee; }
-.pick-msg { margin: 0; font-size: 13px; color: var(--alert); }
-.pick-msg:empty { display: none; }
-.cat-key { margin: 0; font-size: 12px; color: var(--ink-2); display: flex; flex-wrap: wrap; gap: 4px 16px; }
-.cat-key i { display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: -2px; margin-right: 4px; border: 1px solid var(--rule); background: #fff; }
-.cat-key i.k-target { background: var(--sheet); border-color: var(--sheet); }
-.cat-key i.k-partial { background: linear-gradient(225deg, #c4882b 0 30%, #fff 30%); }
-.cat-key i.k-off { opacity: 0.35; }
-
-/* 外部供应弹窗：依赖图——一种物品一张卡（副产物另一张），原料在上、产物在下，直角细线从原料往下送进产物；白底画布，图比画布大时滚动、按住能拖
-   （横向滑到头不往外传：Mac 上触控板左右滑到头会被浏览器当成后退、前进）。有新配方时列在画布右边 */
-#ext-dialog { max-width: min(1180px, calc(100vw - 32px)); }
-.ext-body { display: flex; gap: 12px; align-items: flex-start; min-width: 0; }
-.tiers { position: relative; flex: 1 1 auto; min-width: 0; }
-.tree-canvas { position: relative; max-height: min(62vh, 640px); overflow: auto; border: 1px solid var(--rule); border-radius: 6px; background: #fff; cursor: grab; touch-action: pan-x pan-y; overscroll-behavior-x: contain; user-select: none; -webkit-user-select: none; }
-.tree-canvas.is-panning, .tree-canvas.is-panning * { cursor: grabbing !important; }
-/* 缩放（app.js 的 zoomExt）：tree-zoom 按缩放后的大小占位、居中，里面的图从左上角整个缩放 */
-.tree-zoom { position: relative; margin: 0 auto; }
-.tree-stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
-.tree-tools { position: absolute; top: 8px; right: 20px; z-index: 2; display: flex; gap: 2px; padding: 2px; background: rgba(255, 255, 255, 0.94); border: 1px solid var(--rule); border-radius: 6px; box-shadow: 0 1px 3px rgba(17, 47, 82, 0.1); }
-.tree-tools button { min-width: 26px; height: 24px; margin: 0; padding: 0 6px; border: 0; border-radius: 4px; background: none; color: var(--ink-2); font: 12px/24px var(--ui); cursor: pointer; }
-.tree-tools button:hover { background: #eef3f9; color: var(--sheet); }
-.tree-tools button:focus-visible { outline: 2px solid var(--sheet); outline-offset: 0; }
-.tree-tools .zoom-pct { min-width: 44px; font-family: var(--num); }
-.tree-stage:active { cursor: grabbing; }
-/* 连线铺在卡片下面：整层 0.8 的不透明度（线段在接头处叠着画，分开设透明度会叠出深点）；悬停时连着的线变实色、别的淡到 0.15。
-   悬停变化不加过渡：点一下整张图重画，过渡会让高亮的卡片和线闪一下 */
-.tree-links { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; opacity: 0.8; }
-.tree-links .ln { fill: none; stroke: #5b7ea8; stroke-width: 1.5; }
-.tree-links .ln.ext { stroke-dasharray: 4 3; }
-.tree-links .ln.by { stroke-dasharray: 1.5 3; }
-.tree-links .ar { fill: #5b7ea8; }
-.tiers.has-focus .tree-links { opacity: 1; }
-.tiers.has-focus .tree-links .ln { stroke-opacity: 0.15; }
-.tiers.has-focus .tree-links .ar { fill-opacity: 0.15; }
-.tiers.has-focus .tree-links .ln.on { stroke: var(--sheet); stroke-opacity: 1; }
-.tiers.has-focus .tree-links .ar.on { fill: var(--sheet); fill-opacity: 1; }
-.tiers.has-focus .xt:not(.near) { opacity: 0.45; }
-/* 一张卡（宽和 app.js 的 GRAPH.w 一致）：左边图标，右边物品名和一行小字，左边一条类别色 */
-.xt {
-  --cat: #9aa5b1;
-  position: absolute; left: 0; top: 0; width: 156px; display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 2px 8px; align-items: center; margin: 0; text-align: left;
-  font: 13px/1.3 var(--ui); color: var(--ink); background: #fff; border: 1px solid var(--rule); border-left: 4px solid var(--cat); border-radius: 4px; padding: 7px 8px; cursor: pointer;
-}
-.xt .gl { grid-row: span 2; width: 28px; height: 28px; }
-.xt .nm { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.xt .sub { font-size: 11px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.xt:hover { border-color: var(--sheet); }
-.xt:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; }
-.xt.is-goal { border-color: var(--sheet); background: #eef3f9; cursor: inherit; }
-.xt.is-goal .sub::before { content: "目标　"; color: var(--sheet); font-weight: 600; }
-.xt.is-ext { background: repeating-linear-gradient(135deg, #fff 0 5px, #dbe5f1 5px 10px); border-style: dashed; border-color: var(--sheet); border-left-style: solid; }
-.xt.is-ext .sub::before { content: "外部供应　"; color: var(--sheet); font-weight: 600; }
-.xt.is-raw { background: #f5f7fa; cursor: inherit; }
-.xt.is-by { border-style: dotted; border-left-style: solid; cursor: inherit; }
-.xt.is-co { border-style: dotted; border-left-style: solid; }
-.xt .sub[data-tag]::before { content: attr(data-tag) "　"; color: var(--sheet); font-weight: 600; }
-.xt.is-blocking { border-color: #c4882b; box-shadow: inset 0 0 0 1px #c4882b; }
-.xt.is-blocking .sub { color: #8a5a12; }
-/* 珍奇和原矿、新配方：画布右边一列，每张卡和画布里的卡一样大（28 的图标、名字一行、小字一行「用于 …」，用户 2026/10/27），最高和画布一样，再多就自己滚 */
-.recipes { flex: none; width: 168px; max-height: min(62vh, 640px); overflow: auto; }
-.recipes h3 { margin: 0 0 8px; font: 600 13px/1.2 var(--ui); color: var(--ink-2); }
-.recipes .rc-list + h3 { margin-top: 14px; }
-.rc-list { display: flex; flex-direction: column; gap: 6px; }
-.rc { --cat: #9aa5b1; display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; grid-template-areas: "ico name state" "ico for for"; align-items: center; gap: 2px 8px; width: 100%; margin: 0; padding: 7px 8px; border: 1px solid var(--rule); border-left: 4px solid var(--cat); border-radius: 4px; background: #fff; color: var(--ink); cursor: pointer; text-align: left; font: 13px/1.3 var(--ui); }
-.rc:hover { border-color: var(--sheet); }
-.rc:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; }
-.rc.is-on { border-color: var(--sheet); background: #e8eef6; }
-.rc-ico { grid-area: ico; display: flex; }
-.rc-ico .gl { width: 28px; height: 28px; }
-.rc-name { grid-area: name; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rc-state { grid-area: state; font-size: 11px; font-weight: 600; color: var(--sheet); }
-.rc-for, .rc .rc-line { grid-area: for; font-size: 11px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* 弹窗窄（宽 ≤ 720，即视口 ≤ 752）时上下排：画布在上，新配方在下、一行排几个 */
-@media (max-width: 752px) {
-  .ext-body { flex-direction: column; align-items: stretch; }
-  .recipes { width: auto; max-height: none; overflow: visible; padding-top: 10px; border-top: 1px solid var(--rule); }
-  .rc-list { flex-direction: row; flex-wrap: wrap; }
-  .rc { width: 168px; }
-}
-.dlg-foot { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
-.dlg-foot .grow { flex: 1 1 260px; font-size: 13px; color: var(--ink-2); }
-.dlg-foot .warn { color: var(--alert); }
-.dlg-foot .go { margin: 0; padding: 10px 18px; }
-
 /* 新版：紧凑工具栏与可平移缩放的大画布。 */
 .sheet { --ink: #e6f0ff; --ink-2: #acc2da; --rule: #416384; background: #112f52; color: var(--ink); border: 1px solid #25486c; min-width: 0; height: calc(100dvh - 120px); min-height: 580px; display: flex; flex-direction: column; }
 .sheet-bar { display: flex; align-items: center; gap: 14px; padding: 9px 12px; border-bottom: 1px solid var(--rule); background: #163a63; flex: none; min-height: 48px; }
@@ -331,69 +334,8 @@ dialog::backdrop { background: rgba(17, 47, 82, 0.45); }
 .mc-list li small { margin-left: auto; color: #a9c1db; white-space: nowrap; }
 .sheet.is-expanded { position: fixed; inset: 8px; width: auto; height: auto; min-height: 0; z-index: 100; box-shadow: 0 0 0 30px #0d223beb; }
 body.viewer-expanded { overflow: hidden; }
-.result-details { margin-top: 12px; border: 1px solid #c7d1de; background: #f5f7fa; }
-.result-details > summary { padding: 9px 14px; font-size: 13px; cursor: pointer; }
-.sheet-foot { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 1fr); gap: 20px; padding: 14px; align-items: start; }
-.legend { display: flex; flex-wrap: wrap; list-style: none; margin: 0; padding: 0; gap: 8px 16px; font-size: 12px; }
-.legend li { display: flex; align-items: center; gap: 6px; }
-.legend .sw { width: 18px; height: 3px; border: 1px solid #8495a944; }
-.factory-legend { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px 12px; font-size: 12px; color: #536980; }
-.factory-legend b { font-family: var(--num); margin-right: 4px; }
-.titleblock { width: 100%; border-collapse: collapse; font-size: 12px; }
-.titleblock th, .titleblock td { border: 1px solid #becddd; padding: 6px 8px; text-align: left; }
-.titleblock th { font-weight: 400; color: #65768a; }
-.titleblock td { font-family: var(--num); font-size: 15px; }
-.titleblock td.wide, .titleblock .lens { font-size: 12px; }
-.titleblock caption, .legend-heading { display: none; }
-
-/* 输出 */
-.output { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1fr); gap: 20px; margin-top: 20px; }
-.panel { background: var(--paper); border: 1px solid var(--rule); border-radius: 6px; padding: 16px 18px; min-width: 0; }
-.panel h2 { margin: 0 0 8px; font-size: 15px; font-weight: 600; }
-.panel ul { margin: 0; padding-left: 1.2em; }
-.panel li { margin: 2px 0; }
-.panel li.err { color: var(--alert); }
-.panel li.ok { color: var(--ok); }
-.bp textarea { width: 100%; height: 132px; resize: vertical; font: 12px/1.45 ui-monospace, Menlo, monospace; color: var(--ink); background: #fff; border: 1px solid var(--rule); border-radius: 4px; padding: 8px; word-break: break-all; }
-.bp textarea:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; }
-.bp-row { display: flex; gap: 10px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
-.bp-row .go { margin: 0; padding: 10px 14px; }
-.bp-row .meta { color: var(--ink-2); font-size: 13px; font-family: var(--num); }
-.num { font-family: var(--num); }
-
-/* 规格面板：下拉单选，全部布局选项直接可见。 */
-.page { max-width: none; padding: 10px 14px 24px; }
-.spec-heading { display: none; }
-.page { padding-top: 14px; } /* 标题去掉了（用户 2026/10/26），上方留一点白 */
-.desk { grid-template-columns: 280px minmax(0, 1fr); gap: 12px; align-items: stretch; }
-/* 左栏和右边「按钮条 + 图纸」底边对齐（用户 2026/10/27）：左栏不参与算行高（contain: size），拉到和右边一样高，内容多了自己滚 */
-.spec { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; min-width: 0; gap: 8px; padding: 12px; background: #f5f7fa; contain: size; overflow-y: auto; border-radius: 3px; }
-.spec > * { min-width: 0; }
-.spec .seg { min-width: 0; }
-.spec .seg > legend, .spec .seg > .opts { display: none; }
-.modern-option { display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: center; gap: 8px; min-width: 0; font-size: 12px; color: #4c6178; }
-.seg .modern-option > span { padding: 0; border: 0; text-align: left; white-space: normal; font-size: 12px; cursor: default; }
-.modern-option select { width: 100%; min-width: 0; padding: 6px 7px; min-height: 31px; color: #142b43; font: 13px var(--ui); border: 1px solid #b9c7d7; border-radius: 3px; background: #fff; cursor: pointer; }
-.modern-option select:disabled { color: #8c99a7; background: #edf1f5; cursor: default; }
-.field > label, .field-label { font-size: 12px; }
-.goal { grid-template-columns: minmax(0, 1fr) 76px 23px; gap: 5px; }
-.goal:has(.rm[hidden]) { grid-template-columns: minmax(0, 1fr) 84px; }
-.goal input::-webkit-inner-spin-button { margin: 0; } /* 4 位数的产量（分馏阵列动辄几千）也放得下 */
-.goal .target-btn { gap: 6px; padding: 5px; grid-template-columns: 36px minmax(0, 1fr); }
-.goal .target-btn .tile { width: 36px; }
-.goal .pick-name { font-size: 13px; }
-.goal .tb-hint { font-size: 10px; }
-.goal input { font-size: 15px; }
-.go { padding: 11px; font-size: 14px; border-radius: 3px; }
-.hint, .status { font-size: 11px; }
-.status { min-height: auto; } /* 不能写 0：左栏是 contain: size 的网格，排满时那行就是 0 高，两行字压住下面的选项（用户 2026/10/29） */
-.linkish { padding: 6px 9px; font-size: 12px; }
-.chips { font-size: 12px; }
-.output { margin-top: 12px; gap: 12px; }
-.panel { border-radius: 3px; }
-:focus-visible { outline: 2px solid #6398ca; outline-offset: 2px; }
+:where(.stage) :focus-visible { outline: 2px solid #6398ca; outline-offset: 2px; }
 @media (max-width: 1200px) {
-  .desk { grid-template-columns: 260px minmax(0, 1fr); }
   .sheet-bar { gap: 8px; flex-wrap: wrap; }
   .sheet-bar .name { flex: 1 1 150px; }
   .layer-controls { order: 3; flex-basis: 100%; }
@@ -401,18 +343,10 @@ body.viewer-expanded { overflow: hidden; }
   .viewer-status #floor-meta { display: none; }
 }
 @media (max-width: 850px) {
-  .desk, .output { grid-template-columns: 1fr; }
-  .spec { contain: none; max-height: none; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .spec > .field, .spec > .status, .spec > .go { grid-column: 1 / -1; }
   .sheet { height: 78dvh; min-height: 460px; }
-  .sheet-foot { grid-template-columns: 1fr; }
   .viewer-hint { font-size: 10px; }
 }
 @media (max-width: 500px) {
-  .page { padding: 8px; }
-  .spec { padding: 10px; gap: 8px; }
-  .modern-option { grid-template-columns: 1fr; gap: 3px; }
-  .modern-option select { font-size: 12px; }
   .layer-rail { width: 70px; flex-basis: 70px; padding: 5px; }
   .floor-card { padding: 4px; }
   .floor-info small { display: none; }
@@ -426,41 +360,7 @@ body.viewer-expanded { overflow: hidden; }
   .viewer-hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .route-info { padding: 10px; }
   .route-info dl { gap: 5px; grid-template-columns: 62px minmax(0, 1fr); }
-  .dlg { padding: 14px 12px; }
-  .find { flex: 1 1 120px; width: auto; }
-  .slots { grid-template-columns: repeat(14, 54px); }
 }
-@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
-
-/* ---------- 2026-10-04 第二轮：结果上第一屏、规格分层、简介进侧栏 ---------- */
-/* 规格栏：每次都要想的（目标、外部供应、物流站、供电）在上面，用分段按钮；设备和布局细节收起来，摘要一行 */
-.spec { gap: 10px; }
-.spec .seg > legend { display: block; font-size: 12px; font-weight: 500; color: var(--ink-2); margin-bottom: 4px; padding: 0; }
-.spec .seg > .opts { display: flex; flex-wrap: nowrap; border: 1px solid #b9c7d7; border-radius: 3px; overflow: hidden; background: #fff; }
-.spec .seg label { flex: 1 1 0; min-width: 0; }
-.spec .seg span { padding: 6px 4px; font-size: 12px; border-right: 1px solid #d3dce7; color: #2a425c; overflow: hidden; text-overflow: ellipsis; }
-.spec .seg label:last-child span { border-right: 0; }
-.spec .seg input:checked + span { background: var(--sheet); color: var(--line); }
-.spec .seg label:hover input:not(:checked) + span { background: #eaf0f7; }
-.spec .seg span[data-short] { font-size: 0; }
-.spec .seg span[data-short]::before { content: attr(data-short); font-size: 12px; }
-/* 试验中的功能（用户 2026/10/26）：图例后面一个小 beta 标，不要上面 .seg span 那套格子样式 */
-.modern-option { display: none; }
-.spec > [data-name="station"], .spec > [data-name="pilertech"], .spec > [data-name="pile"] { display: none !important; }
-.spec > .field { order: 0; }
-.spec > .go { order: 7; }
-.spec > .status { order: 8; }
-.spec > .suggest { order: 9; }
-.group { border-top: 1px solid var(--rule); padding-top: 8px; margin: 0; }
-.group > summary { list-style: none; cursor: pointer; pointer-events: auto; display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-size: 12px; font-weight: 600; color: var(--ink-2); }
-.group > summary::-webkit-details-marker { display: none; }
-.group > summary::after { content: "修改"; display: block; grid-column: 2; grid-row: 1; color: var(--sheet); font-weight: 400; }
-.group[open] > summary::after { content: "收起"; }
-.group > summary .now { display: block; grid-column: 1 / -1; font-weight: 400; color: var(--ink); white-space: normal; line-height: 1.45; }
-.group[open] > summary .now { display: none; }
-.group > summary:focus-visible { outline: 2px solid var(--sheet); outline-offset: 2px; }
-.group .inner { display: grid; gap: 8px; margin-top: 8px; }
-/* 切成几块时图纸上方的标签：一块一个，和标题栏同一个深蓝底 */
 /* 图不可行时标题栏下面的红条 */
 .sheet-alert { margin: 0; padding: 9px 14px; font-size: 13px; line-height: 1.5; color: #5c1a12; background: #fbe3dc; border-bottom: 1px solid #e8b4a6; }
 .sheet-alert strong { margin-right: 6px; }
@@ -501,7 +401,6 @@ body.viewer-expanded { overflow: hidden; }
   .sheet-stats > span:first-child { border-left: 0; padding-left: 0; }
 }
 @media (max-width: 850px) {
-  .spec { grid-template-columns: 1fr; }
   .layer-rail { width: 120px; flex-basis: 120px; padding: 6px; }
   /* 窄屏侧栏放不下简介：改成压在画布底部、横跨整个宽度的一条 */
   .sheet-workspace { position: relative; }
@@ -513,48 +412,16 @@ body.viewer-expanded { overflow: hidden; }
   .floor-thumb { display: none; }
   .copy-top { padding: 7px 10px; }
 }
-
-/* 规格栏顺序（用户 2026/10/26）：目标、外部供应 → 搜索力度、生成 → 箱子 → 集装、物流站格子 → 高纬度间距、研究站叠层 → 宽、长、长宽比上限；设备、供电、喷增产剂在图纸上方那排
-   （「物流站位置」「自动切分」「切分后的蓝图」2026/10/27 用户去掉了：物流站一律放进空地，网页不切块） */
-.spec > .field { order: 0; }
-.spec > [data-name="effort"] { order: 1; }
-.spec > .go { order: 2; }
-.spec > .progress { order: 3; }
-/* 「生成蓝图」下面：预告一行（建筑数、预计用时、用电），生成时进度条下面是「取消本轮生成」 */
-.spec > .forecast { order: 3; margin: 0; font-size: 12px; color: var(--ink-2); }
-#forecast:empty { display: none; }
-.spec > .cancel { order: 3; justify-self: start; }
-.spec > .cancel[hidden] { display: none !important; }
-.spec > .status { order: 4; }
-.spec > .suggest { order: 5; }
-.spec > [data-name="station"] { order: 6; }
-.spec > [data-name="supply"], .spec > [data-name="dist"] { order: 6; }
-.spec > [data-name="supply"][hidden], .spec > [data-name="dist"][hidden] { display: none !important; }
-.spec > [data-name="power"] { order: 7; }
-.spec > [data-name="spray"] { order: 8; }
-.spec > [data-name="fracengine"] { order: 9; }
-.spec > [data-name="fracengine"][hidden] { display: none !important; }
-.spec > [data-name="chemwide"], .spec > .field.labstack { order: 13; }
-.spec > [data-name="warper"] { order: 12; } /* 物流站的翘曲器格（不再折叠，用户 2026/10/26；站出货叠几层 2026/11/01 挪进顶栏「物流站」的二级菜单，增产剂格同一天改成喷增产剂就留） */
-.spec > [data-name="warper"][hidden] { display: none !important; }
-.spec > [data-name="maxwidth"], .spec > [data-name="maxheight"], .spec > [data-name="aspect"] { order: 14; }
-.spec .seg .hint { margin: 4px 0 0; }
-.progress { height: 6px; border-radius: 3px; background: #d6dfea; overflow: hidden; }
-.progress[hidden] { display: none; }
-.progress-bar { height: 100%; width: 0; background: var(--sheet); transition: width .3s linear; }
-.progress.slow .progress-bar { background: repeating-linear-gradient(45deg, var(--sheet) 0 8px, #3d6084 8px 16px); }
-</style>
-<style>
-/* 图纸上方一排下拉（用户 2026/10/26）：供电、物流方式、传送带、分拣器、熔炉、制造台、化工厂、研究站、喷增产剂；
+/* 图纸上方一排下拉：供电、物流方式、传送带、分拣器、熔炉、制造台、化工厂、研究站、喷增产剂；
    按钮上只写当前选的，悬停、键盘聚焦或点一下展开（.open 是点开的，.shut 是刚选完、按了 Esc，鼠标和焦点再进来之前不弹出） */
 .stage { min-width: 0; display: grid; gap: 8px; align-content: start; }
 .toolbar { position: relative; z-index: 20; display: flex; flex-wrap: wrap; gap: 6px; }
 .pill-wrap { position: relative; }
-.pill { display: flex; align-items: center; gap: 6px; font: 13px/1.4 var(--ui); color: var(--ink); background: #fff; border: 1px solid #c8d1de; border-radius: 8px; padding: 6px 10px; cursor: pointer; white-space: nowrap; }
+.pill { display: flex; align-items: center; gap: 6px; font: 13px/1.4 var(--ui); color: var(--ink); background: var(--p-card); border: 1px solid var(--p-edge); border-radius: 8px; padding: 6px 10px; cursor: pointer; white-space: nowrap; }
 .pill::after { content: "▾"; color: var(--ink-2); }
 .pill .pill-ico { display: inline-flex; flex: none; width: 14px; height: 14px; color: var(--ink-2); } /* 和字隔开靠 .pill 的 gap；14 像素比行高矮，按钮不变高 */
-.pill-wrap:hover > .pill, .pill-wrap.open > .pill { border-color: #9fb1c6; }
-.pill-menu { display: none; position: absolute; z-index: 10; top: 100%; left: 0; margin-top: 4px; min-width: 100%; padding: 4px 0; background: #fff; border-radius: 8px; box-shadow: 0 6px 20px rgba(17, 47, 82, 0.22); }
+.pill-wrap:hover > .pill, .pill-wrap.open > .pill { border-color: var(--p-edge-2); }
+.pill-menu { display: none; position: absolute; z-index: 10; top: 100%; left: 0; margin-top: 4px; min-width: 100%; padding: 4px 0; background: var(--p-card); border-radius: 8px; box-shadow: var(--p-shadow); }
 .pill-menu::before { content: ""; position: absolute; left: 0; right: 0; top: -6px; height: 6px; } /* 鼠标从按钮挪到菜单，中间那几像素也算悬停 */
 .pill-wrap.flip > .pill-menu { left: auto; right: 0; } /* 右边放不下就靠右展开 */
 .pill-wrap.open > .pill-menu, .pill-wrap:not(.shut):hover > .pill-menu { display: block; }
@@ -563,28 +430,28 @@ body.viewer-expanded { overflow: hidden; }
 .pill-menu button::after { content: "✓"; margin-left: 14px; color: var(--sheet); visibility: hidden; }
 .pill-menu button[aria-checked="true"] { font-weight: 600; }
 .pill-menu button[aria-checked="true"]::after { visibility: visible; }
-.pill-menu button:hover, .pill-menu button:focus-visible { background: #eef3f9; }
+.pill-menu button:hover, .pill-menu button:focus-visible { background: var(--p-hover); }
 .pill-menu button:focus-visible { outline: 2px solid #6398ca; outline-offset: -2px; }
-/* 带二级菜单的那一项（集装分拣器、物流站，用户 2026/11/01）：悬停或点右边的 ▸ 在它右边展开科技等级，右边放不下就往左（.flip）；
+/* 带二级菜单的那一项（集装分拣器、物流站）：悬停或点右边的 ▸ 在它右边展开科技等级，右边放不下就往左（.flip）；
    .open 是点 ▸ 或按右键开的（触屏靠 ▸），二级菜单最上面一行是不能点的小标题 */
 .pill-sub { position: relative; display: flex; }
 .pill-menu .pill-sub > [data-value] { flex: 1 1 auto; width: auto; min-width: 0; }
 .pill-menu .pill-sub-toggle { flex: none; width: auto; padding: 7px 10px 7px 4px; color: var(--ink-2); }
 .pill-menu .pill-sub-toggle::after { content: none; }
-.pill-sub.open > button { background: #eef3f9; }
-.pill-submenu { display: none; position: absolute; z-index: 1; top: -4px; left: 100%; padding: 4px 0; background: #fff; border-radius: 8px; box-shadow: 0 6px 20px rgba(17, 47, 82, 0.22); }
+.pill-sub.open > button { background: var(--p-hover); }
+.pill-submenu { display: none; position: absolute; z-index: 1; top: -4px; left: 100%; padding: 4px 0; background: var(--p-card); border-radius: 8px; box-shadow: var(--p-shadow); }
 .pill-sub.flip > .pill-submenu { left: auto; right: 100%; }
 .pill-sub.open > .pill-submenu { display: block; }
 /* 鼠标从那一项斜着往下挪进二级菜单：两项都是菜单最后一行，斜着走会出菜单，那一行下面到二级菜单底这块三角也算悬停（高 --sub-drop，subReady 量的） */
 .pill-sub::after { content: ""; display: none; position: absolute; top: 100%; left: 0; right: 0; height: var(--sub-drop, 0); clip-path: polygon(0 0, 100% 0, 100% 100%); }
 .pill-sub.flip::after { clip-path: polygon(0 0, 100% 0, 0 100%); }
 @media (hover: hover) {
-  .pill-sub:hover > button { background: #eef3f9; }
+  .pill-sub:hover > button { background: var(--p-hover); }
   .pill-sub:hover > .pill-submenu, .pill-sub:hover::after { display: block; }
 }
 .pill-sub-head { padding: 5px 12px 3px; font-size: 12px; color: var(--ink-2); white-space: nowrap; cursor: default; }
-.pill-note { margin-left: auto; padding-left: 14px; font-size: 12px; font-weight: 400; color: var(--ink-2); } /* 等级右边这级提升了什么（用户 2026/11/01） */
-/* 右侧栏两页：楼层、用电（用户 2026/10/26：用电从「检查」挪过来）；选中的那页同选中的楼层卡片 */
+.pill-note { margin-left: auto; padding-left: 14px; font-size: 12px; font-weight: 400; color: var(--ink-2); } /* 等级右边这级提升了什么 */
+/* 右侧栏两页：楼层、用电；选中的那页同选中的楼层卡片 */
 .rail-tabs { display: flex; gap: 4px; }
 .rail-tabs button { flex: 1 1 0; min-width: 0; font: 600 12px/1.2 var(--ui); color: #e6f0ff; background: transparent; border: 1px solid #3d6084; padding: 6px 4px; cursor: pointer; }
 .rail-tabs button:hover { background: #244d76; }
@@ -599,7 +466,7 @@ body.viewer-expanded { overflow: hidden; }
 .power-pane th { font-weight: 400; text-align: left; }
 .power-pane td { text-align: right; white-space: nowrap; font-family: var(--num); }
 .power-pane p { margin: 0; color: #acc2da; }
-/* 点赞（用户 2026/10/26）：和「复制蓝图」一样大，描边；一次生成点一次，点过就灰掉 */
+/* 点赞：和「复制蓝图」一样大，描边；一次生成点一次，点过就灰掉 */
 .like { flex: none; font: 600 13px/1 var(--ui); color: #e6f0ff; background: transparent; border: 1px solid #5c7c9d; border-radius: 3px; padding: 7px 13px; cursor: pointer; white-space: nowrap; }
 .like:hover:not(:disabled) { background: #244b73; }
 .like:disabled { opacity: 0.55; cursor: default; }
@@ -607,215 +474,580 @@ body.viewer-expanded { overflow: hidden; }
 @media (max-width: 500px) {
   .like { padding: 6px 9px; }
 }
+/* 下拉按钮上的图标是游戏图标，18 px；不配电、不增产用那样东西的图标去色调淡 */
+.pill .pill-ico:has(.gl) { width: 18px; height: 18px; }
+.pill .pill-ico .gl { width: 18px; height: 18px; }
+.pill .pill-off { display: inline-flex; filter: grayscale(1); opacity: 0.45; }
+.stage .num, dialog .num { font-family: var(--num); } /* 原样：图纸、弹窗里的数用 DIN */
+/* 无带蓝图（量产计算器排好带过来的）：右栏没有楼层、用电，换成带子运什么和怎么用，样子同用电那页 */
+.belt-key { display: grid; gap: 8px; color: #e6f0ff; font-size: 12px; }
+.belt-key h3 { margin: 0; font: 600 12px/1.2 var(--ui); }
+.belt-key p { margin: 0; color: #acc2da; }
+.belt-key ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.belt-key li { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.belt-key li i { flex: none; width: 18px; height: 3px; background: var(--c); }
+.belt-key li .gl { flex: none; width: 18px; height: 18px; }
+.belt-key li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.belt-key .howto { padding: 8px; color: #acc2da; border: 1px solid #3d6084; }
+.belt-key .howto b { display: block; margin-bottom: 2px; color: #e6f0ff; font-weight: 600; }
+@media (prefers-color-scheme: dark) {
+  .stage {
+    --ink: #ededef;
+    --ink-2: #a6a6ad;
+    --sheet: #f0913a;
+    --p-card: var(--k3);
+    --p-edge: rgb(255 255 255 / 0.12);
+    --p-edge-2: rgb(255 255 255 / 0.26);
+    --p-hover: var(--k5);
+    --p-shadow: 0 12px 32px rgb(0 0 0 / 0.5), 0 2px 6px rgb(0 0 0 / 0.3);
+  }
+}
+
+/* ---------- 图纸下面：蓝图字符串、接口、检查（方角，同上面的图纸） ---------- */
+.output { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: stretch; } /* 一排卡片一样高，底边齐，不像三张散放的纸条 */
+.panel { min-width: 0; padding: 16px 20px 20px; background: var(--card); border: 1px solid var(--line); border-radius: 0; }
+.panel h2 { margin: 0 0 12px; font-size: 15px; line-height: 24px; font-weight: 500; }
+.panel ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font-size: 13px; line-height: 20px; color: var(--text-2); }
+.panel li { position: relative; padding-left: 22px; overflow-wrap: anywhere; }
+.panel li::before { content: ""; position: absolute; left: 6px; top: 8px; width: 4px; height: 4px; border-radius: 50%; background: var(--line-3); }
+.panel li.ok, .panel li.err { color: var(--text); }
+.panel li.ok::before, .panel li.err::before { left: 0; top: 2px; width: 16px; height: 16px; border-radius: 0; background: var(--ok); -webkit-mask: var(--u-check) center / contain no-repeat; mask: var(--u-check) center / contain no-repeat; }
+.panel li.err::before { background: var(--err); -webkit-mask-image: var(--u-alert); mask-image: var(--u-alert); }
+/* 字符串框撑满卡片：一排卡片一样高，接口那张长的时候字符串框跟着长，下面不空一大块 */
+.bp { display: flex; flex-direction: column; }
+.bp textarea { display: block; flex: 1 1 auto; width: 100%; min-height: 120px; resize: none; padding: 8px 12px; font: 12px/18px var(--mono); color: var(--text-2); word-break: break-all; background: var(--raised); border: 1px solid transparent; border-radius: 0; transition: border-color 0.15s var(--ease), background-color 0.15s var(--ease); }
+.bp textarea:focus { outline: none; border-color: var(--accent); background: var(--card); }
+.bp-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 12px; }
+.bp-row .btn-2 { height: 36px; padding: 0 16px; font-weight: 500; border-radius: 3px; } /* 同图纸标题栏上「复制蓝图」的角 */
+.bp-row .btn-2:disabled { color: var(--text-3); border-color: var(--line); cursor: default; transform: none; background: var(--card); }
+.bp-row .meta { font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.result-details { background: var(--card); border: 1px solid var(--line); border-radius: 0; }
+.result-details > summary { display: flex; align-items: center; gap: 8px; height: 52px; padding: 0 20px; font-size: 15px; font-weight: 500; list-style: none; cursor: pointer; }
+.result-details > summary::-webkit-details-marker { display: none; }
+.result-details > summary::after { content: ""; width: 16px; height: 16px; background: var(--text-3); -webkit-mask: var(--u-chevron) center / contain no-repeat; mask: var(--u-chevron) center / contain no-repeat; transform: rotate(-90deg); transition: transform 0.2s var(--ease); }
+.result-details[open] > summary::after { transform: none; }
+.sheet-foot { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 1fr); align-items: start; gap: 32px; padding: 0 20px 20px; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 20px; list-style: none; margin: 0; padding: 0; font-size: 13px; color: var(--text-2); }
+.legend li { display: flex; align-items: center; gap: 8px; }
+.legend .sw { flex: none; width: 18px; height: 3px; background: var(--c, #e6f0ff); border: 1px solid #8495a944; } /* 只有那条线，不加底色 */
+.legend-rate { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.legend-rate small { margin-left: 1px; }
+.factory-legend { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 16px; font-size: 13px; color: var(--text-2); }
+.factory-legend b { margin-right: 4px; font-weight: 500; color: var(--text); }
+.factory-legend small { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.titleblock { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 20px; }
+.titleblock caption { display: none; }
+.titleblock th, .titleblock td { padding: 6px 16px 6px 0; text-align: left; border-bottom: 1px solid var(--line); }
+.titleblock th { width: 1%; font-weight: 400; color: var(--text-3); white-space: nowrap; }
+.titleblock td { color: var(--text); font-variant-numeric: tabular-nums; }
+
+/* ---------- 两个弹窗（挑目标、外部供应；白底那几处是变量，好让黑夜换深色） ---------- */
+dialog {
+  --paper: #f6f8fb;
+  --ink: #172d46;
+  --ink-2: #65768a;
+  --rule: #c8d1de;
+  --sheet: #163a63;
+  --sheet-deep: #112f52;
+  --line: #e6f0ff;
+  --alert: #b4351f;
+  --ui: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --num: "DIN Alternate", "DIN Condensed", "Bahnschrift", "Roboto Condensed", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --d-card: #fff;
+  --d-slot: #e3e8ee;
+  --d-hover: #eef3f9;
+  --d-on: #e8eef6;
+  --d-raw: #f5f7fa;
+  --d-hatch: #dbe5f1;
+  --d-tools: rgba(255, 255, 255, 0.94);
+  font: 14px/1.6 var(--ui);
+}
+/* 方块：图示 + 名称；色条表示类别 */
+.tile {
+  --cat: #9aa5b1;
+  aspect-ratio: 1; position: relative; min-width: 0; border: 1px solid var(--rule); border-radius: 4px; background: var(--d-card);
+  padding: 5px 2px 3px; display: grid; grid-template-rows: 1fr auto; justify-items: center; align-items: center; overflow: hidden; cursor: pointer;
+  font: 11px/1.15 var(--ui); color: var(--ink); text-align: center;
+}
+.tile::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; background: var(--cat); }
+.tile .nm { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; max-width: 100%; }
+.tile:hover { border-color: var(--sheet); }
+.tile:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; }
+.tile.st-partial::after { content: ""; position: absolute; top: 0; right: 0; border-style: solid; border-width: 0 10px 10px 0; border-color: transparent #c4882b transparent transparent; }
+.tile.is-target { background: var(--sheet); color: var(--line); border-color: var(--sheet); }
+.tile.is-off { opacity: 0.35; cursor: not-allowed; }
+.tile.is-dim { opacity: 0.15; }
+.tile.is-hit { box-shadow: 0 0 0 2px #7fb0e8; }
+/* 弹窗 */
+dialog { border: 0; padding: 0; border-radius: 8px; background: var(--paper); color: var(--ink); box-shadow: 0 18px 48px rgba(17, 47, 82, 0.35); max-width: min(940px, calc(100vw - 32px)); width: 100%; }
+dialog::backdrop { background: rgba(17, 47, 82, 0.45); }
+.dlg { display: grid; gap: 12px; padding: 18px 20px 18px; }
+.dlg-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.dlg-head h2 { margin: 0; font-size: 17px; font-weight: 600; flex: 1 1 auto; }
+.dlg-head p { margin: 0; flex-basis: 100%; color: var(--ink-2); font-size: 13px; }
+.close { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; font: 22px/1 var(--ui); color: var(--ink-2); background: var(--d-card); border: 1px solid var(--rule); border-radius: 6px; cursor: pointer; }
+.close:hover { color: #fff; background: #e5484d; border-color: #e5484d; } /* 弹窗右上角的叉：平时白的，指上去变红 */
+.close:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; }
+.toggle { display: flex; border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; background: var(--d-card); }
+.toggle button { font: 13px/1 var(--ui); padding: 7px 12px; border: 0; border-right: 1px solid var(--rule); background: transparent; color: var(--ink); cursor: pointer; }
+.toggle button:last-child { border-right: 0; }
+.toggle button[aria-pressed="true"] { background: var(--sheet); color: var(--line); }
+.toggle button:focus-visible { outline: 2px solid var(--sheet); outline-offset: -3px; }
+.find { font: 13px/1.3 var(--ui); color: var(--ink); background: var(--d-card); border: 1px solid var(--rule); border-radius: 4px; padding: 6px 9px; width: 160px; }
+.find:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; }
+.slots { display: grid; grid-template-columns: repeat(14, minmax(44px, 1fr)); gap: 3px; overflow: auto; max-height: min(64vh, 640px); padding: 1px; }
+.slot { aspect-ratio: 1; border-radius: 4px; background: var(--d-slot); }
+.pick-msg { margin: 0; font-size: 13px; color: var(--alert); }
+.pick-msg:empty { display: none; }
+.cat-key { margin: 0; font-size: 12px; color: var(--ink-2); display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.cat-key i { display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: -2px; margin-right: 4px; border: 1px solid var(--rule); background: var(--d-card); }
+.cat-key i.k-target { background: var(--sheet); border-color: var(--sheet); }
+.cat-key i.k-partial { background: linear-gradient(225deg, #c4882b 0 30%, var(--d-card) 30%); }
+.cat-key i.k-off { opacity: 0.35; }
+
+/* 外部供应弹窗：依赖图——一种物品一张卡（副产物另一张），原料在上、产物在下，直角细线从原料往下送进产物；白底画布，图比画布大时滚动、按住能拖
+   （横向滑到头不往外传：Mac 上触控板左右滑到头会被浏览器当成后退、前进）。有新配方时列在画布右边 */
+#ext-dialog { max-width: min(1180px, calc(100vw - 32px)); }
+.ext-body { display: flex; gap: 12px; align-items: flex-start; min-width: 0; }
+.tiers { position: relative; flex: 1 1 auto; min-width: 0; }
+.tree-canvas { position: relative; max-height: min(62vh, 640px); overflow: auto; border: 1px solid var(--rule); border-radius: 6px; background: var(--d-card); cursor: grab; touch-action: pan-x pan-y; overscroll-behavior-x: contain; user-select: none; -webkit-user-select: none; }
+.tree-canvas.is-panning, .tree-canvas.is-panning * { cursor: grabbing !important; }
+/* 缩放（app.js 的 zoomExt）：tree-zoom 按缩放后的大小占位、居中，里面的图从左上角整个缩放 */
+.tree-zoom { position: relative; margin: 0 auto; }
+.tree-stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.tree-tools { position: absolute; top: 8px; right: 20px; z-index: 2; display: flex; gap: 2px; padding: 2px; background: var(--d-tools); border: 1px solid var(--rule); border-radius: 6px; box-shadow: 0 1px 3px rgba(17, 47, 82, 0.1); }
+.tree-tools button { min-width: 26px; height: 24px; margin: 0; padding: 0 6px; border: 0; border-radius: 4px; background: none; color: var(--ink-2); font: 12px/24px var(--ui); cursor: pointer; }
+.tree-tools button:hover { background: var(--d-hover); color: var(--sheet); }
+.tree-tools button:focus-visible { outline: 2px solid var(--sheet); outline-offset: 0; }
+.tree-tools .zoom-pct { min-width: 44px; font-family: var(--num); }
+.tree-stage:active { cursor: grabbing; }
+/* 连线铺在卡片下面：整层 0.8 的不透明度（线段在接头处叠着画，分开设透明度会叠出深点）；悬停时连着的线变实色、别的淡到 0.15。
+   悬停变化不加过渡：点一下整张图重画，过渡会让高亮的卡片和线闪一下 */
+.tree-links { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; opacity: 0.8; }
+.tree-links .ln { fill: none; stroke: #5b7ea8; stroke-width: 1.5; }
+.tree-links .ln.ext { stroke-dasharray: 4 3; }
+.tree-links .ln.by { stroke-dasharray: 1.5 3; }
+.tree-links .ar { fill: #5b7ea8; }
+.tiers.has-focus .tree-links { opacity: 1; }
+.tiers.has-focus .tree-links .ln { stroke-opacity: 0.15; }
+.tiers.has-focus .tree-links .ar { fill-opacity: 0.15; }
+.tiers.has-focus .tree-links .ln.on { stroke: var(--sheet); stroke-opacity: 1; }
+.tiers.has-focus .tree-links .ar.on { fill: var(--sheet); fill-opacity: 1; }
+.tiers.has-focus .xt:not(.near) { opacity: 0.45; }
+/* 一张卡（宽和 app.js 的 GRAPH.w 一致）：左边图标，右边物品名和一行小字，左边一条类别色 */
+.xt {
+  --cat: #9aa5b1;
+  position: absolute; left: 0; top: 0; width: 156px; display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 2px 8px; align-items: center; margin: 0; text-align: left;
+  font: 13px/1.3 var(--ui); color: var(--ink); background: var(--d-card); border: 1px solid var(--rule); border-left: 4px solid var(--cat); border-radius: 4px; padding: 7px 8px; cursor: pointer;
+}
+.xt .gl { grid-row: span 2; width: 28px; height: 28px; }
+.xt .nm { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xt .sub { font-size: 11px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.xt:hover { border-color: var(--sheet); }
+.xt:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; }
+.xt.is-goal { border-color: var(--sheet); background: var(--d-hover); cursor: inherit; }
+.xt.is-goal .sub::before { content: "目标　"; color: var(--sheet); font-weight: 600; }
+.xt.is-ext { background: repeating-linear-gradient(135deg, var(--d-card) 0 5px, var(--d-hatch) 5px 10px); border-style: dashed; border-color: var(--sheet); border-left-style: solid; }
+.xt.is-ext .sub::before { content: "外部供应　"; color: var(--sheet); font-weight: 600; }
+.xt.is-raw { background: var(--d-raw); cursor: inherit; }
+.xt.is-by { border-style: dotted; border-left-style: solid; cursor: inherit; }
+.xt.is-co { border-style: dotted; border-left-style: solid; }
+.xt .sub[data-tag]::before { content: attr(data-tag) "　"; color: var(--sheet); font-weight: 600; }
+.xt.is-blocking { border-color: #c4882b; box-shadow: inset 0 0 0 1px #c4882b; }
+.xt.is-blocking .sub { color: #8a5a12; }
+/* 珍奇和原矿、新配方：画布右边一列，每张卡和画布里的卡一样大（28 的图标、名字一行、小字一行「用于 …」），最高和画布一样，再多就自己滚 */
+.recipes { flex: none; width: 168px; max-height: min(62vh, 640px); overflow: auto; }
+.recipes h3 { margin: 0 0 8px; font: 600 13px/1.2 var(--ui); color: var(--ink-2); }
+.recipes .rc-list + h3 { margin-top: 14px; }
+.rc-list { display: flex; flex-direction: column; gap: 6px; }
+.rc { --cat: #9aa5b1; display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; grid-template-areas: "ico name state" "ico for for"; align-items: center; gap: 2px 8px; width: 100%; margin: 0; padding: 7px 8px; border: 1px solid var(--rule); border-left: 4px solid var(--cat); border-radius: 4px; background: var(--d-card); color: var(--ink); cursor: pointer; text-align: left; font: 13px/1.3 var(--ui); }
+.rc:hover { border-color: var(--sheet); }
+.rc:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; }
+.rc.is-on { border-color: var(--sheet); background: var(--d-on); }
+.rc-ico { grid-area: ico; display: flex; }
+.rc-ico .gl { width: 28px; height: 28px; }
+.rc-name { grid-area: name; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rc-state { grid-area: state; font-size: 11px; font-weight: 600; color: var(--sheet); }
+.rc-for, .rc .rc-line { grid-area: for; font-size: 11px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 弹窗窄（宽 ≤ 720，即视口 ≤ 752）时上下排：画布在上，新配方在下、一行排几个 */
+@media (max-width: 752px) {
+  .ext-body { flex-direction: column; align-items: stretch; }
+  .recipes { width: auto; max-height: none; overflow: visible; padding-top: 10px; border-top: 1px solid var(--rule); }
+  .rc-list { flex-direction: row; flex-wrap: wrap; }
+  .rc { width: 168px; }
+}
+.dlg-foot { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
+.dlg-foot .grow { flex: 1 1 260px; font-size: 13px; color: var(--ink-2); }
+.dlg-foot .warn { color: var(--alert); }
+.dlg-foot .go { margin: 0; padding: 10px 18px; }
+/* 弹窗底部的「按建议设置」「完成」：原样的样子（左栏的同名按钮是新样子，这里盖回去） */
+dialog .linkish { display: inline-block; height: auto; gap: 0; font: 12px/1 var(--ui); color: var(--sheet); background: transparent; border: 1px solid var(--sheet); border-radius: 4px; padding: 6px 9px; cursor: pointer; transition: none; }
+dialog .linkish:hover { background: var(--d-on); }
+dialog .linkish:active { transform: none; background: transparent; }
+dialog .linkish:focus-visible { outline: 2px solid var(--sheet); outline-offset: 1px; }
+dialog .go { height: auto; margin: 0; font: 600 14px/1 var(--ui); color: var(--line); background: var(--sheet); border: 0; border-radius: 3px; padding: 10px 18px; cursor: pointer; box-shadow: none; transition: none; }
+dialog .go:hover { background: var(--sheet-deep); }
+dialog .go:active { transform: none; }
+dialog .go:focus-visible { outline: 3px solid #7fb0e8; outline-offset: 2px; }
+:where(dialog) :focus-visible { outline: 2px solid #6398ca; outline-offset: 2px; }
+@media (max-width: 500px) {
+  .dlg { padding: 14px 12px; }
+  .find { flex: 1 1 120px; width: auto; }
+  .slots { grid-template-columns: repeat(14, 54px); }
+}
+@media (prefers-color-scheme: dark) {
+  dialog {
+    --paper: var(--k3);
+    --ink: #ededef;
+    --ink-2: #a6a6ad;
+    --rule: rgb(255 255 255 / 0.13);
+    --sheet: #ededef;
+    --sheet-deep: #ffffff;
+    --line: var(--k2);
+    --alert: #ff8f87;
+    --d-card: var(--k4);
+    --d-slot: var(--k2);
+    --d-hover: var(--k5);
+    --d-on: var(--k6);
+    --d-raw: var(--k2);
+    --d-hatch: var(--k6);
+    --d-tools: rgb(32 32 36 / 0.94);
+    box-shadow: 0 18px 48px rgb(0 0 0 / 0.55);
+  }
+  dialog::backdrop { background: rgb(8 8 10 / 0.6); }
+  .tree-links .ln { stroke: #6e6e76; }
+  .tree-links .ar { fill: #6e6e76; }
+  .tile.is-hit { box-shadow: 0 0 0 2px #a6a6ad; }
+}
+
+/* ---------- 黑夜：最上面返回那条、图纸、图上的线、外部供应的卡片 ----------
+   图纸（右边画布）黑夜是中性黑 #121212，标题栏和右栏 #191919；图上的线和字比白天亮、不到纯白；外部供应、挑目标里的卡片灰底。
+   --cv-paper 纸、--cv-chrome 标题栏和右栏、--cv-raised 按钮、--cv-hover 指上去、--cv-select 选中、--cv-edge 描边、--cv-ink / --cv-ink2 字，
+   图上的线：网格（和纸的明暗差比白天那张深蓝图纸略大）、机器轮廓、细线、尺寸字、选中线路时别的物品淡下去的颜色；
+   卡片：--cv-card 卡片、--cv-card-raw 原料、--cv-card-on 选中和目标、--cv-hatch 外部供应的斜纹 */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --cv-paper: #121212; --cv-chrome: #191919; --cv-raised: #232323; --cv-hover: #2c2c2c; --cv-select: #353535; --cv-edge: rgb(255 255 255 / 0.11);
+    --cv-ink: #f0f0f0; --cv-ink2: #b5b5b5; --cv-grid1: #232323; --cv-grid2: #313131; --cv-line: #f2f2f2; --cv-fine: #c2c2c2; --cv-arm: #e2e2e2;
+    --cv-faint: #858585; --cv-dim: #393939; --cv-dimtext: #d2d2d2; --cv-ticks: #9a9a9a; --cv-axis: #acacac; --cv-frame: #939393; --cv-st: #dcdcdc; --cv-st2: #8f8f8f; --cv-hole: #737373;
+    --cv-card: #2a2a2a; --cv-card-raw: #202020; --cv-card-on: #373737; --cv-hatch: #373737;
+  }
+  /* bridge.js 加在页面最前面的「返回计算器」（它自己写的行内颜色是深蓝） */
+  body > div:first-child:not(.app) { color: #ededef !important; background: var(--k1) !important; border-bottom: 1px solid rgb(255 255 255 / 0.07); }
+  .sheet { --ink: var(--cv-ink); --ink-2: var(--cv-ink2); --rule: var(--cv-edge); background: var(--cv-paper); border-color: var(--cv-edge); }
+  .sheet-bar, .layer-rail { background: var(--cv-chrome); }
+  .sheet-stats { color: var(--cv-ink2); }
+  .sheet-stats > span { border-left-color: var(--cv-edge); }
+  .sheet-stats b, .empty strong, .viewer-status strong, .floor-card, .rail-tabs button, .power-pane, .route-info, .station-info, .belt-key { color: var(--cv-ink); }
+  .zoom button { color: var(--cv-ink); background: var(--cv-raised); border-color: var(--cv-edge); }
+  .zoom button:hover { background: var(--cv-hover); }
+  .zoom output { color: var(--cv-ink2); }
+  .overlays input { accent-color: var(--accent); }
+  .copy-top { color: var(--cv-paper); background: var(--cv-ink); }
+  .copy-top:hover { background: #ffffff; }
+  .like { color: var(--cv-ink); border-color: var(--cv-edge); }
+  .like:hover:not(:disabled) { background: var(--cv-hover); }
+  .sheet-alert { color: #ffd7d2; background: #2a1719; border-bottom-color: rgb(255 120 110 / 0.25); }
+  .preview { background: var(--cv-chrome); }
+  .preview-note, .viewer-status, .empty, .floor-info small, .power-pane dt, .power-pane caption, .power-pane p, .belt-key p, .belt-key .howto, .route-info dt, .st-name small, .st-cap, .st-h small, .st-note, .mc-sub, .mc-list li small, .machine-info h2 small { color: var(--cv-ink2); }
+  .preview-tabs button { color: var(--cv-ink2); background: var(--cv-raised); border-color: var(--cv-edge); }
+  .preview-tabs button[aria-pressed="true"] { color: var(--cv-paper); background: var(--cv-ink); border-color: var(--cv-ink); }
+  .drawing:focus-visible { outline-color: var(--cv-faint); }
+  .floor-card, .rail-tabs button { border-color: var(--cv-edge); }
+  .floor-card:hover, .rail-tabs button:hover { background: var(--cv-hover); }
+  .floor-card[aria-pressed="true"], .rail-tabs button[aria-selected="true"] { background: var(--cv-select); border-color: var(--cv-st); box-shadow: inset 2px 0 var(--accent); }
+  .power-pane th, .power-pane td, .belt-key .howto { border-color: var(--cv-edge); }
+  .route-info { background: var(--cv-raised); border-color: var(--cv-edge); }
+  .route-info button, .station-info header button { color: var(--cv-st); }
+  .station-info { background: color-mix(in srgb, var(--cv-chrome) 97%, transparent); border-color: var(--cv-edge); box-shadow: 0 4px 18px rgb(0 0 0 / 0.5); }
+  .st-row, .mc-recipe, .mc-list li { background: var(--cv-raised); }
+  .st-keep { color: var(--cv-st); border-color: var(--cv-edge); }
+  .st-slider { background: linear-gradient(90deg, var(--cv-ink) var(--p, 0%), var(--cv-select) var(--p, 0%)); border-color: var(--cv-edge); }
+  .st-slider::-webkit-slider-thumb { background: var(--cv-ink); }
+  .st-slider::-moz-range-thumb { background: var(--cv-ink); }
+  .st-row.is-empty { color: var(--cv-faint); }
+  .st-hole { background: var(--cv-select); }
+  .st-set-row, .st-check, .mc-tile small { color: var(--cv-st); }
+  .mc-ico { background: var(--cv-hover); border-color: var(--cv-edge); }
+  .mc-ico b { text-shadow: 0 0 2px var(--cv-paper), 0 0 2px var(--cv-paper); }
+  .mc-arrow { color: var(--cv-ink2); }
+  .sheet.is-expanded { box-shadow: 0 0 0 30px color-mix(in srgb, var(--cv-paper) 92%, transparent); }
+  @media (max-width: 850px) { .route-info { background: color-mix(in srgb, var(--cv-raised) 96%, transparent); box-shadow: 0 4px 18px rgb(0 0 0 / 0.5); } }
+  /* 图上的颜色（drawing.js、beltless.js、物流站和工厂小窗里的示意图）：按颜色换成这一套的；彩色的带子、供电黄圈不动 */
+  .sheet [fill="#112f52"] { fill: var(--cv-paper); }
+  .sheet [stroke="#112f52"] { stroke: var(--cv-paper); }
+  .sheet [stroke="#1b3d60"] { stroke: var(--cv-grid1); }
+  .sheet [stroke="#294c70"] { stroke: var(--cv-grid2); }
+  .sheet [stroke="#eef5ff"] { stroke: var(--cv-line); }
+  .sheet [fill="#eef5ff"] { fill: var(--cv-line); }
+  .sheet [stroke="#e6f0ff"] { stroke: var(--cv-ink); }
+  .sheet [fill="#e6f0ff"] { fill: var(--cv-ink); }
+  .sheet [stroke="#dbe8f7"] { stroke: var(--cv-arm); }
+  .sheet [fill="#dbe8f7"] { fill: var(--cv-arm); }
+  .sheet [stroke="#a9c4e0"] { stroke: var(--cv-fine); }
+  .sheet [fill="#a9c4e0"] { fill: var(--cv-fine); }
+  .sheet [stroke="#cfe0f2"] { stroke: var(--cv-st); }
+  .sheet [stroke="#8cadd0"] { stroke: var(--cv-ticks); }
+  .sheet [stroke="#82a2c3"] { stroke: var(--cv-frame); }
+  .sheet [fill="#bfd5ec"] { fill: var(--cv-dimtext); }
+  .sheet [fill="#a1bcd8"] { fill: var(--cv-axis); }
+  .sheet [stroke="#7f9fc2"] { stroke: var(--cv-st2); }
+  .sheet [stroke="#6f90b3"] { stroke: var(--cv-faint); }
+  .sheet [fill="#6f90b3"] { fill: var(--cv-faint); }
+  .sheet [fill="#5d7da1"] { fill: var(--cv-hole); }
+  .sheet [stroke="#3d5f84"] { stroke: var(--cv-dim); }
+  .sheet [fill="#3d5f84"] { fill: var(--cv-dim); }
+  /* 外部供应：画布同图纸；卡片灰底，左边那道类别色照原样；挑目标的格子同样灰底、上边类别色条 */
+  .tree-canvas { background: var(--cv-paper); border-color: var(--cv-edge); }
+  .tree-tools { background: color-mix(in srgb, var(--cv-chrome) 94%, transparent); border-color: var(--cv-edge); }
+  .tree-tools button { color: var(--cv-ink2); }
+  .tree-tools button:hover { color: var(--cv-ink); background: var(--cv-hover); }
+  .tree-links .ln { stroke: var(--cv-faint); }
+  .tree-links .ar { fill: var(--cv-faint); }
+  .tiers.has-focus .tree-links .ln.on { stroke: var(--cv-ink); }
+  .tiers.has-focus .tree-links .ar.on { fill: var(--cv-ink); }
+  .xt { color: var(--cv-ink); background: var(--cv-card); }
+  .xt .sub, .rc-for, .rc .rc-line { color: var(--cv-ink2); }
+  .xt.is-raw { background: var(--cv-card-raw); }
+  .xt.is-ext { background: repeating-linear-gradient(135deg, var(--cv-card) 0 5px, var(--cv-hatch) 5px 10px); }
+  .xt.is-goal { background: var(--cv-card-on); border-color: var(--accent); }
+  .xt.is-blocking .sub { color: #e0a95a; }
+  .xt .sub[data-tag]::before, .xt.is-ext .sub::before, .xt.is-goal .sub::before { color: var(--cv-ink); }
+  .rc { color: var(--cv-ink); background: var(--cv-card); }
+  .rc.is-on { background: var(--cv-card-on); }
+  .rc-state { color: var(--accent); }
+  .tile { background: var(--cv-card); }
+  .cat-key i { background: var(--cv-card); }
+  .cat-key i.k-partial { background: linear-gradient(225deg, #c4882b 0 30%, var(--cv-card) 30%); }
+}
+
+/* ---------- 窄屏、手机（左栏、下面的卡片；图纸、下拉、弹窗的在上面各自原样那几段里） ---------- */
+@media (max-width: 1200px) {
+  .output { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .output .bp { grid-column: 1 / -1; }
+}
+@media (max-width: 860px) {
+  .app { grid-template-columns: minmax(0, 1fr); }
+  .side { position: static; height: auto; overflow: visible; border-right: 0; border-bottom: 1px solid var(--line); }
+  .main { padding: 12px; }
+  .sheet-foot { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 640px) {
+  .side { gap: 16px; padding: 16px; }
+  .main { padding: 8px; }
+  .output { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 </style>
 </head>
 <body>
 <!--__SPRITE__-->
-<div class="page">
-  <main class="desk">
-    <form class="spec" id="spec" novalidate>
-      <div class="spec-heading"><strong>产线规格</strong><span class="eyebrow">01 / INPUT</span></div>
-      <div class="field">
-        <span class="field-label" id="goal-label">目标产物与每分钟产量</span>
-        <ul class="goals" id="goals" aria-labelledby="goal-label"></ul>
-        <button type="button" class="linkish add-goal" id="goal-add" aria-haspopup="dialog">＋ 添加目标</button>
+<div class="app">
+  <form class="side spec" id="spec" novalidate aria-label="目标和设置">
+    <div class="field">
+      <span class="field-label" id="goal-label">目标产物</span>
+      <ul class="goals" id="goals" aria-labelledby="goal-label"></ul>
+      <button type="button" class="add-goal" id="goal-add" aria-haspopup="dialog"><i class="ico i-plus" aria-hidden="true"></i>添加目标</button>
+    </div>
+    <div class="field">
+      <span class="field-label" id="ext-label">外部供应</span>
+      <div class="ext-row">
+        <ul class="chips" id="ext-list" aria-labelledby="ext-label"></ul>
+        <button type="button" class="linkish" id="ext-edit" aria-haspopup="dialog">调整</button>
       </div>
-      <div class="field">
-        <span class="field-label" id="ext-label">外部供应</span>
-        <div class="ext-row">
-          <ul class="chips" id="ext-list" aria-labelledby="ext-label"></ul>
-          <button type="button" class="linkish" id="ext-edit" aria-haspopup="dialog">调整</button>
-        </div>
+    </div>
+    <fieldset class="seg" data-name="effort">
+      <legend>搜索力度</legend>
+      <div class="opts">
+        <label><input type="radio" name="effort" value="normal"><span>标准</span></label>
+        <label><input type="radio" name="effort" value="fine"><span>美观</span></label>
       </div>
-      <fieldset class="seg" data-name="effort">
-        <legend>搜索力度</legend>
-        <div class="opts">
-          <label><input type="radio" name="effort" value="normal"><span>标准</span></label>
-          <label><input type="radio" name="effort" value="fine"><span>美观</span></label>
-        </div>
-      </fieldset>
-      <fieldset class="seg" data-name="maxwidth">
-        <legend>宽度上限</legend>
-        <div class="opts">
-          <label><input type="radio" name="maxwidth" value=""><span>不限</span></label>
-          <label><input type="radio" name="maxwidth" value="25"><span>25</span></label>
-          <label><input type="radio" name="maxwidth" value="50"><span>50</span></label>
-          <label><input type="radio" name="maxwidth" value="100"><span>100</span></label>
-        </div>
-      </fieldset>
-      <fieldset class="seg" data-name="maxheight">
-        <legend>长度上限</legend>
-        <div class="opts">
-          <label><input type="radio" name="maxheight" value=""><span>不限</span></label>
-          <label><input type="radio" name="maxheight" value="25"><span>25</span></label>
-          <label><input type="radio" name="maxheight" value="50"><span>50</span></label>
-          <label><input type="radio" name="maxheight" value="100"><span>100</span></label>
-        </div>
-      </fieldset>
-      <fieldset class="seg" data-name="aspect">
-        <legend>长宽比上限</legend>
-        <div class="opts">
-          <label><input type="radio" name="aspect" value=""><span>不限</span></label>
-          <label><input type="radio" name="aspect" value="3"><span>3 : 1</span></label>
-          <label><input type="radio" name="aspect" value="2"><span>2 : 1</span></label>
-        </div>
-      </fieldset>
-      <fieldset class="seg" data-name="assembler">
-        <legend>制造台</legend>
-        <div class="opts">
-          <label><input type="radio" name="assembler" value="2303"><span data-pill="Mk.I 制造台">Mk.I</span></label>
-          <label><input type="radio" name="assembler" value="2304"><span data-pill="Mk.II 制造台">Mk.II</span></label>
-          <label><input type="radio" name="assembler" value="2305"><span data-pill="Mk.III 制造台">Mk.III</span></label>
-          <label><input type="radio" name="assembler" value="2318"><span data-pill="重组式制造台">重组式</span></label>
-        </div>
-      </fieldset>
-      <fieldset class="seg" data-name="smelter">
-        <legend>熔炉</legend>
-        <div class="opts">
-          <label><input type="radio" name="smelter" value="2302"><span data-pill="电弧熔炉">电弧</span></label>
-          <label><input type="radio" name="smelter" value="2315"><span data-pill="位面熔炉">位面</span></label>
-          <label><input type="radio" name="smelter" value="2319"><span data-pill="负熵熔炉">负熵</span></label>
-        </div>
-      </fieldset>
-      <fieldset class="seg" data-name="chemical">
-        <legend>化工厂</legend>
-        <div class="opts">
-          <label><input type="radio" name="chemical" value="2309"><span data-pill="化工厂">化工厂</span></label>
-          <label><input type="radio" name="chemical" value="2317"><span data-pill="量子化工厂">量子化工厂</span></label>
-        </div>
-      </fieldset>
-      <fieldset class="seg" data-name="chemwide">
-        <legend>化工厂、精炼厂高纬度间距展开</legend>
-        <div class="opts">
-          <label><input type="radio" name="chemwide" value="0"><span>关（只限赤道）</span></label>
-          <label><input type="radio" name="chemwide" value="1"><span>开（任何纬度）</span></label>
-        </div>
-      </fieldset>
-      <fieldset class="seg" data-name="lab">
-        <legend>研究站</legend>
-        <div class="opts">
-          <label><input type="radio" name="lab" value="2901"><span data-pill="矩阵研究站">矩阵</span></label>
-          <label><input type="radio" name="lab" value="2902"><span data-pill="自演化研究站">自演化</span></label>
-        </div>
-      </fieldset>
-      <div class="field labstack">
-        <label for="labstack">研究站最多叠几层</label>
-        <input type="number" id="labstack" min="1" max="15" step="1" inputmode="numeric">
-        <p class="hint">「垂直建造」1～6 级：5、7、9、11、13、15 层。</p>
-      </div>
-      <fieldset class="seg" data-name="belt">
-        <legend>传送带</legend>
-        <div class="opts">
-          <label><input type="radio" name="belt" value="1"><span data-pill="普通传送带">普通</span></label>
-          <label><input type="radio" name="belt" value="2"><span data-pill="高速传送带">高速</span></label>
-          <label><input type="radio" name="belt" value="3"><span data-pill="极速传送带">极速</span></label>
-        </div>
-      </fieldset>
-      <fieldset class="seg" data-name="sorter">
-        <legend>分拣器</legend>
-        <div class="opts">
-          <label><input type="radio" name="sorter" value="2011"><span data-pill="普通分拣器">普通</span></label>
-          <label><input type="radio" name="sorter" value="2012"><span data-pill="高速分拣器">高速</span></label>
-          <label><input type="radio" name="sorter" value="2013"><span data-pill="极速分拣器">极速</span></label>
-          <label><input type="radio" name="sorter" value="2014"><span data-pill="集装分拣器">集装</span></label>
-        </div>
-      </fieldset>
-      <fieldset class="seg" data-name="logistics" hidden>
-        <legend>物流方式</legend>
-        <div class="opts">
-          <label><input type="radio" name="logistics" value=""><span data-pill="普通物流">传送带</span></label>
-          <label><input type="radio" name="logistics" value="box"><span data-pill="箱子存储">传送带+箱子</span></label>
-          <label><input type="radio" name="logistics" value="station"><span data-pill="物流站">物流站</span></label>
-        </div>
-      </fieldset>
-      <!-- 物流站一律放进空地（用户 2026/10/27 去掉了「物流站位置」这一项）：这组单选不显示，只给「物流方式」记接不接站 -->
-      <fieldset class="seg" data-name="station" hidden>
-        <legend>物流站</legend>
-        <div class="opts">
-          <label hidden><input type="radio" name="station" value=""><span>不接</span></label>
-          <label><input type="radio" name="station" value="ils"><span>星际物流站（放进空地）</span></label>
-        </div>
-      </fieldset>
-      <fieldset class="seg" data-name="supply" id="supply-field">
-        <legend>箱子</legend>
-        <div class="opts">
-          <label hidden><input type="radio" name="supply" value=""><span>不用</span></label>
-          <label><input type="radio" name="supply" value="side-s"><span data-short="小型仓">小型储物仓</span></label>
-          <label><input type="radio" name="supply" value="side-l"><span data-short="大型仓">大型储物仓</span></label>
-        </div>
-        <p class="hint">仓都排在产线左侧一列：原料从仓出、成品进仓，矿照旧从左边送入。</p>
-      </fieldset>
-      <fieldset class="seg" data-name="dist" id="dist-field">
-        <legend>物流配送器</legend>
-        <div class="opts">
-          <label><input type="radio" name="dist" value="0"><span>不放</span></label>
-          <label><input type="radio" name="dist" value="1"><span data-short="放仓顶">放在仓顶</span></label>
-        </div>
-      </fieldset>
-      <fieldset class="seg" data-name="power">
-        <legend>供电</legend>
-        <div class="opts">
-          <label><input type="radio" name="power" value=""><span data-pill="不配电">不放</span></label>
-          <label><input type="radio" name="power" value="tesla"><span data-pill="电力塔">电力感应塔</span></label>
-          <label><input type="radio" name="power" value="substation"><span data-pill="卫星站">卫星配电站</span></label>
-        </div>
-      </fieldset>
-      <fieldset class="seg" data-name="spray">
-        <legend>喷增产剂</legend>
-        <div class="opts">
-          <label><input type="radio" name="spray" value="0"><span data-pill="不增产">不喷</span></label>
-          <label><input type="radio" name="spray" value="1"><span data-pill="Mk.I 增产">Mk.I</span></label>
-          <label><input type="radio" name="spray" value="2"><span data-pill="Mk.II 增产">Mk.II</span></label>
-          <label><input type="radio" name="spray" value="3"><span data-pill="Mk.III 增产">Mk.III</span></label>
-        </div>
-      </fieldset>
-      <fieldset class="seg" data-name="fracengine" id="fracengine-field" hidden>
-        <legend>分馏阵列排法</legend>
-        <div class="opts">
-          <label><input type="radio" name="fracengine" value="template"><span>照原图裁剪</span></label>
-          <label><input type="radio" name="fracengine" value="anneal"><span>站在上、方形（新）</span></label>
-        </div>
-        <p class="hint">新排法还没进游戏验过。</p>
-      </fieldset>
-      <!-- 两个科技等级挪进顶栏下拉的二级菜单（用户 2026/11/01）：「分拣器」的集装分拣器、「物流方式」的物流站各挂一个，图例是二级菜单的小标题。
-           这两组单选不显示，只记设置；pile 的值照旧是站出货叠几层（= 等级 + 1），以前存的设置、带过来的方案都认；data-note 是二级菜单里写在等级右边的这级提升了什么 -->
-      <fieldset class="seg" data-name="pilertech" hidden>
-        <legend>集装分拣器改良科技水平</legend>
-        <div class="opts">
-          <label><input type="radio" name="pilertech" value="0"><span>未研究（默认）</span></label>
-          <label><input type="radio" name="pilertech" value="1"><span data-note="叠 2 层">1 级</span></label>
-          <label><input type="radio" name="pilertech" value="2"><span data-note="一趟 3 个">2 级</span></label>
-          <label><input type="radio" name="pilertech" value="3"><span data-note="叠 3 层">3 级</span></label>
-          <label><input type="radio" name="pilertech" value="4"><span data-note="一趟 4 个">4 级</span></label>
-          <label><input type="radio" name="pilertech" value="5"><span data-note="叠 4 层">5 级</span></label>
-          <label><input type="radio" name="pilertech" value="6"><span data-note="双向">6 级</span></label>
-        </div>
-      </fieldset>
-      <fieldset class="seg" data-name="pile" hidden>
-        <legend>运输站集装物流</legend>
-        <div class="opts">
-          <label><input type="radio" name="pile" value="1"><span>未研究（默认）</span></label>
-          <label><input type="radio" name="pile" value="2"><span data-note="叠 2 层">1 级</span></label>
-          <label><input type="radio" name="pile" value="3"><span data-note="叠 3 层">2 级</span></label>
-          <label><input type="radio" name="pile" value="4"><span data-note="叠 4 层">3 级</span></label>
-        </div>
-      </fieldset>
-      <fieldset class="seg" data-name="warper" id="warper-field">
-        <legend>翘曲器格（星际需求）</legend>
-        <div class="opts">
-          <label><input type="radio" name="warper" value="1"><span>整张一格</span></label>
-          <label><input type="radio" name="warper" value="0"><span>不放</span></label>
-        </div>
-        
-      </fieldset>
+    </fieldset>
+    <div class="actions">
       <button class="go" type="submit" id="go">生成蓝图</button>
       <p class="forecast" id="forecast"></p>
       <div class="progress" id="progress" hidden><div class="progress-bar" id="progress-bar"></div></div>
-      <button type="button" class="linkish cancel" id="cancel" hidden>取消本轮生成</button>
+      <button type="button" class="cancel" id="cancel" hidden>取消本轮生成</button>
       <p class="status" id="status" role="status" aria-live="polite"></p>
       <button class="suggest" type="button" id="suggest" hidden></button>
-    </form>
+    </div>
+    <fieldset class="seg" data-name="supply" id="supply-field">
+      <legend>箱子</legend>
+      <div class="opts">
+        <label hidden><input type="radio" name="supply" value=""><span>不用</span></label>
+        <label><input type="radio" name="supply" value="side-s"><span data-short="小型仓">小型储物仓</span></label>
+        <label><input type="radio" name="supply" value="side-l"><span data-short="大型仓">大型储物仓</span></label>
+      </div>
+      <p class="hint">仓都排在产线左侧一列：原料从仓出、成品进仓，矿照旧从左边送入</p>
+    </fieldset>
+    <fieldset class="seg" data-name="dist" id="dist-field">
+      <legend>物流配送器</legend>
+      <div class="opts">
+        <label><input type="radio" name="dist" value="0"><span>不放</span></label>
+        <label><input type="radio" name="dist" value="1"><span data-short="放仓顶">放在仓顶</span></label>
+      </div>
+    </fieldset>
+    <fieldset class="seg" data-name="fracengine" id="fracengine-field" hidden>
+      <legend>分馏阵列排法</legend>
+      <div class="opts">
+        <label><input type="radio" name="fracengine" value="template"><span>照原图裁剪</span></label>
+        <label><input type="radio" name="fracengine" value="anneal"><span>站在上、方形（新）</span></label>
+      </div>
+      <p class="hint">新排法还没进游戏验过</p>
+    </fieldset>
+    <fieldset class="seg" data-name="warper" id="warper-field">
+      <legend>翘曲器格（星际需求）</legend>
+      <div class="opts">
+        <label><input type="radio" name="warper" value="1"><span>整张一格</span></label>
+        <label><input type="radio" name="warper" value="0"><span>不放</span></label>
+      </div>
+    </fieldset>
+    <fieldset class="seg" data-name="chemwide">
+      <legend>化工厂、精炼厂高纬度间距展开</legend>
+      <div class="opts">
+        <label><input type="radio" name="chemwide" value="0"><span>关（只限赤道）</span></label>
+        <label><input type="radio" name="chemwide" value="1"><span>开（任何纬度）</span></label>
+      </div>
+    </fieldset>
+    <div class="field labstack">
+      <label for="labstack">研究站最多叠几层</label>
+      <span class="rate"><input type="number" id="labstack" min="1" max="15" step="1" inputmode="numeric"><span>层</span></span>
+      <p class="hint">「垂直建造」1～6 级：5、7、9、11、13、15 层</p>
+    </div>
+    <fieldset class="seg" data-name="maxwidth">
+      <legend>宽度上限</legend>
+      <div class="opts">
+        <label class="limit-own"><input type="radio" name="maxwidth" value="" data-own><input type="number" class="limit-num" min="0" max="9999" step="1" value="0" inputmode="numeric" aria-label="宽度上限，自己填（0 是不限）" title="0 是不限，也可以填别的数"></label>
+        <label><input type="radio" name="maxwidth" value="25"><span>25</span></label>
+        <label><input type="radio" name="maxwidth" value="50"><span>50</span></label>
+        <label><input type="radio" name="maxwidth" value="100"><span>100</span></label>
+      </div>
+    </fieldset>
+    <fieldset class="seg" data-name="maxheight">
+      <legend>长度上限</legend>
+      <div class="opts">
+        <label class="limit-own"><input type="radio" name="maxheight" value="" data-own><input type="number" class="limit-num" min="0" max="9999" step="1" value="0" inputmode="numeric" aria-label="长度上限，自己填（0 是不限）" title="0 是不限，也可以填别的数"></label>
+        <label><input type="radio" name="maxheight" value="25"><span>25</span></label>
+        <label><input type="radio" name="maxheight" value="50"><span>50</span></label>
+        <label><input type="radio" name="maxheight" value="100"><span>100</span></label>
+      </div>
+    </fieldset>
+    <fieldset class="seg" data-name="aspect">
+      <legend>长宽比上限</legend>
+      <div class="opts">
+        <label><input type="radio" name="aspect" value=""><span>不限</span></label>
+        <label><input type="radio" name="aspect" value="3"><span>3 : 1</span></label>
+        <label><input type="radio" name="aspect" value="2"><span>2 : 1</span></label>
+      </div>
+    </fieldset>
+    <!-- 下面这些在图纸上方那排下拉里选（app.js 的 initPills），左栏不显示，只记设置 -->
+    <fieldset class="seg" data-name="assembler" hidden>
+      <legend>制造台</legend>
+      <div class="opts">
+        <label><input type="radio" name="assembler" value="2303"><span data-pill="Mk.I 制造台">Mk.I</span></label>
+        <label><input type="radio" name="assembler" value="2304"><span data-pill="Mk.II 制造台">Mk.II</span></label>
+        <label><input type="radio" name="assembler" value="2305"><span data-pill="Mk.III 制造台">Mk.III</span></label>
+        <label><input type="radio" name="assembler" value="2318"><span data-pill="重组式制造台">重组式</span></label>
+      </div>
+    </fieldset>
+    <fieldset class="seg" data-name="smelter" hidden>
+      <legend>熔炉</legend>
+      <div class="opts">
+        <label><input type="radio" name="smelter" value="2302"><span data-pill="电弧熔炉">电弧</span></label>
+        <label><input type="radio" name="smelter" value="2315"><span data-pill="位面熔炉">位面</span></label>
+        <label><input type="radio" name="smelter" value="2319"><span data-pill="负熵熔炉">负熵</span></label>
+      </div>
+    </fieldset>
+    <fieldset class="seg" data-name="chemical" hidden>
+      <legend>化工厂</legend>
+      <div class="opts">
+        <label><input type="radio" name="chemical" value="2309"><span data-pill="化工厂">化工厂</span></label>
+        <label><input type="radio" name="chemical" value="2317"><span data-pill="量子化工厂">量子化工厂</span></label>
+      </div>
+    </fieldset>
+    <fieldset class="seg" data-name="lab" hidden>
+      <legend>研究站</legend>
+      <div class="opts">
+        <label><input type="radio" name="lab" value="2901"><span data-pill="矩阵研究站">矩阵</span></label>
+        <label><input type="radio" name="lab" value="2902"><span data-pill="自演化研究站">自演化</span></label>
+      </div>
+    </fieldset>
+    <fieldset class="seg" data-name="belt" hidden>
+      <legend>传送带</legend>
+      <div class="opts">
+        <label><input type="radio" name="belt" value="1"><span data-pill="普通传送带">普通</span></label>
+        <label><input type="radio" name="belt" value="2"><span data-pill="高速传送带">高速</span></label>
+        <label><input type="radio" name="belt" value="3"><span data-pill="极速传送带">极速</span></label>
+      </div>
+    </fieldset>
+    <fieldset class="seg" data-name="sorter" hidden>
+      <legend>分拣器</legend>
+      <div class="opts">
+        <label><input type="radio" name="sorter" value="2011"><span data-pill="普通分拣器">普通</span></label>
+        <label><input type="radio" name="sorter" value="2012"><span data-pill="高速分拣器">高速</span></label>
+        <label><input type="radio" name="sorter" value="2013"><span data-pill="极速分拣器">极速</span></label>
+        <label><input type="radio" name="sorter" value="2014"><span data-pill="集装分拣器">集装</span></label>
+      </div>
+    </fieldset>
+    <fieldset class="seg" data-name="logistics" hidden>
+      <legend>物流方式</legend>
+      <div class="opts">
+        <label><input type="radio" name="logistics" value=""><span data-pill="普通物流">传送带</span></label>
+        <label><input type="radio" name="logistics" value="box"><span data-pill="箱子存储">传送带+箱子</span></label>
+        <label><input type="radio" name="logistics" value="station"><span data-pill="物流站">物流站</span></label>
+      </div>
+    </fieldset>
+    <!-- 物流站一律放进空地：这组单选不显示，只给「物流方式」记接不接站 -->
+    <fieldset class="seg" data-name="station" hidden>
+      <legend>物流站</legend>
+      <div class="opts">
+        <label hidden><input type="radio" name="station" value=""><span>不接</span></label>
+        <label><input type="radio" name="station" value="ils"><span>星际物流站（放进空地）</span></label>
+      </div>
+    </fieldset>
+    <fieldset class="seg" data-name="power" hidden>
+      <legend>供电</legend>
+      <div class="opts">
+        <label><input type="radio" name="power" value=""><span data-pill="不配电">不放</span></label>
+        <label><input type="radio" name="power" value="tesla"><span data-pill="电力塔">电力感应塔</span></label>
+        <label><input type="radio" name="power" value="substation"><span data-pill="卫星站">卫星配电站</span></label>
+      </div>
+    </fieldset>
+    <fieldset class="seg" data-name="spray" hidden>
+      <legend>喷增产剂</legend>
+      <div class="opts">
+        <label><input type="radio" name="spray" value="0"><span data-pill="不增产">不喷</span></label>
+        <label><input type="radio" name="spray" value="1"><span data-pill="Mk.I 增产">Mk.I</span></label>
+        <label><input type="radio" name="spray" value="2"><span data-pill="Mk.II 增产">Mk.II</span></label>
+        <label><input type="radio" name="spray" value="3"><span data-pill="Mk.III 增产">Mk.III</span></label>
+      </div>
+    </fieldset>
+    <!-- 两个科技等级挂在顶上下拉的二级菜单里：「分拣器」的集装分拣器、「物流方式」的物流站各挂一个，图例是二级菜单的小标题。
+         这两组单选不显示，只记设置；pile 的值照旧是站出货叠几层（= 等级 + 1），存过的设置、带过来的方案都认；data-note 是二级菜单里写在等级右边的这级提升了什么 -->
+    <fieldset class="seg" data-name="pilertech" hidden>
+      <legend>集装分拣器改良科技水平</legend>
+      <div class="opts">
+        <label><input type="radio" name="pilertech" value="0"><span>未研究（默认）</span></label>
+        <label><input type="radio" name="pilertech" value="1"><span data-note="叠 2 层">1 级</span></label>
+        <label><input type="radio" name="pilertech" value="2"><span data-note="一趟 3 个">2 级</span></label>
+        <label><input type="radio" name="pilertech" value="3"><span data-note="叠 3 层">3 级</span></label>
+        <label><input type="radio" name="pilertech" value="4"><span data-note="一趟 4 个">4 级</span></label>
+        <label><input type="radio" name="pilertech" value="5"><span data-note="叠 4 层">5 级</span></label>
+        <label><input type="radio" name="pilertech" value="6"><span data-note="双向">6 级</span></label>
+      </div>
+    </fieldset>
+    <fieldset class="seg" data-name="pile" hidden>
+      <legend>运输站集装物流</legend>
+      <div class="opts">
+        <label><input type="radio" name="pile" value="1"><span>未研究（默认）</span></label>
+        <label><input type="radio" name="pile" value="2"><span data-note="叠 2 层">1 级</span></label>
+        <label><input type="radio" name="pile" value="3"><span data-note="叠 3 层">2 级</span></label>
+        <label><input type="radio" name="pile" value="4"><span data-note="叠 4 层">3 级</span></label>
+      </div>
+    </fieldset>
+  </form>
 
+  <main class="main">
     <div class="stage">
     <div class="toolbar" id="toolbar" role="toolbar" aria-label="设备与物流"></div>
     <section class="sheet" id="sheet" aria-label="布局图">
@@ -824,8 +1056,6 @@ body.viewer-expanded { overflow: hidden; }
         <div class="sheet-stats viewer-only" id="sheet-stats" hidden></div>
         <div class="layer-controls" id="layer-controls" hidden>
           <div class="overlays" role="group" aria-label="图层叠加">
-            <label><input type="checkbox" data-overlay="buildings" checked>建筑</label>
-            <label><input type="checkbox" data-overlay="sorters" checked>分拣器</label>
             <label><input type="checkbox" data-overlay="power">供电范围</label>
           </div>
         </div>
@@ -863,12 +1093,19 @@ body.viewer-expanded { overflow: hidden; }
             <header><span class="sw" aria-hidden="true"></span><h2 id="route-title"></h2><button type="button" id="close-route" aria-label="关闭线路简介">×</button></header>
             <div id="route-body" aria-live="polite"></div>
           </section>
-          <div class="rail-tabs" role="tablist">
+          <div class="rail-tabs" id="rail-tabs" role="tablist">
             <button type="button" role="tab" id="tab-floors" aria-selected="true" aria-controls="floor-list">楼层</button>
             <button type="button" role="tab" id="tab-power" aria-selected="false" aria-controls="power-pane">用电</button>
           </div>
           <div class="floor-list" id="floor-list" role="tabpanel" aria-label="选择预览楼层"></div>
           <div class="power-pane" id="power-pane" role="tabpanel" aria-labelledby="tab-power" hidden></div>
+          <!-- 无带蓝图（量产计算器排好带过来的）：没有楼层，右栏换成带子运什么和怎么用 -->
+          <section class="belt-key" id="belt-key" hidden>
+            <h3>传送带运的</h3>
+            <p>虚线：分拣器隔空连着的那条带子</p>
+            <ul id="belt-key-list"></ul>
+            <p class="howto"><b>怎么用</b>蓝图贴下去建好一遍后，整片拆掉、原地重建一次，分拣器才会全部连上。</p>
+          </section>
         </aside>
       </div>
       <div class="viewer-status viewer-only"><strong id="floor-name">—</strong><span id="floor-description">等待生成</span><span id="floor-meta"></span></div>
@@ -878,8 +1115,28 @@ body.viewer-expanded { overflow: hidden; }
       </div>
     </section>
     </div>
+
+    <section class="output">
+      <div class="panel bp">
+        <h2><label for="bp">蓝图字符串</label></h2>
+        <textarea id="bp" readonly placeholder="生成后出现在这里"></textarea>
+        <div class="bp-row">
+          <button class="btn-2" type="button" id="copy" disabled>复制蓝图</button>
+          <span class="meta" id="bp-meta"></span>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>接口</h2>
+        <ul id="ports"><li>生成后列在这里</li></ul>
+      </div>
+      <div class="panel">
+        <h2>检查</h2>
+        <ul id="notes"><li>生成后列在这里</li></ul>
+      </div>
+    </section>
+    <details class="result-details" id="result-details" open hidden><summary>图纸数据与物品表</summary><div id="result-body"></div></details>
   </main>
-  <details class="result-details" id="result-details" open hidden><summary>图纸数据与物品表</summary><div id="result-body"></div></details>
+</div>
 
   <dialog id="pick-dialog" aria-labelledby="pick-title">
     <div class="dlg">
@@ -920,26 +1177,6 @@ body.viewer-expanded { overflow: hidden; }
       </div>
     </div>
   </dialog>
-
-  <section class="output">
-    <div class="panel bp">
-      <h2><label for="bp">蓝图字符串</label></h2>
-      <textarea id="bp" readonly placeholder="生成后出现在这里"></textarea>
-      <div class="bp-row">
-        <button class="go" type="button" id="copy" disabled>复制蓝图</button>
-        <span class="meta" id="bp-meta"></span>
-      </div>
-    </div>
-    <div class="panel">
-      <h2>接口</h2>
-      <ul id="ports"><li>生成后列在这里。</li></ul>
-    </div>
-    <div class="panel">
-      <h2>检查</h2>
-      <ul id="notes"><li>生成后列在这里。</li></ul>
-    </div>
-  </section>
-</div>
 <script>const WORKER_SRC = /*__WORKER_SRC__*/"";</script>
 <script>/*__APP_SRC__*/</script>
 </body>

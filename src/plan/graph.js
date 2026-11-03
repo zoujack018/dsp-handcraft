@@ -5,8 +5,8 @@ const GROUP_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 /** 工厂上下两侧里有槽位的列数少的那一侧（一般 3，对撞机 2） */
 const slotCols = (f) => Math.min(Object.keys(f.slots?.bottom ?? {}).length, Object.keys(f.slots?.top ?? {}).length) || 3;
 /**
- * 研究站一叠要接的物品（原料 + 产物）比上下两侧的分拣器位多（宇宙矩阵 6 进 1 出，上下各 3 个位；用户 2026/10/30：「把传送带从两个研究站之间插进去」）：
- * 产物改从左右两侧出，返回产物的编号，否则 null。只认一种产物、产物只送成品出口的（宇宙矩阵就是）。这种组每台右边多留一列（间距 6），
+ * 研究站一叠要接的物品（原料 + 产物）比上下两侧的分拣器位多（宇宙矩阵 6 进 1 出，上下各 3 个位）：产物改从左右两侧出
+ * （game-rules 第 40 条），返回产物的编号，否则 null。只认一种产物、产物只送成品出口的（宇宙矩阵就是）。这种组每台右边多留一列（间距 6），
  * 两台中间那一列夹一条带（layout/belts.js 的 labGaps），上下两侧只接原料
  */
 function sideItemOf(f, r, u, flows) {
@@ -24,8 +24,8 @@ const ITEM_LETTERS = 'abcdefghijklmnopqrstuvwxyz0123456789';
  */
 export function buildGraph(calc) {
   // 同一种副产物有几组工厂在出（信息矩阵的石墨烯选可燃冰：等离子精炼、石墨烯（高效）都出氢）：生产图里一种物品只记一个生产者，
-  // 以前后一组盖掉前一组，带上只有它那份、出口要的是几组合计，报「供给顺序不足」（用户 2026/11/02）。第二组起换个编号
-  // （STORE_COPY，同箱子供货的仓），各走各的带；出蓝图、接站按真实物品（realItem），进站还是同一格
+  // 编号一样的话后一组盖掉前一组、带上只有它那份。第二组起换个编号（STORE_COPY，同箱子供货的仓），各走各的带；
+  // 出蓝图、接站按真实物品（realItem），进站还是同一格
   const byKeys = new Map();
   const byCount = new Map();
   for (const fl of calc.flows) {

@@ -1,17 +1,15 @@
 // 出蓝图后的独立检查：只看解码后的蓝图记录本身，不看规划器的任何中间数据。
 // 这是在进游戏之前能做到的最接近实测的检查。
 import { fromStr } from '../codec/parser.js';
-import { RECIPES, ITEMS, factory, OVERPASS_ZMAX, STATION_GAP, STATION_GAP_PLS, STATION_M, STATION_PLS_M, stationWorstM, STATION_CLEAR, STATION_EW, STATION_HALF, powerCells, powerGap, SUBSTATION_GAP, SUBSTATION_EW, slotPoint, substationPad, THERMAL_PLANT, THERMAL_BANK, FUEL_MJ, BOX_SLOT, TANK_PORT, STORE_BODY, DISTRIBUTOR_LIFT, RAMP_STEP, STEEP_DZ, CELL_M, LEVEL_M, BELT_LINK_M, NARROW_EW, NO_TECH_MAX_DZ, OVER_MIN_Z, CHEM_TOWER, POWER_OVER_Z, SUBSTATION_DISK, STORE_OVER_Z, STATION_PORT_M, SORTER_MAX_TILT, SORTER_REACH_M, SLOT_DEPTH } from '../gamedata.js';
+import { RECIPES, ITEMS, factory, OVERPASS_ZMAX, STATION_GAP, STATION_GAP_PLS, STATION_M, STATION_PLS_M, stationWorstM, STATION_CLEAR, STATION_EW, STATION_HALF, powerCells, powerGap, SUBSTATION_GAP, SUBSTATION_EW, slotPoint, substationPad, BOX_SLOT, TANK_PORT, STORE_BODY, DISTRIBUTOR_LIFT, RAMP_STEP, STEEP_DZ, CELL_M, LEVEL_M, BELT_LINK_M, NARROW_EW, NO_TECH_MAX_DZ, OVER_MIN_Z, CHEM_TOWER, POWER_OVER_Z, SUBSTATION_DISK, STORE_OVER_Z, STATION_PORT_M, SORTER_MAX_TILT, SORTER_REACH_M, SLOT_DEPTH } from '../gamedata.js';
 import { POWER, powerReach } from '../plan/power.js';
 
 const isBelt = (id) => id >= 2001 && id <= 2003;
 const isSorter = (id) => id >= 2011 && id <= 2014;
 const PILER = 2040; // 自动集装机：带子 → 1 号口，0 号口 → 带子，进出两节挤在同一格里（各偏 0.2 格）
-const COATER = 2313; // 喷涂机：骑在第 z 层的带子上，背后那格上方第 z + 1 层有增产剂带横穿；同一格可以上下叠（z 差 2），不能悬空（用户 2026/10/08 实测）
+const COATER = 2313; // 喷涂机：骑在第 z 层的带子上，背后那格上方第 z + 1 层有增产剂带横穿；同一格可以上下叠（z 差 2），不能悬空（实测，game-rules 第 28 条）
 const SPRAYS = new Set([1141, 1142, 1143]);
-// 物理碰撞体（格）：熔炉约 2.4×2.4、制造台约 3.2×3.2、研究站约 4.5×4.5（由游戏数据中的占地面积开方得到），
-// 化工厂 6.8×4（中心往上 0.5）、对撞机 9×5（中心往左 0.3），见 gamedata.js 的 FACTORY_GEOMETRY（2026/10/05 两张体积测试图）。
-// 槽位 -> 分拣器在工厂一端的落点相对中心的偏移，化工厂下侧落点带 0.284 的小数，研究站、对撞机的槽位不在整格上（x ±0.8、y ±1.83 这类）。
+// 工厂的碰撞体 [宽, 高]、中心偏移，和槽位号 → 分拣器在工厂一端的落点相对中心的偏移；数和来由见 gamedata.js 的 FACTORY_GEOMETRY
 const BODY = {};
 const isLab = (id) => id === 2901 || id === 2902;
 for (const id of [2302, 2315, 2319, 2303, 2304, 2305, 2318, 2309, 2317, 2901, 2902, 2310, 2308]) {
@@ -25,13 +23,6 @@ for (const id of [2302, 2315, 2319, 2303, 2304, 2305, 2318, 2309, 2317, 2901, 29
   Object.assign(slot, f.slotPos ?? {}); // 研究站、对撞机：规划器不用的槽位也认（玩家手搓的蓝图里会用）
   BODY[id] = { w: f.collider[0], h: f.collider[1], shift: f.colliderShift ?? [0, 0], slot, kind: f.kind };
 }
-// 火力发电厂（就地烧副产物，plan/burn.js）：槽位照用户 2026/10/07 的蓝图（朝东时量的，这里换回朝北的建筑自己坐标），
-// 碰撞体 6.5 × 3.5（gamedata.js 的 THERMAL_BANK.box，2026/10/08 验证合集 R 组实测）。不进 factories（不查配方），燃料来源另查（第 5c 节）
-{
-  const T = THERMAL_BANK;
-  const local = ([wx, wy]) => [-wy, wx]; // 朝东（yaw 90）时的偏移 → 建筑自己坐标
-  BODY[THERMAL_PLANT] = { w: T.box.h, h: T.box.w, shift: local([T.box.dx, T.box.dy]), slot: Object.fromEntries(Object.entries(T.slot).map(([k, v]) => [k, local(v)])), kind: 'thermal' };
-}
 // 储物仓、储液罐、物流配送器的口位、碰撞体、叠层高度在 gamedata.js（STORE_BODY 等，来由见那里）
 const SMALL_BOX = 2101;
 const BIG_BOX = 2102;
@@ -39,7 +30,7 @@ const TANK = 2106;
 const DISTRIBUTOR = 2107;
 const isBox = (id) => id === SMALL_BOX || id === BIG_BOX;
 const isStore = (id) => isBox(id) || id === TANK;
-// 大型仓长边两头的口（0、2、6、8）体积测试第八张 H1 验证过，不再提醒；小型仓南边两头、东西两边的角口是照用户 10/19 那张图（北边 0 1 2、东北角 3）对称推断的
+// 用到时提醒的口：大型仓长边两头的口（0、2、6、8）实测过，不提醒；小型仓南边两头、东西两边的角口是照北边（0 1 2、东北角 3）对称推断的
 const BOX_SLOT_GUESS = { [BIG_BOX]: new Set(), [SMALL_BOX]: new Set([5, 6, 8, 9, 11]) };
 // 物流站：7×7 的地归站；站口那节带子在中心 ±2 处（左 3/4/5 号口上中下，右 11/10/9 号口上中下，antian 已验证）
 const isStation = (id) => id === 2103 || id === 2104;
@@ -60,7 +51,7 @@ const box = (f, P) => {
   return { x: P(f).x + sx, y: P(f).y + sy, ...dims(f) };
 };
 // 碰撞体正好贴着算贴着：中心带小数偏移（对撞机往左 0.3）时，相减会差一点点（128.7 − 119.7 = 8.999999999999986），
-// 比较时留 EPS，不然 x 大的地方两台挨着的对撞机会被误判成碰撞（2026/10/07 放大的考卷上量到）
+// 比较时留 EPS，不然 x 大的地方两台挨着的对撞机会被误判成碰撞
 const EPS = 1e-6;
 const inside = (f, x, y, P) => {
   const b = box(f, P);
@@ -86,9 +77,9 @@ const Z = (b) => Math.round(b.localOffset[0].z * 1e4) / 1e4;
 const onGround = (b) => Math.abs(b.localOffset[0].z) < 0.05;
 
 /**
- * 出入口接得出去（用户 2026/10/24：「边缘」供货时入口外面有时还有一层带子，上面再有高架就接不出去）。
+ * 出入口接得出去（「边缘」供货时入口外面有时还有一层带子，上面再有高架就接不出去）。
  * 从外面进料的入口：贴了物品标签、前面没有带子、站、罐接进来、也没有分拣器从仓里往这条带放料的那节；
- * 往外送的出口：贴了标签、后面不接东西、也没有分拣器从这条带往仓里收、往火力发电厂里送（就地烧掉的副产物）的那节。
+ * 往外送的出口：贴了标签、后面不接东西、也没有分拣器从这条带往仓里收的那节。
  * 每个入口、出口至少有一个水平方向能在地面沿直线一路走出整张图：路上的格子没有地面带、建筑、分拣器、供电设施（头顶有高架不要紧）。
  * 入口不算朝自己下游那一边、出口不算朝自己上游那一边；原地升降的口（下一节在头顶）四个方向都算。
  * P：坐标取整（同 checkBlueprint）。返回接不出去的 [{ index, itemId, kind: 'in' | 'out' }]
@@ -104,7 +95,7 @@ function unreachablePorts(B, P) {
     const p = P(b);
     x0 = Math.min(x0, p.x), x1 = Math.max(x1, p.x), y0 = Math.min(y0, p.y), y1 = Math.max(y1, p.y);
     if (isBelt(b.itemId)) {
-      if (onGround(b)) mark(p.x, p.y); // 半层以上的带子不挡：地面带能从下面过（测试 A 组）
+      if (onGround(b)) mark(p.x, p.y); // 半层以上的带子不挡：地面带能从下面过（实测，game-rules 第 38 条）
     } else if (isSorter(b.itemId)) {
       const [a, c] = b.localOffset;
       const n = Math.max(1, Math.ceil(Math.hypot(c.x - a.x, c.y - a.y)));
@@ -122,13 +113,13 @@ function unreachablePorts(B, P) {
   const belts = B.filter((b) => isBelt(b.itemId));
   const into = new Map(); // 带子 → 接进它的上一节
   for (const b of belts) if (b.outputObjIdx >= 0 && isBelt(B[b.outputObjIdx]?.itemId)) into.set(b.outputObjIdx, b);
-  // 仓经分拣器往带上放料（箱子供货的原料）、从带上收进仓（成品）或送进火力发电厂（就地烧掉）：这条带的头尾不是对外的口
+  // 仓经分拣器往带上放料（箱子供货的原料）、从带上收进仓（成品）：这条带的头尾不是对外的口
   const boxFed = new Set();
   const boxTaken = new Set();
   for (const s of B) {
     if (!isSorter(s.itemId)) continue;
     if (isStore(B[s.inputObjIdx]?.itemId) && isBelt(B[s.outputObjIdx]?.itemId)) boxFed.add(s.outputObjIdx);
-    if (isBelt(B[s.inputObjIdx]?.itemId) && (isStore(B[s.outputObjIdx]?.itemId) || B[s.outputObjIdx]?.itemId === THERMAL_PLANT)) boxTaken.add(s.inputObjIdx);
+    if (isBelt(B[s.inputObjIdx]?.itemId) && isStore(B[s.outputObjIdx]?.itemId)) boxTaken.add(s.inputObjIdx);
   }
   const chain = (b, step) => {
     const out = [];
@@ -177,12 +168,12 @@ export function portRays(str) {
 }
 
 /**
- * 分拣器两头的高差不为 0 时有多斜（docs/game-rules.md 第 38 条，游戏代码 + 用户 2026/10/28 实测 out/halfbelt-tests/3）：
+ * 分拣器两头的高差不为 0 时有多斜（游戏代码 + 实测，docs/game-rules.md 第 38 条）：
  * 贴图时工厂、箱子那头吸到槽位上（槽位离中心的距离按米固定），带子那头留在蓝图写的格子上，槽位高差带来的那点偏移带子那头跟着挪，
  * 所以高差就是蓝图里两头写的 z 之差；游戏查连线和两头朝向的夹角，取高的那头（多出星球曲率那一点）。
- * 工厂那头：熔炉、制造台写在工厂边上（规划器的写法，离中心 1 格）时换成槽位真实的深度 SLOT_DEPTH，别的（储物仓、研究站、对撞机、
- * 精炼厂、火力发电厂，口位是照游戏写的蓝图量的）按写的位置。东西向的格子离赤道越远越窄（最窄 0.829），槽位的米数不变，
- * 东西向的分拣器就更短更斜；整张转 90° 贴时南北向的也一样，所以 narrow 一律按最窄的格算。
+ * 工厂那头：熔炉、制造台写在工厂边上（规划器的写法，离中心 1 格）时换成槽位真实的深度 SLOT_DEPTH，别的（口位是照游戏写的蓝图量的）
+ * 按写的位置。东西向的格子离赤道越远越窄，槽位的米数不变，东西向的分拣器就更短更斜；整张转 90° 贴时南北向的也一样，
+ * 所以 narrow 一律按最窄的格（NARROW_EW）算。
  * 返回 { dz 高差（层）, equator 赤道上的度数, narrow 最窄的格上的度数 }；两头一样高、两头都是带子或者认不出工厂那头时返回 null
  */
 function sorterTilt(s, B) {
@@ -222,9 +213,7 @@ export function checkBlueprint(str, opt = {}) {
     const o = b.localOffset[0];
     return { x: Math.round(o.x), y: Math.round(o.y), z: Math.round(o.z) };
   };
-  const factories = B.filter((b) => BODY[b.itemId] && BODY[b.itemId].kind !== 'thermal');
-  const thermals = B.filter((b) => b.itemId === THERMAL_PLANT);
-  const solids = [...factories, ...thermals]; // 查碰撞时火力发电厂和工厂一样算
+  const factories = B.filter((b) => BODY[b.itemId]);
   const stations = B.filter((b) => isStation(b.itemId));
   const belts = B.filter((b) => isBelt(b.itemId));
   const sorters = B.filter((b) => isSorter(b.itemId));
@@ -256,10 +245,10 @@ export function checkBlueprint(str, opt = {}) {
 
   // 2. 工厂之间不碰撞（同一叠研究站上下重合是正常的，按高度分开算）
   const LAB_H = 3;
-  for (let i = 0; i < solids.length; i++) {
-    for (let j = i + 1; j < solids.length; j++) {
-      const a = solids[i];
-      const c = solids[j];
+  for (let i = 0; i < factories.length; i++) {
+    for (let j = i + 1; j < factories.length; j++) {
+      const a = factories[i];
+      const c = factories[j];
       const A = box(a, P);
       const C = box(c, P);
       if (isLab(a.itemId) && isLab(c.itemId) && Math.abs(P(a).z - P(c).z) >= LAB_H) continue;
@@ -295,8 +284,8 @@ export function checkBlueprint(str, opt = {}) {
       if (b.outputToSlot !== 1) err(`传送带 ${b.index} 应该接集装机的 1 号口`);
     } else if (b.outputObjIdx >= 0) {
       const n = B[b.outputObjIdx];
-      // 相邻：水平走一格（坡：一格最多升降 RAMP_STEP 层，半层的坡贴得上、料照走，测试 A、G4），或同一格里上下叠（原地竖直升降，
-      // 每节差 1 层是官方垂直传送带，半层一步也行，测试 G1~G3）；两节相距不超过 √5.3 m（游戏报「太远」，一格跨 3 层就是这个）
+      // 相邻：水平走一格（坡，半层的坡贴得上、料照走），或同一格里上下叠（原地竖直升降，每节差 1 层是官方垂直传送带，
+      // 半层一步也行；实测，game-rules 第 38 条）；两节相距不超过 √5.3 m（游戏报「太远」，一格跨 3 层就是这个）
       const flat = Math.abs(P(n).x - P(b).x) + Math.abs(P(n).y - P(b).y);
       const dz = Z(n) - Z(b);
       if (isStation(n.itemId) || n.itemId === TANK) {
@@ -304,7 +293,7 @@ export function checkBlueprint(str, opt = {}) {
       } else if (!isBelt(n.itemId)) err(`传送带 ${b.index} 输出到非传送带`);
       else if (!(flat === 1 || (flat === 0 && Math.abs(dz) > 0.01))) err(`传送带 ${b.index}→${n.index} 不相邻`);
       else if (Math.hypot((n.localOffset[0].x - b.localOffset[0].x) * CELL_M, (n.localOffset[0].y - b.localOffset[0].y) * CELL_M, dz * LEVEL_M) > BELT_LINK_M + 1e-6) err(`传送带 ${b.index}→${n.index} 两节相距超过 √5.3 m（高差 ${+Math.abs(dz).toFixed(3)} 层），游戏报「太远」`);
-      // 一格升降超过一层（STEEP_DZ）的坡报错；半层到一层的陡坡（用户 2026/10/28：比原地竖直升降好看）放行，没解锁超级磁场时 noTech 照旧报
+      // 一格升降超过一层（STEEP_DZ）的坡报错；半层到一层的陡坡（比原地竖直升降好看，game-rules 第 6 条）放行，没解锁超级磁场时 noTech 照样报
       else if (flat === 1 && Math.abs(dz) > STEEP_DZ + 1e-6) err(`传送带 ${b.index}→${n.index} 斜着升降 ${+Math.abs(dz).toFixed(3)} 层（一格最多升降一层）`);
       else if (flat === 0) {
         // 官方垂直传送带的错开：一叠里按流向越来越靠近格子中心，不往回走（往回走的那种在游戏里画出来是折返的）
@@ -312,7 +301,7 @@ export function checkBlueprint(str, opt = {}) {
         if (dist(n) > dist(b) + 1e-4) err(`传送带 ${b.index}→${n.index} 竖直升降时往回错开（不是官方垂直传送带的写法）`);
       }
       // 没解锁超级磁场（opt.noTech）：相邻两节连线和竖直方向夹角的余弦超过 0.6 就贴不上——原地竖直升降一律不行，
-      // 坡按东西向最窄的格（赤道的 0.829）算，一格最多 NO_TECH_MAX_DZ（约 0.586）层（游戏代码；实测见第 38 条）
+      // 坡按东西向最窄的格算，一格最多 NO_TECH_MAX_DZ（约 0.586）层（游戏代码，game-rules 第 34、38 条）
       if (opt.noTech && isBelt(n.itemId)) {
         if (flat === 0 && Math.abs(dz) > 0.01) noTechLift.push(`${b.index}→${n.index}`);
         else if (flat === 1 && Math.abs(dz) > NO_TECH_MAX_DZ + 1e-6) noTechSteep.push(`${b.index}→${n.index}`);
@@ -321,9 +310,9 @@ export function checkBlueprint(str, opt = {}) {
     if (Z(b) < -0.01) err(`传送带 ${b.index} 在地面以下`);
     const off = Math.abs(b.localOffset[0].x - P(b).x) + Math.abs(b.localOffset[0].y - P(b).y);
     if (off > (pileLinked(b) || tankLinked.has(b.index) ? 0.21 : 0.02)) err(`传送带 ${b.index} 偏离格子 ${off.toFixed(4)}`);
-    for (const f of solids) {
-      // 熔炉、研究站、化工厂主体第 3 层，制造台第 3.6 层，化工厂的塔第 5 层（OVER_MIN_Z，用户 2026/10/28 实测）到第 OVERPASS_ZMAX 层
-      // （7，用户只确认到这里）的带子能从头顶过；别的工厂、更低或更高（没确认）的带子照旧报
+    for (const f of factories) {
+      // 熔炉、研究站、化工厂主体第 3 层，制造台第 3.6 层，化工厂的塔第 5 层（OVER_MIN_Z，实测）到第 OVERPASS_ZMAX 层
+      // （7，只确认到这里）的带子能从头顶过；别的工厂、更低或更高（没确认）的带子照样报
       const dz = Z(b) - f.localOffset[0].z;
       const lo = overMin(f, P(b).x, P(b).y, P);
       if (lo != null && dz >= lo - 1e-6 && dz <= OVERPASS_ZMAX + 1e-6) continue;
@@ -333,9 +322,9 @@ export function checkBlueprint(str, opt = {}) {
   if (noTechLift.length) err(`没解锁「超级磁场发生器」时贴不上：${noTechLift.length} 处原地竖直升降（如传送带 ${noTechLift.slice(0, 3).join('、')}）`);
   if (noTechSteep.length) err(`没解锁「超级磁场发生器」时贴不上：${noTechSteep.length} 处坡太陡，一格升降超过 ${NO_TECH_MAX_DZ.toFixed(3)} 层（如传送带 ${noTechSteep.slice(0, 3).join('、')}）`);
   // 3f. 同一格里叠着的带子（半层）：同一张图里带子和带子之间游戏不查碰撞，所以要自己查——
-  //   别的带子的节点夹在原地升降上下两节之间：贴得上，但两条带在那一格交在一起（穿模，测试 G5），报错；
+  //   别的带子的节点夹在原地升降上下两节之间：贴得上，但两条带在那一格交在一起（穿模，实测），报错；
   //   上下两节隔不到 0.26 层：贴图时游戏按 0.2 m 的小方格找「重叠的同种带子」，有的位置会把两节当成一节合并（推断，来自代码；
-  //   实测隔 0.15、0.1 层的 C4、C5 贴上了），记提醒
+  //   实测隔 0.15、0.1 层的贴上了），记提醒（game-rules 第 38 条）
   {
     for (const b of belts) {
       const n = b.outputObjIdx >= 0 ? B[b.outputObjIdx] : null;
@@ -416,10 +405,10 @@ export function checkBlueprint(str, opt = {}) {
     return sl?.dir === 1 && src.parameters.storage?.[sl.storageIdx - 1]?.itemId === 1210;
   };
   // 3b. 物流站：不和工厂、别的站碰撞；高架带不从站上方过；地面带只能是站口那几节（中心 ±2 的站口格和外圈 ±3）
-  // 站身按半宽 3.4 判（制造台本体紧贴站身实测能放，体积测试 D6）；站身外那 1 格碰撞圈只挡卫星配电站（第 6 节），工厂可以贴着站身（D6~D8、D10）
+  // 站身按半宽 3.4 判（制造台本体紧贴站身实测能放，gamedata.js 的 STATION_HALF）；站身外那 1 格碰撞圈只挡卫星配电站（第 6 节），工厂可以贴着站身
   for (const st of stations) {
     const c = P(st);
-    for (const f of solids) {
+    for (const f of factories) {
       const F = box(f, P);
       if (Math.abs(F.x - c.x) < STATION_HALF + F.w / 2 - EPS && Math.abs(F.y - c.y) < STATION_HALF + F.h / 2 - EPS) err(`工厂 ${f.index} 与物流站 ${st.index} 碰撞`);
     }
@@ -438,7 +427,7 @@ export function checkBlueprint(str, opt = {}) {
       }
     }
     // 接在这座站口上的带子，和顺着它往外两节以内的（游戏里带子接着的建筑往前往后 3 节以内不算撞，站口那几节可以在站身里抬高：
-    // 用户 2026/10/28 实测站口那节在 0.5、1、2 层都能接，测试 5 的 F2 F3 F5 F6 F8 F9）；站口那节离站中心不能超过 4 m（z 2.5 太远，F7）
+    // 实测站口那节在 0.5、1、2 层都能接）；站口那节离站中心不能超过 4 m（实测 z 2.5 太远，game-rules 第 38 条）
     const portNear = new Set();
     const fromBelt = new Map(); // 带子 → 接进它的上一节
     for (const b of belts) if (b.outputObjIdx >= 0 && isBelt(B[b.outputObjIdx]?.itemId)) fromBelt.set(b.outputObjIdx, b);
@@ -476,7 +465,7 @@ export function checkBlueprint(str, opt = {}) {
         else (dirsOf.get(sl.storageIdx) || dirsOf.set(sl.storageIdx, new Set()).get(sl.storageIdx)).add(dir);
       }
     }
-    // 同一格既有带子出站又有带子进站（副产物和产线要用的同种物品放在一起）：需求从别处运来把格子装满后副产物送不进去，那组工厂会停（用户 2026/10/27）
+    // 同一格既有带子出站又有带子进站（副产物和产线要用的同种物品放在一起）：需求从别处运来把格子装满后副产物送不进去，那组工厂会停（game-rules 第 37 条）
     for (const [k, ds] of dirsOf) if (ds.size > 1) err(`物流站 ${st.index} 的${name(prm.storage[k - 1].itemId)}既有带子进站又有带子出站：副产物和产线要用的同种物品要放在两座站`);
   }
 
@@ -496,10 +485,10 @@ export function checkBlueprint(str, opt = {}) {
       else if (z(b) > 0.05) err(`${name(b.itemId)} ${b.index} 悬空（z=${z(b).toFixed(2)}），下面没有同样的仓`);
       if (d) continue; // 叠在上面的占地和最下面那个一样，只查最下面那个
       const A = sbox(b);
-      for (const f of solids) if (hit(A, box(f, P))) err(`${name(b.itemId)} ${b.index} 与工厂 ${f.index} 碰撞`);
+      for (const f of factories) if (hit(A, box(f, P))) err(`${name(b.itemId)} ${b.index} 与工厂 ${f.index} 碰撞`);
       for (const st of stations) if (Math.abs(A.x - P(st).x) < STATION_HALF + A.w / 2 - EPS && Math.abs(A.y - P(st).y) < STATION_HALF + A.h / 2 - EPS) err(`${name(b.itemId)} ${b.index} 与物流站 ${st.index} 碰撞`);
       for (const o of stores) if (o.index > b.index && !below(o) && hit(A, sbox(o))) err(`${name(b.itemId)} ${b.index} 与 ${name(o.itemId)} ${o.index} 碰撞`);
-      // 带子从头顶过：一叠最上面那个仓之上 STORE_OVER_Z 层（小型仓实测 1.5 层红、2 层能放，测试 E17、E18；大型仓、储液罐按碰撞盒推的 3），
+      // 带子从头顶过：一叠最上面那个仓之上 STORE_OVER_Z 层（小型仓实测，大型仓、储液罐按碰撞盒推的），
       // 顶上有物流配送器再加它的高度和 2 层（配送器多高没量，推断）
       let top = b;
       for (let up = stores.find((u) => u.inputObjIdx === top.index && u.itemId === top.itemId); up; up = stores.find((u) => u.inputObjIdx === top.index && u.itemId === top.itemId)) top = up;
@@ -529,7 +518,7 @@ export function checkBlueprint(str, opt = {}) {
   // 3d. 出入口接得出去：每个对外的入口、出口至少一个方向能在地面沿直线走出整张图（见 unreachablePorts）
   const ports = unreachablePorts(B, P);
   for (const q of ports) err(`${q.kind === 'in' ? '入口' : '出口'}传送带 ${q.index}（${name(q.itemId)}）往外接不出去：四个方向沿地面走出图外都被挡住`);
-  // 3e. 同一种原料的几个入口在一处（用户 2026/10/24：同一边，相邻两个口中间空不超过 3 行），不在一处的记提醒
+  // 3e. 同一种原料的几个入口在一处（同一边，相邻两个口中间空不超过 3 行），不在一处的记提醒
   for (const [item, es] of ports.entries) {
     if (es.length < 2) continue;
     const ys = es.map((e) => e.y).sort((a, b) => a - b);
@@ -546,7 +535,7 @@ export function checkBlueprint(str, opt = {}) {
     const dx = p1.x - p0.x;
     const dy = p1.y - p0.y;
     const len = Math.floor(Math.abs(dx) + Math.abs(dy) + 1e-6); // 化工厂下侧落点带 0.284 的小数，长度按整格算
-    // 游戏自己存的坐标有一点斜：一般千分之几，用户 2026/10/19 的精炼厂图里长 2、3 的分拣器斜到 0.017~0.025
+    // 游戏自己存的坐标有一点斜：一般千分之几，精炼厂的参考图里长 2、3 的分拣器斜到 0.017~0.025（game-rules 第 32 条）
     if (Math.abs(dx) > 0.03 && Math.abs(dy) > 0.03) err(`分拣器 ${s.index} 不是直线`);
     if (len < 1 || len > 3 || s.parameters?.length !== len) err(`分拣器 ${s.index} 长度 ${len} 与参数 ${s.parameters?.length} 不符或超出 1~3`);
     const ends = [
@@ -563,7 +552,7 @@ export function checkBlueprint(str, opt = {}) {
         // 研究站、对撞机的分拣器对齐槽位，带子那头离带子那格的中心最多差 0.4 格（参考蓝图里就是这样接的）
         if (Math.abs(P(o).x - p.x) > 0.45 || Math.abs(P(o).y - p.y) > 0.45) err(`分拣器 ${s.index} ${which}不在所连传送带上`);
         // 带子那头够不够得着那节带子：建好时离带子节点超过 √5 m 会断开（游戏代码）；写在带子下面去「够」高处的带子是行的
-        // （用户 2026/10/28 实测：带子在 0.5 层、分拣器那头写 0，测试 D3、D8 能贴能取）
+        // （实测：带子在 0.5 层、分拣器那头写 0，能贴能取）
         const gap = Math.hypot((p.x - o.localOffset[0].x) * CELL_M, (p.y - o.localOffset[0].y) * CELL_M, (p.z - Z(o)) * LEVEL_M);
         if (gap > SORTER_REACH_M + 1e-6) err(`分拣器 ${s.index} ${which}离所连传送带 ${gap.toFixed(2)} m，建好时会断开（超过 √5 m）`);
       } else if (isBox(o.itemId)) {
@@ -576,9 +565,7 @@ export function checkBlueprint(str, opt = {}) {
       } else if (BODY[o.itemId]) {
         const off = BODY[o.itemId].slot[slot] && turn(o, BODY[o.itemId].slot[slot]);
         if (!off) err(`分拣器 ${s.index} ${which}槽位 ${slot} 未知`);
-        // 火力发电厂放宽到 0.05：用户的蓝图里同一列往下 0、4 号口的横向偏移从 0.860 渐变到 0.902（槽位的实际位置以米计，
-        // 离赤道越远格子越窄，折成格数就越大），规划器按最上面一台的值出
-        else if (Math.abs(P(o).x + off[0] - p.x) > (o.itemId === THERMAL_PLANT ? 0.05 : 0.01) || Math.abs(P(o).y + off[1] - p.y) > (o.itemId === THERMAL_PLANT ? 0.05 : 0.01)) err(`分拣器 ${s.index} ${which}槽位 ${slot} 与位置不符`);
+        else if (Math.abs(P(o).x + off[0] - p.x) > 0.01 || Math.abs(P(o).y + off[1] - p.y) > 0.01) err(`分拣器 ${s.index} ${which}槽位 ${slot} 与位置不符`);
       } else err(`分拣器 ${s.index} ${which}连到了不支持的建筑`);
     }
     // 斜度：两头高差不为 0 时（带子那头写在高处），连线和两头朝向的夹角不能超过 24°（游戏报「太斜」）。见 sorterTilt
@@ -596,9 +583,9 @@ export function checkBlueprint(str, opt = {}) {
     spans.get(key).push({ lo: Math.min(a, b), hi: Math.max(a, b), x: across, idx: s.index });
   }
   if (steepSorters.length) warnings.push(`有 ${steepSorters.length} 根分拣器接在高处的带子上，赤道上不超过 ${SORTER_MAX_TILT}°，离赤道远、东西向的格子变窄（或整张转 90° 贴）时可能太斜贴不上（如分拣器 ${steepSorters.slice(0, 3).join('、')}；实测低纬度 D1 D4 D6 D11 D13 变红）`);
-  // 同一列上的两根竖直分拣器：占的格子有重叠（接到同一格带子或交叉）就会碰撞。
-  // 玩家实测（2026/10/03）：各接各的带子、哪怕端点上下紧挨或中间隔着带子都没问题。
-  // 同一格带子上并排、x 错开 0.8 格的两根（对撞机 1/2 号、6/7 号槽都落在同一格）不碰撞，参考蓝图里就这么接。
+  // 同一列上的两根竖直分拣器：占的格子有重叠（接到同一格带子或交叉）就会碰撞；各接各的带子、哪怕端点上下紧挨或中间隔着带子
+  // 都没问题（实测，game-rules 第 1 条）。同一格带子上并排、x 错开 0.8 格的两根（对撞机 1/2 号、6/7 号槽都落在同一格）不碰撞，
+  // 参考蓝图里就这么接（第 16 条）。
   for (const [x, list] of spans) {
     for (let i = 0; i < list.length; i++)
       for (let j = i + 1; j < list.length; j++) {
@@ -697,7 +684,7 @@ export function checkBlueprint(str, opt = {}) {
   }
 
   // 5a. 集装机：前后各接一节带子；喷涂机：骑在第 z 层的带子上（地面或高架），背后那格上方第 z + 1 层有增产剂带横穿；
-  //     同一格可以上下叠（每台 z 差 2，上一台骑在下一台身上），叠着但脚下没带子的那台什么也喷不到；悬空不行（用户 2026/10/08 的蓝图）
+  //     同一格可以上下叠（每台 z 差 2，上一台骑在下一台身上），叠着但脚下没带子的那台什么也喷不到；悬空不行（实测，game-rules 第 28 条）
   for (const p of pilers) {
     if (!belts.some((b) => b.outputObjIdx === p.index)) err(`自动集装机 ${p.index} 没有进料带`);
     if (!fromPiler.has(p.index)) err(`自动集装机 ${p.index} 没有出料带`);
@@ -712,10 +699,10 @@ export function checkBlueprint(str, opt = {}) {
       continue;
     }
     const yaw = Math.round(c.yaw[0] / 90) * 90 % 360;
-    // 喷涂机顺着带子朝下游（用户的分馏阵列就是这样）；倒过来的话机身伸向上游，接物流站时会撞到站（用户 2026/10/07）
+    // 喷涂机顺着带子朝下游；倒过来的话机身伸向上游，接物流站时会撞到站（实测，game-rules 第 24 条）
     if (under && ((Math.round((under.yaw?.[0] ?? 0) / 90) * 90 % 360) + 360) % 360 !== (yaw + 360) % 360) err(`喷涂机 ${c.index} 的朝向和脚下传送带的流向不一致（应顺着带子朝下游）`);
     const [dx, dy] = { 0: [0, -1], 90: [-1, 0], 180: [0, 1], 270: [1, 0] }[(yaw + 360) % 360];
-    // 压着的 3 格不转弯、不升降，再往外各一格也顺着同一方向进出：转弯、坡道、竖直升降最近只能在第 2 格（用户 2026/10/07 两张实测蓝图）。
+    // 压着的 3 格不转弯、不升降，再往外各一格也顺着同一方向进出：转弯、坡道、竖直升降最近只能在第 2 格（实测，game-rules 第 24 条）。
     // 顺着带子的连接往上游、下游各走两格；带子从压着的第一格开头（没有来路）不算错
     if (under) {
       const up = (b) => belts.find((u) => u.outputObjIdx === b.index);
@@ -733,9 +720,9 @@ export function checkBlueprint(str, opt = {}) {
 
   // 5b. 喷涂覆盖（蓝图里有喷涂机才查）：每根从带子往工厂取料的分拣器，沿带子往上游走到这条带的来源
   // （带头、物流站出站口，或最后一个往带上放料的出料分拣器）之前经过了喷涂机，取的料才算喷过——
-  // 工厂产出的东西不带增产（游戏规则），放料口在喷涂机下游、或来源到取料口之间没有喷涂机，料就没喷到。
-  // 一台工厂的原料要么全喷过、要么全没喷：只喷一部分时按最低一级算没有效果，喷过的增产剂白耗（游戏规则）。
-  // （用户 2026/10/18 起只喷最终产物的直接原料，上游工厂的原料本来就不喷；以前每级都喷时要求每根取料都喷过）
+  // 工厂产出的东西不带增产，放料口在喷涂机下游、或来源到取料口之间没有喷涂机，料就没喷到。
+  // 一台工厂的原料要么全喷过、要么全没喷：只喷一部分时按最低一级算没有效果，喷过的增产剂白耗（BWIKI，game-rules 第 29 条）。
+  // 规划器只喷最终产物的直接原料，上游工厂的原料本来就不喷
   let feedSorters = 0;
   let unsprayed = 0;
   let mixed = 0;
@@ -772,7 +759,7 @@ export function checkBlueprint(str, opt = {}) {
     for (const s of sorters) {
       const src = B[s.inputObjIdx];
       const dst = B[s.outputObjIdx];
-      if (!src || !isBelt(src.itemId) || !dst || !BODY[dst.itemId] || dst.itemId === THERMAL_PLANT) continue; // 烧掉的燃料不用喷
+      if (!src || !isBelt(src.itemId) || !dst || !BODY[dst.itemId]) continue;
       feedSorters++;
       if (!coaters.length) continue;
       const ok = sprayedFrom(src.index);
@@ -790,25 +777,6 @@ export function checkBlueprint(str, opt = {}) {
     if (coaters.length && !sprayedFactories) warnings.push('蓝图里有喷涂机，但没有一台工厂的原料全喷过（增产剂不起作用）');
   }
 
-  // 5c. 火力发电厂的燃料：每台要么有分拣器从带燃料的带子上取，要么从一台有燃料的发电厂接过来（一列往下一台传一台）
-  if (thermals.length) {
-    const fuelled = new Set();
-    for (let changed = true; changed;) {
-      changed = false;
-      for (const s of sorters) {
-        const dst = B[s.outputObjIdx];
-        const src = B[s.inputObjIdx];
-        if (!dst || dst.itemId !== THERMAL_PLANT || fuelled.has(dst.index) || !src) continue;
-        const ok = isBelt(src.itemId) ? [...carried.get(src.index)].some((it) => FUEL_MJ[it]) : src.itemId === THERMAL_PLANT && fuelled.has(src.index);
-        if (ok) {
-          fuelled.add(dst.index);
-          changed = true;
-        }
-      }
-    }
-    for (const f of thermals) if (!fuelled.has(f.index)) err(`火力发电厂 ${f.index} 没有燃料来源`);
-  }
-
   // 6. 供电（蓝图里有电力设施时才查）：设施不压工厂、带子、分拣器；卫星配电站不进物流站身外那一圈；每台工厂、每根分拣器都在覆盖范围内；设施彼此连通
   const SPEC = new Map(Object.entries(POWER).map(([type, s]) => [s.itemId, { ...s, ...powerReach(type) }]));
   const nodes = B.filter((b) => SPEC.has(b.itemId));
@@ -823,21 +791,20 @@ export function checkBlueprint(str, opt = {}) {
       const [p0, p1] = s.localOffset;
       for (let y = Math.round(Math.min(p0.y, p1.y)); y <= Math.round(Math.max(p0.y, p1.y)); y++) for (let x = Math.round(Math.min(p0.x, p1.x)); x <= Math.round(Math.max(p0.x, p1.x)); x++) taken.add(`${x},${y}`);
     }
-    // 卫星配电站 3×3，电力感应塔 1 格
     for (const d of [...pilers, ...coaters]) taken.add(`${P(d).x},${P(d).y}`);
     const warnNear = new Set(); // 配电站东西向离物流站太近的（每座配电站、每座站只记一次）
     for (const n of nodes) {
       const s = SPEC.get(n.itemId);
       for (const [x, y] of powerCells(n.itemId, P(n).x, P(n).y)) {
         const what = `${s.name} ${n.index}`;
-        // 带子从头顶过要够高（POWER_OVER_Z，用户 2026/10/28 实测：电力感应塔 4.5 层、卫星配电站 5.5 层能过）
+        // 带子从头顶过要够高（POWER_OVER_Z，实测：电力感应塔 4.5 层、卫星配电站 5.5 层能过）
         if (taken.has(`${x},${y}`) || (beltZ.get(`${x},${y}`) ?? []).some((z) => z < (POWER_OVER_Z[n.itemId] ?? Infinity) - 1e-6)) err(`${what}压在 (${x},${y}) 的传送带、分拣器或喷涂机/集装机上`);
         for (const st of stations) if (Math.abs(P(st).x - x) <= 3 && Math.abs(P(st).y - y) <= 3) err(`${what}压在物流站 ${st.index} 上`);
-        // 站身外 1 格碰撞圈（按 9×9）只挡卫星配电站，电力感应塔可以贴着站身（体积测试 D2 D3 变红、D4 能放）
+        // 站身外 1 格碰撞圈（按 9×9）只挡卫星配电站，电力感应塔可以贴着站身（实测，game-rules 第 19 条）
         else if (n.itemId === 2212 && Math.abs(P(st).x - x) <= STATION_CLEAR && Math.abs(P(st).y - y) <= STATION_CLEAR) err(`${what}离物流站 ${st.index} 太近（站身外还有 1 格碰撞圈）`);
-        // 东西向隔 6 格这种：赤道附近能放（用户实测过），离赤道远了东西向格子变窄会撞（用户 2026/10/30）；不知道贴在哪个纬度，同东西向分拣器太斜记提醒（规划器不这么摆，gamedata.js 的 STATION_EW）
+        // 东西向隔 6 格这种：赤道附近能放，离赤道远了东西向格子变窄会撞（实测，game-rules 第 39 条）；不知道贴在哪个纬度，记提醒（规划器不这么摆，gamedata.js 的 STATION_EW）
         else if (n.itemId === 2212 && Math.abs(P(st).x - x) <= STATION_EW.x && Math.abs(P(st).y - y) <= STATION_EW.y) warnNear.add(`${what}离物流站 ${st.index} 东西向太近：离赤道远了东西向格子变窄会撞（用户实测回归线下东西隔 6、南北错开 4 行以内的撞）`);
-        for (const f of solids) if (inside(f, x, y, P)) err(`${what}与工厂 ${f.index} 碰撞`);
+        for (const f of factories) if (inside(f, x, y, P)) err(`${what}与工厂 ${f.index} 碰撞`);
         for (const b of stores) {
           if (b.inputObjIdx >= 0) continue;
           const w = yawOf(b) % 180 ? STORE_BODY[b.itemId].h : STORE_BODY[b.itemId].w;
@@ -846,7 +813,7 @@ export function checkBlueprint(str, opt = {}) {
         }
       }
       // 卫星配电站的顶盘（5.49 格见方、离地 6~7 m）比底座宽：离中心 2 格那一圈里，高度落在顶盘那一截（4.18~5.27 层）的带子会撞
-      // （用户 2026/10/28 实测：顶盘底下 4 层能放、4.5 层红，测试 E15、E16）
+      // （实测：顶盘底下 4 层能放、4.5 层撞，game-rules 第 38 条）
       if (n.itemId === 2212) {
         const R = SUBSTATION_DISK.reach;
         for (let x = P(n).x - R; x <= P(n).x + R; x++)
@@ -855,8 +822,7 @@ export function checkBlueprint(str, opt = {}) {
             if ((beltZ.get(`${x},${y}`) ?? []).some((z) => z > SUBSTATION_DISK.lo && z < SUBSTATION_DISK.hi)) err(`卫星配电站 ${n.index} 的顶盘撞上 (${x},${y}) 的高架带（顶盘离地 6~7 m，那圈的带子要低于 4.18 层或高于 5.27 层）`);
           }
       }
-      // 卫星配电站 3×3 和化工厂、叠层研究站、对撞机的碰撞体之间要再隔开一点（gamedata.js 的 substationPad，第六张体积测试 + 2026/10/08 验证合集：
-      // 化工厂左 0.5、下沿 0.5，叠层研究站四周 1，对撞机左 1.5、下 1.5、右 0.5、上 0.5）。间隔按工厂自己的朝向，转了方向的蓝图跟着转
+      // 卫星配电站 3×3 和工厂碰撞体之间要再隔开的距离（实测，gamedata.js 的 substationPad 的 margin）。间隔按工厂自己的朝向，转了方向的蓝图跟着转
       if (n.itemId === 2212) for (const f of factories) {
         if (P(f).z > 0) continue; // 叠起来的研究站只看最底下那台
         const stacked = isLab(f.itemId) && factories.some((u) => u !== f && isLab(u.itemId) && P(u).x === P(f).x && P(u).y === P(f).y && P(u).z > 0);
@@ -876,7 +842,7 @@ export function checkBlueprint(str, opt = {}) {
       }
     }
     warnings.push(...warnNear);
-    // 供电设施之间的最小间距（2026/10/05 实测：配电站和塔 2√2、塔之间紧挨着不行）。两座配电站按顶盘（第 41 条）：东西、南北都不到 6 格的任何纬度都碰，
+    // 供电设施之间的最小间距（实测，gamedata.js 的 powerGap）。两座配电站按顶盘（game-rules 第 41 条）：东西、南北都不到 6 格的任何纬度都碰，
     // 记错；东西隔 6 的赤道上能放、离赤道远了会碰，记提醒（规划器要南北隔 6 或东西隔 7，gamedata.js 的 powerApart）
     for (let i = 0; i < nodes.length; i++)
       for (let j = i + 1; j < nodes.length; j++) {
@@ -894,7 +860,6 @@ export function checkBlueprint(str, opt = {}) {
       }
     const covered = (pt) => nodes.some((n) => (P(n).x - pt.x) ** 2 + (P(n).y - pt.y) ** 2 <= SPEC.get(n.itemId).cover ** 2);
     for (const f of factories) if (!covered(P(f))) err(`工厂 ${f.index} 不在供电范围内`);
-    for (const f of thermals) if (!covered(P(f))) err(`火力发电厂 ${f.index} 不在供电范围内（不并网）`);
     for (const st of stations) if (!covered(P(st))) err(`物流站 ${st.index} 不在供电范围内`);
     for (const d of [...pilers, ...coaters]) if (!covered(P(d))) err(`${d.itemId === PILER ? '自动集装机' : '喷涂机'} ${d.index} 不在供电范围内`);
     for (const d of distributors) if (!covered(P(d))) err(`物流配送器 ${d.index} 不在供电范围内`); // 推断：给配送运输机充电要电（参数里有最大充能功率）

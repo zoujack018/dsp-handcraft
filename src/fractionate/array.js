@@ -1,4 +1,4 @@
-// 分馏塔阵列（做重氢）：从用户 2026-10-04 给的、游戏里在用的 60 塔阵列（template.js）裁剪出来，不重新排。
+// 分馏塔阵列（做重氢）：从游戏里在用的 60 塔阵列（template.js，下面叫「原图」）裁剪出来，不重新排。
 //
 // 原图 36×73，右边中间一座星际物流站，上下两半，每半两组「对列」，一共四个氢循环：
 //   一组对列 = 左列 8 座分馏塔（朝右，氢从下往上穿过）+ 右列 7 座（朝左，氢从上往下穿过），两列中间一条收集带，
@@ -10,9 +10,8 @@
 // 生成时：按要的重氢产量算塔数 → 挑几个循环（离站最近的先用）→ 每个循环留最靠近站的塔、多余的换成直带 →
 // 删掉没用的循环、站口、电塔 → 压紧（compact.js：删只剩直带的行、列，站往循环那边剪切，删多余电塔、重放电塔，每步查建造盒碰撞）→
 // 裁掉空出来的边。有宽、长、长宽比上限时每份从 4 个循环往少了试，取第一个放得下的。
-// 照原图竖着出（塔距 4 格在南北向）：东西向格子离开赤道会变窄（游戏规则第 26 条），南北向不变。整张转 90° 横着出（orient 'h'）以后
-// 塔距 4 格到了东西向，按游戏的碰撞体（分馏塔建造盒 4.5 m 见方）东西向格宽不到赤道的 89.5% 塔就撞塔；循环两头最外面那条带离塔心只有 2 格，
-// 不到 98.7%（赤道带里约 9° 以外）就撞塔。所以默认不转（用户 2026/10/30 在游戏里贴横着的图：「最边上的传送带无法建造」）。
+// 照原图竖着出（塔距 4 格在南北向）：东西向格子离开赤道会变窄（game-rules 第 26 条），南北向不变。整张转 90° 横着出（orient 'h'）以后
+// 塔距和循环两头最外面那条带（离塔心 2 格）都到了东西向，离开赤道就撞塔（game-rules 第 42 条），所以默认不转。
 import { fromStr, toStr } from '../codec/parser.js';
 import { POWER, powerReach } from '../plan/power.js';
 import { rotateBlueprint } from '../emit/rotate.js';
@@ -44,10 +43,9 @@ const SLOT_PRO = 5; // 增产剂出站口
 export const TOWERS_PER_LOOP = 15;
 export const MAX_TOWERS = TOWERS_PER_LOOP * LOOPS.length;
 /**
- * 每座分馏塔每分钟出多少重氢 = 流过它的氢 × 分馏概率。
- *   流速：极速带集装 4 层 7200/分（用户 2026-10-04 实测单塔接近 7200/分）。
- *   概率：不喷 1%；喷增产剂按「加速」算，Mk.I 1.25%、Mk.II 1.5%（用户实测）、Mk.III 2%（BWIKI）。
- * 用户原图 60 塔、站里存的是 Mk.III，统计约 8640/分 = 60 × 7200 × 2%。
+ * 每座分馏塔每分钟出多少重氢 = 流过它的氢 × 分馏概率（game-rules 第 13 条）。
+ *   流速：极速带集装 4 层 7200/分（实测单塔接近 7200/分）。
+ *   概率：不喷 1%；喷增产剂按「加速」算，Mk.I 1.25%、Mk.II 1.5%（实测）、Mk.III 2%（BWIKI）。
  */
 export const FLOW = 7200;
 export const SPRAY = [
@@ -162,7 +160,7 @@ export function arrayPlan(rate, perTower = PER_TOWER, maxLoops = LOOPS.length, l
  * @param {number} [o.maxWidth] [o.maxHeight] [o.maxAspect] 出出来的宽、长、长边比短边的上限：每份从 4 个循环往少了试，取第一个放得下的；
  *   都放不下就用 1 个循环的那种、notes 里说一声。plan.limits 记着上限、试过哪几种、被哪条卡住
  * 每份的塔数要 3 个循环（31~45 塔）时，3 个、4 个循环各排一遍，放得下上限的里面挑面积小的（一样大挑 3 个）：3 个循环空着下半边左组那一角，
- *   4 个循环每个少几座、列短一截，面积小 7%~21%（2026/10/30 量的 1~60 塔；1、2 个循环只用上半边，没有空角，多用循环都更大）
+ *   4 个循环每个少几座、列短一截，面积更小（1、2 个循环只用上半边，没有空角，多用循环都更大）
  * @returns {{str: string, plan: object, buildings: object[], width: number, height: number, tags: Map, notes: string[], rotated: boolean}}
  */
 export function fractionatorArray(rate, { spray = 3, perTower = perTowerOf(spray), title, orient = 'v', maxWidth = null, maxHeight = null, maxAspect = null } = {}) {
@@ -256,8 +254,8 @@ function buildArray(plan, { spray, perTower, title, orient }) {
   for (const l of LOOPS) if (!keep.has(l.key)) station.parameters.slots[l.slot] = { dir: 0, storageIdx: 0 };
   for (const [half, slot] of Object.entries(SLOT_IN)) if (!halves.has(half)) station.parameters.slots[slot] = { dir: 0, storageIdx: 0 };
   // 增产剂：站里那一格换成选的等级，本地、星际都设成需求（2）；不喷就清掉那一格和 5 号口。
-  // 用户原图这一格是供应（1）：供应格只收带子送进站的和手放的，运输机、运输船不往里送，还会把它送给别的需求站，
-  // 喷涂机就一直空着（2026/10/30 用户报「还不能加增产」）。产线出的蓝图喷涂用的增产剂也是需求（emit/blueprint.js）；上限照原图 8600
+  // 原图这一格是供应（1），运输机、运输船不往供应格里送，喷涂机会一直空着（game-rules 第 42 条）。
+  // 产线出的蓝图喷涂用的增产剂也是需求（emit/blueprint.js）；上限照原图 8600
   const proIdx = station.parameters.storage.findIndex((x) => x.itemId === PRO);
   if (proIdx >= 0) {
     if (spray) station.parameters.storage[proIdx] = { ...station.parameters.storage[proIdx], itemId: SPRAY[spray].item, localRole: 2, remoteRole: 2 };

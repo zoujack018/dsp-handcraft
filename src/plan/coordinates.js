@@ -36,14 +36,6 @@ export function translateLayout(L, dx, dy) {
   for (const c of L.coaters || []) { c.x += dx; c.y += dy; c.ix += dx; c.iy += dy; }
   for (const pl of L.proLines || []) { points(pl.cells); if (pl.edge) { pl.edge[0] += dx; pl.edge[1] += dy; } }
   for (const w of L.warperLinks || []) points(w.cells);
-  // 就地烧副产物的火力发电厂（plan/burn.js）
-  for (const b of L.burners || []) {
-    points(b.plants);
-    points(b.feed);
-    points([b.gate]);
-    b.rect = [b.rect[0] + dx, b.rect[1] + dy, b.rect[2] + dx, b.rect[3] + dy];
-    b.feedY += dy;
-  }
   // 箱子供货的储物仓、储液罐（plan/storage.js）
   for (const b of L.stores || []) {
     points(b.boxes);

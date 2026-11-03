@@ -3,8 +3,7 @@ export const COLORS = ['#ffd166', '#f4978e', '#7fd1ae', '#9ad0f5', '#e8b4f8', '#
 const INK = '#e6f0ff';
 const PAPER = '#112f52';
 // 建筑按蓝图的画法：蓝底白线，不填色块。粗线是机器轮廓，细线是机壳、炉口、罐体；
-// 轮廓就是规规矩矩的长方形（不出头），轮廓里面沿右边和下边排一道 45° 斜线的「手打阴影」，两头 45° 收口，
-// 像制图员用三角板一笔笔排出来的；阴影不出轮廓，图面干净。
+// 轮廓就是规规矩矩的长方形（不出头），轮廓里面沿右边和下边排一道 45° 斜线的「手打阴影」，两头 45° 收口，阴影不出轮廓。
 export const LINE = '#eef5ff'; // 轮廓（粗）
 export const FINE = '#a9c4e0'; // 机壳、中心标记（细）
 const FAINT = '#6f90b3'; // 管道等次要线
@@ -12,7 +11,7 @@ const HEAVY = 0.085;
 const MED = 0.05;
 const THIN = 0.03;
 const ARM = '#dbe8f7'; // 分拣器
-const POWER = '#ffd666'; // 供电设施（旧版的黄色）
+const POWER = '#ffd666'; // 供电设施
 // 选中一条线时，其他物品统一画成这一种灰蓝（不用半透明，免得黄色和底色混成橄榄色）
 const DIM = '#3d5f84';
 const SANS = '"DIN Alternate", "Bahnschrift", "PingFang SC", "Microsoft YaHei", sans-serif';
@@ -125,14 +124,13 @@ const stationShade = (x, y, t, hatch, a = 3.4, b = 2.6) => {
  * 工厂平面图（白线 + 轮廓内的手打阴影）：
  *   制造台：方形轮廓 + 内收一圈的细线机壳
  *   熔炉：方形轮廓 + 圆形炉口
- *   化工厂（用户 2026-10-04 选的方案四，球罐按方案一）：左边横放的短筒（两端圆头），中间机箱写字母，
+ *   化工厂：左边横放的短筒（两端圆头），中间机箱写字母，
  *     右边大玻璃球罐（圆 + 左上一道高光弧）
  *   研究站：方形底座 + 玻璃穹顶（两道圆）+ 四角立柱，两道圆之间写这一叠有几层；叠得越高，阴影越宽
  *   粒子对撞机：长方形底座 + 环形加速器（两道同心圆）+ 中间对撞室（小方块），分拣器接口偏在左边
  *   分馏塔：方底座 + 圆塔身，一个小三角指向侧面的产物口（重氢从这边出来），塔身里写它属于哪个氢循环
- * letter 是这组的标号，num 是这一台是第几台（用户 2026/10/27）。制造台、对撞机这类地方大的写成一行 A 12：字母和编号同大同色同粗细，
- * 中间留 0.12 个字宽的细空（比普通空格 0.25~0.28 小一半，介于印刷里的发丝空格和细空格之间：看得出分开、又不散），按大写字母高度垂直居中；
- * 字号按这种设备放得下来定，同一种设备一样大（试过字母粗亮编号细淡同基线、仪表位号那样上下叠，用户都不要）。
+ * letter 是这组的标号，num 是这一台是第几台。制造台、对撞机这类地方大的写成一行 A 12（drawingSvg 里的 tag），
+ * 字号按这种设备放得下来定，同一种设备一样大。
  * 熔炉（小写字母 a、b、c…）、分馏塔圆圈里挤，字母照常居中，数字挪到右下角压着圆、描一圈底色。
  * hidden（这一层已经高过机器）按看不见的轮廓画成虚线，不画阴影。mini（楼层缩略图）只画轮廓。
  */
@@ -174,11 +172,6 @@ function factoryShape(kind, cx, cy, w, h, o) {
     s += ring(cx, cy, w * 0.33, FINE, MED, PAPER) + `<path d="M${F3(cx + dir * w * 0.36)} ${F3(cy - 0.2)}L${F3(cx + dir * (w * 0.5 - 0.12))} ${F3(cy)}L${F3(cx + dir * w * 0.36)} ${F3(cy + 0.2)}Z" fill="${FINE}"/>`;
     return s + (mark ? text(cx, cy, mark, 0.62, LINE, 500) + corner(cx, cy, w * 0.33, num, text) : '');
   }
-  if (kind === 'thermal') {
-    const r = Math.min(h * 0.28, 0.9);
-    s += ring(x1 - 0.5 - r, cy, r, FINE, MED, PAPER) + ring(x1 - 0.5 - r, cy, r * 0.55, FINE, THIN);
-    return s + (letter ? text(x0 + (w - 2 * r - 0.5) / 2, cy, letter, 0.95, LINE, 500) : '');
-  }
   if (kind === 'smelter') {
     s += ring(cx, cy, w * 0.31, FINE, MED);
     // 小写字母（熔炉的标号）字号放大到 0.92、按 x 高度（约 0.52 个字号）垂直居中，基线在中心下 0.26 个字号；储液罐的「罐」照旧居中
@@ -215,9 +208,9 @@ export function drawingSvg(model, floors, { level = 0, focus = '', selected = ''
   const title = (s) => mini ? '' : `<title>${escape(s)}</title>`;
   const dim = (itemId) => !!focus && String(itemId) !== focus;
   const attrs = (itemId) => `data-route-item="${itemId}"`;
-  // 选中某个物品时：它保持原色，其他物品统一成灰蓝
   const tint = (itemId, c) => (dim(itemId) ? DIM : c);
-  // 设备标号：A 12 一行，同大同色同粗细，字母和编号之间 0.12 个字宽的细空；按大写字母高度（约 0.7 个字号）垂直居中，所以基线在中心下 0.35 个字号
+  // 设备标号：A 12 一行，同大同色同粗细，字母和编号之间 0.12 个字宽的细空（比普通空格小一半：看得出分开、又不散）；
+  // 按大写字母高度（约 0.7 个字号）垂直居中，所以基线在中心下 0.35 个字号
   const tag = (x, y, letter, num, size) =>
     `<text x="${x}" y="${F3(y + size * 0.35)}" fill="${LINE}" font-size="${size}" font-family='${SANS}' font-weight="500" text-anchor="middle"${spin ? ` transform="rotate(${-spin} ${x} ${y})"` : ''}>${escape(letter)}${num ? `<tspan dx="${F3(size * 0.12)}">${num}</tspan>` : ''}</text>`;
   // extra：另加的属性（熔炉编号描底色的那圈）
@@ -227,8 +220,8 @@ export function drawingSvg(model, floors, { level = 0, focus = '', selected = ''
   const c0 = parts.length; // 从这里起是布局本身（竖排时整组转 90°）
   parts.push(`<rect width="${W}" height="${H}" fill="${PAPER}"/>`);
   if (!mini) parts.push(`<rect width="${W}" height="${H}" fill="url(#${id}-major)"/>`);
-  // 每台工厂是同一个标号里的第几台（用户 2026/10/27：A1、A2…）：按看图的顺序数，从上往下一行行、每行从左往右。
-  // 竖排（现在只有分馏阵列）整张顺时针转了 90°：屏幕上的上下是原来的 x、左右是原来的 y
+  // 每台工厂是同一个标号里的第几台（A1、A2…）：按看图的顺序数，从上往下一行行、每行从左往右。
+  // 竖排整张顺时针转了 90°：屏幕上的上下是原来的 x、左右是原来的 y
   const nth = new Map(); // 组 → 各台的序号（和 centers 一一对应）
   {
     const all = [];
@@ -258,12 +251,6 @@ export function drawingSvg(model, floors, { level = 0, focus = '', selected = ''
         parts.push(`<g class="factory"${g.recipe ? ` data-machine="${ri}:${gi}:${i}"` : ''}>${title(hint)}${factoryShape(g.kind, x, y, w, h, { letter: st ? (st.tank ? '罐' : st.dist ? '配' : '仓') : g.letter, num, mini, text, tag, hidden: above, hatch, levels, yaw: g.yaw })}</g>`);
       }
     }
-    // 就地烧副产物的火力发电厂（朝东摆，碰撞体按估计画）：方框 + 右上一个烟囱圈，框里写「火」
-    for (const b of model.burners || []) for (const [px, py] of b.plants) {
-      const x = X(px + b.box.dx), y = Y(py + b.box.dy), w = b.box.w - 0.3, h = b.box.h - 0.3;
-      const above = !all && level >= 3;
-      parts.push(`<g class="factory">${title(`火力发电厂 · 烧多余的${model.items[100000 + b.itemId]?.name ?? model.items[b.itemId]?.name ?? ''}`)}${factoryShape('thermal', x, y, w, h, { letter: '火', mini, text, tag, hidden: above, hatch })}</g>`);
-    }
     // 箱子供货的储物仓、储液罐（plan/storage.js）：仓画成方框写「仓」（顶上放了物流配送器的写「配」），储液罐画成圆写「罐」
     for (const s of model.stores || []) {
       const [bw, bh] = { 2101: [2.4, 2.4], 2102: [4.4, 2.4], 2106: [3.5, 3.5] }[s.type] ?? [2.4, 2.4];
@@ -275,7 +262,7 @@ export function drawingSvg(model, floors, { level = 0, focus = '', selected = ''
     }
     (model.stations || []).forEach((st, k) => {
       const x = X(st.x), y = Y(st.y);
-      // 物流站：粗线八角轮廓 + 两道细线圆 + 圆上的四个中心标记，T1 字样保留
+      // 物流站：粗线八角轮廓 + 两道细线圆 + 圆上的四个中心标记，中间写 T1、T2…
       const o = `M${x - 2.6} ${y - 3.4}H${x + 2.6}L${x + 3.4} ${y - 2.6}V${y + 2.6}L${x + 2.6} ${y + 3.4}H${x - 2.6}L${x - 3.4} ${y + 2.6}V${y - 2.6}Z`;
       const marks = `<path d="M${x} ${y - 2.65}v0.7M${x} ${y + 1.95}v0.7M${x - 2.65} ${y}h0.7M${x + 1.95} ${y}h0.7" stroke="${FINE}" stroke-width="${THIN}"/>`;
       parts.push(`<g class="station" data-station="${k}">${title(`物流塔 ${k + 1} · 点一下看站口、存储，可以改供需和上限`)}<path d="${o}" fill="${PAPER}"/>${mini ? '' : stationShade(x, y, 0.45, hatch)}<path d="${o}" fill="none" stroke="${mini ? FINE : LINE}" stroke-width="${mini ? 0.25 : HEAVY}"/>${mini ? '' : `${ring(x, y, 2.3, FINE, MED)}${ring(x, y, 1.55, FINE, THIN)}${marks}${text(x, y, `T${k + 1}`, 1.05, LINE, 500)}`}</g>`);
@@ -298,7 +285,7 @@ export function drawingSvg(model, floors, { level = 0, focus = '', selected = ''
     const b = boxes.find((q) => so.x >= q.x0 - 0.01 && so.x <= q.x1 + 0.01 && so.y0 >= q.y0 - 0.5 && so.y0 <= q.y1 + 0.5);
     return b ? (so.y1 > so.y0 ? b.y1 : b.y0) : so.y0;
   };
-  // 分拣器压在地面的带子上面、高架的带子下面（用户：传送带在下面，分拣器在上面，上面还有东西就依次显示）：先画好，画完地面那层再放进去
+  // 分拣器压在地面的带子上面、高架的带子下面：先画好，画完地面那层再放进去
   const sorterParts = [];
   if (!mini && (all || level === 0) && sorters) for (const so of model.sorters) {
     // 分拣器（机械臂的平面符号）：工厂一端一个空心转轴圈，一根臂伸到所接那格带子的中心，那里一个实心圆点是爪（压在带子上）；
@@ -326,7 +313,7 @@ export function drawingSvg(model, floors, { level = 0, focus = '', selected = ''
     sorterParts.push(`<g ${attrs(so.itemId)}>${seg(x, yf + d * 0.12, x, yb, c, 0.06)}${ring(x, yf, 0.12, c, MED, PAPER)}<circle cx="${F3(x)}" cy="${F3(yb)}" r="0.11" fill="${c}"/>${arrow}</g>`);
   }
   // 单看一层时，本层的带在升降点前后接着走的别层那几段（linkedRuns）画在本层下面：照带的颜色，又淡又细的虚线，
-  // 一眼能分出不是这一层的；只是示意，不带 route-hit、点不中。总览和缩略图不画（用户 2026/10/19）
+  // 一眼能分出不是这一层的；只是示意，不带 route-hit、点不中。总览和缩略图不画
   if (!all && !mini) {
     const linked = linkedRuns(floors, level).map((run) => `<polyline points="${runPoints(run).map(([x, y]) => `${X(x)},${Y(y)}`).join(' ')}" fill="none" stroke="${tint(run.itemId, routeColor(model, run.itemId))}" stroke-width="0.12" stroke-opacity="0.65" stroke-dasharray="0.25 0.3"/>`);
     if (linked.length) parts.push(`<g class="linked-runs" pointer-events="none">${linked.join('')}</g>`);
@@ -393,7 +380,7 @@ export function drawingSvg(model, floors, { level = 0, focus = '', selected = ''
     parts.push(`<g class="device">${title(name)}${body}</g>`);
   }
   if (!mini && model.power && (all || level === 0 || power)) for (const n of model.power.nodes) {
-    // 供电设施沿用旧版画法：电力感应塔是一个黄圈，里面一个「+」；卫星配电站是圆角方框加「+」
+    // 供电设施：电力感应塔是一个黄圈，里面一个「+」；卫星配电站是圆角方框加「+」
     const x = X(n.x), y = Y(n.y), z = model.power.size;
     const body = z > 1
       ? `<rect x="${x - z / 2 + 0.1}" y="${y - z / 2 + 0.1}" width="${z - 0.2}" height="${z - 0.2}" rx="0.3" fill="rgba(255,214,102,0.18)" stroke="${POWER}" stroke-width="0.1"/><path d="M${x} ${y - 0.8}V${y + 0.8}M${x - 0.8} ${y}H${x + 0.8}" stroke="${POWER}" stroke-width="0.12"/>`
@@ -428,7 +415,10 @@ export function drawingSvg(model, floors, { level = 0, focus = '', selected = ''
   parts.push(`<rect width="${W}" height="${H}" fill="none" stroke="#82a2c3" stroke-width="0.07"/>`);
   if (!mini) {
     parts.push(`<g class="dimension-lines" fill="none" stroke="#8cadd0" stroke-width="0.05"><path d="M0 -0.4V-1.35M${W} -0.4V-1.35M0 -1.35H${W}M-0.2 -1.1L0.2 -1.6M${W - 0.2} -1.1L${W + 0.2} -1.6M${W + 0.4} 0H${W + 1.35}M${W + 0.4} ${H}H${W + 1.35}M${W + 1.35} 0V${H}M${W + 1.1} -0.2L${W + 1.6} 0.2M${W + 1.1} ${H - 0.2}L${W + 1.6} ${H + 0.2}"/></g>`);
-    parts.push(`<rect x="${W / 2 - 2.1}" y="-1.9" width="4.2" height="1" fill="${PAPER}"/>${text(W / 2, -1.35, `${W}x`, 0.6, '#bfd5ec')}<g transform="translate(${W + 1.35} ${H / 2}) rotate(-90)"><rect x="-2.1" y="-0.5" width="4.2" height="1" fill="${PAPER}"/>${text(0, 0, `${H}x`, 0.6, '#bfd5ec')}</g>`);
+    // 总宽、总长（161x 那种）比标尺数字大，全图时也看得清：一般 1 格高，大图跟着长，最多 1.8 格（再大出图边）；
+    // 底下那块纸色把尺寸线断开，宽度跟着字
+    const ds = Math.min(1.8, Math.max(1, Math.max(W, H) / 90)), dm = F3(ds * 2.6 + 1.2);
+    parts.push(`<rect x="${F3(W / 2 - dm / 2)}" y="-1.9" width="${dm}" height="1" fill="${PAPER}"/>${text(W / 2, -1.35, `${W}x`, F3(ds), '#bfd5ec')}<g transform="translate(${W + 1.35} ${H / 2}) rotate(-90)"><rect x="${F3(-dm / 2)}" y="-0.5" width="${dm}" height="1" fill="${PAPER}"/>${text(0, 0, `${H}x`, F3(ds), '#bfd5ec')}</g>`);
     // 标尺直接使用蓝图坐标，origin 只用于几何映射，避免二次平移。
     const ticks = [];
     for (let x = 0; x < W; x++) ticks.push(`M${x + 0.5} ${H}v${x % 5 === 0 ? 0.24 : 0.1}`);

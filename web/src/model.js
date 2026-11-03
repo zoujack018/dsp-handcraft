@@ -1,14 +1,12 @@
-// 给页面的精简绘图模型（不带 Map 和循环引用）。从 worker.js 拆出来单独一个文件：
-// 除了最终结果，实时预览的快照（搜索中的布局，还没接物流站、供电）也用它转成同一种模型，页面同一套 drawingSvg 来画。
-import { ITEMS, slotPoint, THERMAL_BANK, baseItem, recipe as recipeOf } from '../../src/gamedata.js';
+// 给页面的精简绘图模型（不带 Map 和循环引用）。最终结果和实时预览的快照（搜索中的布局，还没接物流站、供电）
+// 都用它转成同一种模型，页面同一套 drawingSvg 来画。
+import { ITEMS, slotPoint, baseItem, recipe as recipeOf } from '../../src/gamedata.js';
 import { chainTiles } from '../../src/emit/blueprint.js';
-import { bankSorters } from '../../src/plan/burn.js';
 
-const realOf = (id) => (id >= 100000 ? id - 100000 : id);
 const LATIN = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const SMALL = 'abcdefghijkmnpqrstuvwxyz'; // 不用 l、o，和数字 1、0 分不清
 /**
- * 图上每组工厂的标号（用户 2026/10/27~28）：熔炉按组的顺序用小写字母 a、b、c…（试过希腊字母、天干），别的工厂用 A、B、C…（熔炉不占字母）；
+ * 图上每组工厂的标号：熔炉按组的顺序用小写字母 a、b、c…，别的工厂用 A、B、C…（熔炉不占字母）；
  * 箱子供货的储物仓、储液罐和图上一样写「仓」「罐」「配」。图例（worker.js）和图（drawing.js 再按看图的顺序给每台加下标）用同一份
  */
 export function groupLabels(groups) {
@@ -70,8 +68,7 @@ export function renderModel(graph, L) {
   // 使用与蓝图导出完全相同的有向逐格路径，包含站口接线的真实高度。
   const routes = L.chains.flatMap((ch) => {
     const tiles = chainTiles(L, ch);
-    const burned = ch.parts.some((q) => q.leg != null && L.legs[q.leg].burn != null); // 送去火力发电厂烧掉的副产物：带尾是死胡同，不画出口
-    return [tiles.main, ...tiles.extra].map((cells, i) => ({ itemId: baseItem(ch.itemId), cells, inPort: i === 0 && tiles.inPort && !tiles.inStation, outPort: i === 0 && tiles.outPort && !tiles.outStation && !burned })).filter((r) => r.cells.length);
+    return [tiles.main, ...tiles.extra].map((cells, i) => ({ itemId: baseItem(ch.itemId), cells, inPort: i === 0 && tiles.inPort && !tiles.inStation, outPort: i === 0 && tiles.outPort && !tiles.outStation })).filter((r) => r.cells.length);
   });
   // 增产剂带（可能几条：从物流站空口或边缘入口出来，横穿各台喷涂机背后那格）
   for (const pl of L.proLines || []) routes.push({ itemId: pl.itemId, cells: pl.cells, inPort: !pl.station, outPort: false });
@@ -82,17 +79,10 @@ export function renderModel(graph, L) {
   }
   // 喷涂机、自动集装机画成压在带子上的小符号（drawing.js 的 devices）
   const devices = [...(L.coaters || []).map((c) => ({ x: c.x, y: c.y, kind: 'coater' })), ...(L.pilers || []).map((p) => ({ x: p.x, y: p.y, kind: 'piler' }))];
-  // 就地烧副产物的火力发电厂（plan/burn.js）：各台的占地框（碰撞体的估计）和它们的分拣器
-  const burners = (L.burners || []).map((b) => {
-    const chain = L.chains.find((ch) => ch.parts.some((q) => q.leg != null && L.legs[q.leg].burn != null && realOf(L.legs[q.leg].itemId) === b.itemId));
-    const itemId = chain?.itemId ?? b.itemId;
-    for (const s of bankSorters(b)) sorters.push({ x: s.p0[0], y0: s.p1[1], y1: s.p0[1], io: 'in', itemId, factoryItem: '火力发电厂' });
-    return { itemId: b.itemId, plants: b.plants, box: THERMAL_BANK.box };
-  });
   // 箱子供货的储物仓、储液罐（plan/storage.js）：各个仓（叠起来的画一个）、储液罐，仓口的分拣器和工厂的一起画
   const stores = (L.stores || []).map((s) => {
     for (const so of s.sorters) sorters.push({ x: (s.kind === 'in' ? so.p0 : so.p1)[0], y0: s.kind === 'in' ? so.p0[1] : so.p1[1], y1: so.belt[1], io: s.kind === 'in' ? 'out' : 'in', itemId: s.itemId, factoryItem: '储物仓' });
     return { kind: s.kind, itemId: s.itemId, type: s.type, dist: s.dist, layers: s.layers, boxes: s.boxes, tank: s.tank ? { x: s.tank.x, y: s.tank.y } : null };
   });
-  return { width: L.width, height: L.height, rotated: !!L.rotated, origin: L.origin ?? { x: 0, y: 0 }, rows, items, segments, legs, sorters, power, stations, stationSites, stubs, routes, devices, burners, stores, streets: L.streets || [], trunk: L.trunk ?? null };
+  return { width: L.width, height: L.height, rotated: !!L.rotated, origin: L.origin ?? { x: 0, y: 0 }, rows, items, segments, legs, sorters, power, stations, stationSites, stubs, routes, devices, stores, streets: L.streets || [], trunk: L.trunk ?? null };
 }

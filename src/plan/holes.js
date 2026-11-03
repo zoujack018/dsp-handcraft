@@ -7,10 +7,13 @@ import { keepFreeSlot, stationItemCap } from './layout/shared.js';
 const SIZE = 7;
 const HALF = 3;
 
-/** 按 stations.js 的装站规则估算要几座站、每座站接哪些出入口：每座站最多 5 种物品（翘曲器格占一格时 4 种）、12 条带 */
+/**
+ * 按 stations.js 的装站规则估算要几座站、每座站接哪些出入口：每座站最多 5 种物品、12 条带，
+ * 增产剂、翘曲器要留的空格整张一起留（layout/shared.js 的 keepFreeSlot）
+ */
 export function stationGroups(ports, axis = 'x', slots = null) {
   const cap = stationItemCap(slots);
-  // 按真实物品和进出分（同 stations.js）：副产物送出去的和产线自己要用的同种物品各占一格、放在两座站（下面装站时同种物品不进同一座）
+  // 按真实物品和进出分（同 stations.js，game-rules 第 37 条）：副产物送出去的和产线自己要用的同种物品各占一格、放在两座站（下面装站时同种物品不进同一座）
   const byItem = new Map();
   for (const p of ports) {
     const k = `${realItem(p.itemId)}${p.kind === 'in' ? '<' : '>'}`;
@@ -114,11 +117,9 @@ export function stationHoles(L, { pad = SIZE + 2, distWeight = 1, slots = null }
   let growth = 0;
   let dist = 0;
   const groups = stationGroups(L.ports, W >= H ? 'x' : 'y', slots);
-  // 候选站心 (gx, gy) 一共 PW × PH 个。到出入口的距离能按横、竖拆开：d = DX[gx] + DY[gy]
-  // （坐标都是整格，换个加法顺序结果不变）。一行里面积增量至少是只往竖向扩的那一份，
-  // 于是每行有个便宜的成本下界 RL[gy]：从下界最小的行往两边扫，下界已经比当前最好还大的行整行跳过。
-  // 选中的仍是「成本最小、同成本取逐行逐格扫描时最先遇到的」那一格，和逐格全扫一模一样；
-  // 是否和已放的站太近只在它要当选时才查。
+  // 候选站心 (gx, gy) 一共 PW × PH 个。到出入口的距离能按横、竖拆开：d = DX[gx] + DY[gy]（坐标都是整格，换个加法顺序结果不变）。
+  // 一行里面积增量至少是只往竖向扩的那一份，于是每行有个便宜的成本下界 RL[gy]：从下界最小的行往两边扫，下界已经比当前最好还大的行整行跳过。
+  // 选中的仍是「成本最小、同成本取逐行逐格扫描时最先遇到的」那一格，和逐格全扫一样；是否和已放的站太近只在它要当选时才查。
   const PW = Math.max(0, GW - SIZE + 1);
   const DX = new Float64Array(PW);
   const DY = new Float64Array(PH);

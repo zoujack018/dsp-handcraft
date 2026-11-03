@@ -1,5 +1,4 @@
-// 迷你量化计算器：只为基准测试和单元测试生成输入。
-// 正式集成时，输入来自 antian369/dsp-calc 的计算结果（produceUnits），这里的输出结构与之对应。
+// 迷你量化计算器：给规划器生成输入（网页、命令行、测试都用它）。输出结构和 antian369/dsp-calc 的计算结果（produceUnits）对应。
 import { item, recipe as recipeOf, factory, RAW_ITEM_IDS, defaultRecipe, SPRAY_LEVELS } from '../gamedata.js';
 import { storeUnits } from '../plan/storage.js';
 
@@ -21,23 +20,21 @@ const EPS = 1e-9;
  * @param {Record<string,string|number>} [o.recipes] 指定配方 { 物品名或 ID: 配方名或 ID }；可以是有副产物的配方（如石墨烯高效），
  *   副产物单独算一股流（byproduct），从这组工厂送到出口，不抵产线里同种物品的需求
  * @param {string[]} [o.raw] 额外视为外部供应的物品
- * @param {0|1|2|3} [o.spray=0] 喷增产剂（Mk.I~Mk.III）：只喷最终产物的直接原料，只有最终产物那道吃到（用户 2026/10/18）——
+ * @param {0|1|2|3} [o.spray=0] 喷增产剂（Mk.I~Mk.III）：只喷最终产物的直接原料，只有最终产物那道吃到——
  *   能增产的按增产（产物 +12.5%/20%/25%），只能加速的按加速（+25%/50%/100%）算（游戏规则：一台工厂的每一种原料都喷到才有效果，
- *   按最低喷涂等级算；工厂产出的东西不带增产）。这几种原料要是也供给上游的工厂（比如粒子容器的铜块还要做磁线圈），
+ *   按最低喷涂等级算；工厂产出的东西不带增产，game-rules 第 29 条）。这几种原料要是也供给上游的工厂（比如粒子容器的铜块还要做磁线圈），
  *   喷涂机放在上游都取完之后、最终工厂之前（plan/layout/belts.js），上游吃到的是没喷的，增产剂不白耗。
  *   calc.spray.items 是要喷的物品，calc.spray.to 是吃到增产的配方组；增产剂用量 = 进这几组的原料流量之和 ÷ 每个增产剂的喷涂次数（calc.spray.rate）
- * @param {'final'|'all'} [o.sprayScope='final'] 'all'：所有原料和中间产物都喷、每个配方都吃到（2026/10/18 以前的做法，比较用；
- *   calc.spray 里没有 items、to）
  * @param {number[]} [o.sprayFor] 吃到增产的是哪些物品的配方（默认就是目标）：大产线切块时（plan/modules.js）各块的目标是中间产物，
  *   这里传整条线的最终产物，最终产物不在这一块里时这一块不喷
  * @param {'equator'|'high'} [o.latitude='high'] 化工厂、量子化工厂、原油精炼厂的间距：默认 'high' 加宽（任何纬度都能放，gamedata.js 的 GEOMETRY_HIGH_LATITUDE），
  *   'equator' 赤道压缩（化工厂隔 7、量子化工厂隔 8、精炼厂隔 3，只在赤道附近放得下；网页默认这套，左栏「化工厂、精炼厂高纬度间距展开」打开才加宽）。
  *   只影响排布，不影响台数；原样放进返回值，buildGraph 按它取工厂几何
  * @param {string} [o.supply] 箱子供货（不接物流站时，plan/storage.js 的 SUPPLY）：原料、成品、副产物换成排进行里的储物仓
- *   （plan/storage.js 的 storeUnits，液体、一条带装不下的原料、要烧掉的副产物除外）；storeSorter 左栏的分拣器、storeLayers 最多叠几层、
- *   storeBelt 传送带等级、burn 要烧掉的副产物
+ *   （plan/storage.js 的 storeUnits，液体、一条带装不下的原料除外）；storeSorter 左栏的分拣器、storeLayers 最多叠几层、
+ *   storeBelt 传送带等级
  */
-export function calculate({ target, rate, targets, smelter = 2302, assembler = 2303, chemical = 2309, lab = 2901, labStack = 15, recipes = {}, raw = [], spray = 0, sprayScope = 'final', sprayFor = null, latitude = 'high', supply = null, storeSorter = 2013, storeLayers = 15, storeBelt = 3, burn = false }) {
+export function calculate({ target, rate, targets, smelter = 2302, assembler = 2303, chemical = 2309, lab = 2901, labStack = 15, recipes = {}, raw = [], spray = 0, sprayFor = null, latitude = 'high', supply = null, storeSorter = 2013, storeLayers = 15, storeBelt = 3 }) {
   const goals = (targets?.length ? targets : [{ target, rate }]).map((t) => ({ item: item(t.target), rate: Number(t.rate) }));
   const targetItem = goals[0].item;
   const rawIds = new Set([...RAW_ITEM_IDS, ...raw.map((n) => item(n).id)]);
@@ -45,7 +42,7 @@ export function calculate({ target, rate, targets, smelter = 2302, assembler = 2
 
   const chooseRecipe = (itemId) => {
     if (rawIds.has(itemId)) return null;
-    // 选的配方原料里有它自己（精炼油的重整精炼，计算器带过来的也算）：不用，照默认（用户 2026/11/02：重整精炼没用，只留等离子精炼）
+    // 选的配方原料里有它自己（精炼油的重整精炼，计算器带过来的也算）：不用，照默认（见 gamedata.js 的 defaultRecipe）
     const o = overrides.get(itemId);
     if (o && !o.inputs.some((x) => x.id === itemId)) return o;
     return defaultRecipe(itemId); // 优先单产物配方；只有带副产物的配方能做时（反物质、精炼油），副产物单独送出
@@ -78,10 +75,10 @@ export function calculate({ target, rate, targets, smelter = 2302, assembler = 2
   const demand = new Map();
   for (const g of goals) demand.set(g.item.id, (demand.get(g.item.id) || 0) + g.rate);
   const eff = SPRAY_LEVELS[spray] ?? null;
-  // 只喷最终产物的直接原料（sprayScope 'all' 时为 null：全都喷）；最终产物的配方不吃增产剂（proliferator 为 0）就不喷
+  // 只喷最终产物的直接原料；最终产物的配方不吃增产剂（proliferator 为 0）就不喷
   const goalIds = new Set(sprayFor ? sprayFor.map(Number) : goals.map((g) => g.item.id));
   const canSpray = (r) => !!r && r.inputs.length > 0 && (r.proliferator & 3) > 0;
-  const sprayed = eff && sprayScope !== 'all' ? new Set([...goalIds].flatMap((id) => (canSpray(recipeFor.get(id)) ? recipeFor.get(id).inputs.map((x) => x.id) : []))) : null;
+  const sprayed = eff ? new Set([...goalIds].flatMap((id) => (canSpray(recipeFor.get(id)) ? recipeFor.get(id).inputs.map((x) => x.id) : []))) : null;
   let sprayFlow = 0; // 进吃到增产的工厂的原料流量之和（每一股都过了喷涂机）
   const units = [];
   const rawSupply = [];
@@ -89,8 +86,7 @@ export function calculate({ target, rate, targets, smelter = 2302, assembler = 2
   const flows = goals.map((g) => ({ itemId: g.item.id, from: null, to: 'OUT', rate: g.rate }));
   // 同一道多产物配方被几种物品同时选中（石墨烯、氢都选了石墨烯（高效）；精炼油当目标、氢也要用时的等离子精炼）：只开一组工厂，
   // 台数按缺得最多的那种算，这几种产物都直接供产线（unit.shared），多出来的跟着自己那条带一起送出（flow.extra）。
-  // 用户 2026/10/27：以前各开一组，各把对方要的东西当副产物送出去。轮到其中最后一种时几种的需求都齐了（后序倒过来走，用它们的都在前面），
-  // 这组在那时开；配方的原料是它们共同的下游，排在更后面
+  // 轮到其中最后一种时几种的需求都齐了（后序倒过来走，用它们的都在前面），这组在那时开；配方的原料是它们共同的下游，排在更后面
   const sharers = new Map();
   for (const [id, r] of recipeFor) if (r && r.outputs.length > 1) (sharers.get(r) ?? sharers.set(r, []).get(r)).push(id);
   const order = post.slice().reverse();
@@ -108,7 +104,7 @@ export function calculate({ target, rate, targets, smelter = 2302, assembler = 2
       continue;
     }
     const f = chooseFactory(r);
-    // 喷增产剂：最终产物那道吃到（sprayScope 'all'：每个配方都吃到）——能增产的按增产，只能加速的按加速
+    // 喷增产剂：最终产物那道吃到——能增产的按增产，只能加速的按加速
     // （数据里 proliferator & 2 能增产、& 1 能加速：反物质质能储存、X 射线裂解这类只能加速）
     const fed = !sprayed || (goalIds.has(itemId) && canSpray(r));
     const mode = eff && fed && r.inputs.length > 0 ? (r.proliferator & 2 ? 'extra' : r.proliferator & 1 ? 'speed' : null) : null;
@@ -170,7 +166,7 @@ export function calculate({ target, rate, targets, smelter = 2302, assembler = 2
   for (const fl of flows) if (!fl.byproduct) fl.from = producerOf.get(fl.itemId) || 'RAW';
   // 增产剂用量：进吃到增产的工厂的料都喷过，一个增产剂喷 sprays 个
   const sprayInfo = eff ? { ...eff, rate: sprayFlow / eff.sprays } : null;
-  if (sprayInfo && sprayed) {
+  if (sprayInfo) {
     sprayInfo.items = [...sprayed];
     sprayInfo.to = units.filter((u) => u.spray).map((u) => u.id);
   }
@@ -188,5 +184,5 @@ export function calculate({ target, rate, targets, smelter = 2302, assembler = 2
     flows,
     latitude: latitude === 'equator' ? 'equator' : 'high',
   };
-  return supply ? storeUnits(result, { supply, sorter: storeSorter, maxLayers: storeLayers, burn, belt: storeBelt }) : result;
+  return supply ? storeUnits(result, { supply, sorter: storeSorter, maxLayers: storeLayers, belt: storeBelt }) : result;
 }

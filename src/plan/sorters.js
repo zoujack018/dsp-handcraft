@@ -1,13 +1,10 @@
 // 分拣器落位：给每台工厂每一侧的每种物品分配一列（工厂中心 -1/0/+1），算出长度，检查冲突和速度。
 //
-// 冲突（玩家实测，2026/10/03 规则测试图）：上下两侧伸进同一通道、落在同一列的两根分拣器，
+// 冲突（实测，game-rules 第 1 条）：上下两侧伸进同一通道、落在同一列的两根分拣器，
 // 只有接到同一格带子（或者交叉）时才碰撞；各接各的、哪怕端点上下紧挨也没问题。
 // 所以同一列最多一上一下两根，并且下方那根接的轨道必须比上方那根低。
 
-/**
- * 各类分拣器按长度（1/2/3 格）的速度，个/分钟，来源 BWIKI「分拣器」词条。
- * 不考虑货物堆叠科技（按未升级计算）。
- */
+/** 各类分拣器按长度（1/2/3 格）的速度，个/分钟（BWIKI「分拣器」词条，按未升级堆叠计算，game-rules 第 3 条） */
 export const SORTER_SPEED = {
   2011: { 1: 90, 2: 45, 3: 30 }, // 分拣器
   2012: { 1: 180, 2: 90, 3: 60 }, // 高速分拣器
@@ -49,10 +46,7 @@ function slotMaskOf(g, side, tap) {
 // 3 列里挑 k 列的全部排列（相对工厂中心的偏移），预先算好
 /** 带在某台工厂处的流向：+1 向右，-1 向左（劈开的带看工厂中心落在哪半边） */
 const flowDir = (seg, cx) => (!seg ? 0 : seg.dir !== 0 ? seg.dir : cx < seg.split ? -1 : 1);
-/**
- * 同一段带（劈开的带按两半分别算）的编号：段号 × 3，劈开的左半 +1、右半 +2。段号是 segments 里的下标（整数），
- * 和原来拼成字符串的键（`${id}`、`${id}L`、`${id}R`）一一对应，但不用造字符串、可以直接当数组下标
- */
+/** 同一段带（劈开的带按两半分别算）的编号：段号 × 3，劈开的左半 +1、右半 +2；段号是 segments 里的下标，编号可以直接当数组下标 */
 const halfIdx = (seg, cx) => seg.id * 3 + (seg.dir !== 0 ? 0 : cx < seg.split ? 1 : 2);
 
 const PERMS = { 0: [[]], 1: [], 2: [], 3: [] };
@@ -70,7 +64,7 @@ function permsFor(k, masks) {
 }
 /**
  * permsFor 第一次见到这个 (k, masks) 时算。单独写成函数：过滤函数要读 masks，写在 permsFor 里时 permsFor 每次调用（多数是查表命中）
- * 都要先建一个放 masks 的作用域对象（40 字节，2026/10/25 量过）
+ * 都要先建一个放 masks 的作用域对象
  */
 function permsBuild(k, masks) {
   const opts = PERMS[k].filter((offs) => offs.every((off, i) => (masks >> (3 * i + off + 1)) & 1));
@@ -78,11 +72,11 @@ function permsBuild(k, masks) {
 }
 /**
  * 分拣器动态规划复用的缓冲区（见 assignSorters 里的 solve），按状态值下标。状态正常是 9 位，但通道里轨道多于 3 条时（违规的布局，
- * 搜索中途会走到）编码会溢出到更高位，所以按实际出现的最大状态值扩容，任何状态值都和原来的 Map 一样合并。
+ * 搜索中途会走到）编码会溢出到更高位，所以按实际出现的最大状态值扩容。
  * keys/back：各层「按第一次出现排的状态表」和回溯指针首尾相接放在一条数组里，layer[ui] 是第 ui 台那层的起点；不够时翻倍。
  * base：一台工厂各排列的基础代价（排列最多 6 种）。
- * memo/slot/tns/tcl：一层里同一个（移位后的）状态走各排列得到的新状态和碰撞数只算一次。相邻两台隔开 3 列以上时上一层所有状态都移成 0，
- * 一层平均 6～7 个状态只有 1.5 个不同的移位结果；memo[st] 是本层轮次号时，slot[st] 指向已算好的那一组（每组 8 格，按排列序号）。
+ * memo/slot/tns/tcl：一层里同一个（移位后的）状态走各排列得到的新状态和碰撞数只算一次（相邻两台隔开 3 列以上时上一层所有状态都移成 0，
+ * 不同的移位结果很少）；memo[st] 是本层轮次号时，slot[st] 指向已算好的那一组（每组 8 格，按排列序号）。
  * ref：每组已经比过的上一层状态里最小的代价（不比它小的状态整组跳过，见 solve）。fd：一台工厂每根的流向。
  */
 const DP = {
@@ -145,7 +139,7 @@ function nextEpoch(o, stampKey) {
   }
   return ++o.epoch;
 }
-/** 每段带（两半分开）最上游的出料列：stamp 是本轮的才算有，代替原来每次新建的 Map */
+/** 每段带（两半分开）最上游的出料列：stamp 是本轮的才算有 */
 const UP = { col: new Float64Array(256), stamp: new Uint32Array(256), epoch: 0 };
 /** 统计碰撞用的逐列计数：下标是列号减去本通道最左一列，stamp 是本轮的才算有，list 记本轮碰到的列 */
 const COL = {
@@ -164,49 +158,37 @@ function colGrow(n) {
   for (const k of ['stamp', 'nb', 'na', 'minB', 'maxB', 'minA', 'maxA', 'list']) COL[k] = grown(COL[k], n);
 }
 /**
- * 收集工厂（assignSorters 每个通道开头那段）复用的东西，每个线程一份（同一线程里 assignSorters 不会重入）。以前每个通道、每块每侧都新建，
- * 退火里每次评估都要跑一遍，是多线程时内存流量的大头之一（2026/10/25）：
- *   unit：每台工厂一个，want：每块每侧每种物品一个，都只在本通道里用（往 sorters、slow、starved、tooLong 里填的是它们的字段值，不是它们本身），
- *     按本通道里的序号从池子里取、每个字段都重写（建对象时字段的先后和原来的字面量一样），所以读不到上一个通道留下的东西；
+ * 收集工厂（assignSorters 每个通道开头那段）复用的东西，每个线程一份（assignSorters 不会重入），免得退火里每次评估都新建
+ * （多线程时内存流量的大头）：
+ *   unit（每台工厂一个）、want（每块每侧每种物品一个）只在本通道里用、往外填的是字段值，按序号从池子里取、每个字段都重写；
  *   units、merged：本通道的 unit 按收集的先后放进 units，两行要归并时放进 merged，都只读前 nU 项；
- *   need：拼 needs 用的临时数组，拼好再按刚好的长度切出去（needs 照旧每块每侧一个新数组，各处按 needs.length 读）；
- *   segStart、segAt：段按通道分桶，通道 ch 的段是 segAt[segStart[ch] .. segStart[ch + 1])（L.segments 的下标，按 segments 的先后），
- *     代替原来每次新建的 Map 套 Map（通道号在 belts.js 里本来就当数组下标用，是 0..R 的整数）
+ *   need：拼 needs 用的临时数组，拼好再按刚好的长度切出去（各处按 needs.length 读）；
+ *   segStart、segAt：段按通道分桶，通道 ch 的段是 segAt[segStart[ch] .. segStart[ch + 1])（L.segments 的下标，按 segments 的先后）
  */
 const POOL = { units: [], merged: [], unit: [], want: [], need: [], segStart: new Int32Array(64), segAt: new Int32Array(256) };
 const unitAt = (j) => (POOL.unit[j] ??= { g: null, gid: null, bid: null, bi: 0, cx: 0, fcx: 0, side: null, from: null, needs: null, slotMask: 0, options: null, pick: null });
-// slow：这根速度够不够（原来 slowW 那个 filter 的条件），收集时算好
+// slow：这根速度够不够，收集时算好
 const wantAt = (j) => (POOL.want[j] ??= { itemId: 0, dir: null, seg: null, track: 0, length: 0, rate: 0, k: 0, stubOk: false, slow: false });
 
 /**
- * 按通道记住算过的落位（assignSorters 的 cache 开关，默认开）。各通道是分开算的，退火评估邻居时多数通道和之前某次一模一样
- * （2026/10/24 量过：一轮里 60%~77% 的通道最近 8192 次以内出现过），一样的就不再做动态规划。模块级，每个线程一份。
+ * 按通道记住算过的落位（assignSorters 的 cache 开关，默认开，只影响速度）：退火评估邻居时多数通道和之前某次一模一样，
+ * 一样的就不再做动态规划。模块级，每个线程一份。
  *
- * 键（chanKey，Int32 数组，几样小整数按位拼成一项）只放动态规划（solve、validCols）、断料（upstreamOut、starvedIn）、碰撞统计真正读到的：
- *   开头一项：工厂台数、bits、wide（cmask、AB、NT 都由 bits、wide 定；chan.n 别处只用来算分拣器长度，这几步不读长度）；
- *   每台一项（按排好的先后）：cx、根数 k、slotMask、from（只看是不是 'below'）；
- *   每根一项：所接段在本通道里的局部编号（按第一次出现从 1 排，没接段记 0）、track、dir（'out' / 'in' / 别的，三种在各处分得开）；
- *   段第一次出现时后面再跟三项：a、b，和 split、dir、fed（只看真假）拼的一项（split 是 null、undefined、数三种分开记：
- *   段的 dir 为 0 时 flowDir、halfIdx 里 cx < null 和 cx < undefined 不一样）。
- *   每样先查是不是拼得下的整数（cx 0 ~ 2^18−1、track 0~15、段的 dir −1/0/1、split 0 ~ 2^24−1、a/b 32 位整数……），不是就不缓存这个通道
- *   （照原来算），所以拼法是一一对应的：按开头的台数、每台的 k、每根的局部编号（等于已见段数 + 1 就是新段，后面跟三项）能原样拆回去。
- * 为什么够：validCols 读 cx、slotMask 和各根所接段的 a/b/split；flowDir、halfIdx 读段的 dir/split 和 cx；halfIdx 里的段号只用来分辨
- * 「同一段带的同一半」，局部编号和段号一一对应（同一个段号再次出现时 a、b 和拼的那项要和第一次一样，不一样就不缓存），分组也一样；
- * upstreamOut、starvedIn 再读 dir、fed；solve 再读 from、track 和 bits 那几个；碰撞统计读 cx、pick、from、track。
- * 别的（g、gid、bid、bi、fcx、side、itemId、rate、length、tank……）只用来往 sorters、starved 里填字段，命中时照样用这一次的 units 现填。
- * 段只属于一个通道（segFor 按通道查），UP、COL 每个通道换轮次号，所以通道之间互不影响，换了线、换了 graph 也一样：键相同，结果就相同。
+ * 键（chanKey）把动态规划、断料、碰撞统计真正读到的按位拼成 Int32 数组：开头一项是台数、bits、wide；每台一项是 cx、根数 k、slotMask、
+ * from 是不是 'below'；每根一项是所接段在本通道里的局部编号（按第一次出现从 1 排，没接段记 0）、track、dir；段第一次出现时再跟 a、b
+ * 和 split、dir、fed 拼的一项（split 的 null、undefined、数分开记：段的 dir 为 0 时 cx < null 和 cx < undefined 不一样）。
+ * 有拼不下的值就不缓存这个通道，所以拼法一一对应。
+ * 为什么够：validCols 读 cx、slotMask 和段的 a/b/split；flowDir、halfIdx 读段的 dir/split 和 cx（段号只用来分辨同一段带的同一半，
+ * 同一个段号再次出现时 a、b 和拼的那项要和第一次一样，不然不缓存）；upstreamOut、starvedIn 再读 dir、fed；solve 再读 from、track
+ * 和 bits 定的几样；碰撞统计读 cx、pick、from、track（chan.n 只用来算分拣器长度，这几步不读）。别的字段只用来往 sorters、starved 里填，
+ * 命中时用这一次的 units 现填。段只属于一个通道，UP、COL 每个通道换轮次号，所以键相同结果就相同。
  *
- * 记下的值：每台选中的排列、断料（全通了不记，否则每台的断料根数）、本通道的碰撞数。排列只可能是 PERMS[0..3] 里的或者 zeros(k)
- * （permsFor 的兜底、多于 3 根时），都是共享的只读数组，只读它的内容：k ≤ 3 时按 k 和各根偏移拼成 0~255 的编号，第一次见到时记下
- * 那个数组，命中时拿回它（内容一样）；k > 3 时只能是 zeros(k)，记 256 + k。
- * 为什么逐字一样：DP、UP、COL 这些复用的缓冲区每层、每轮都按轮次号重来，不读上一次留下的东西，同样的输入算出同样的 pick、断料根数、
- * 碰撞数（solve 里按 ref 整组跳过的那一步本身就不改结果）；命中时照原来的先后往 starved、sorters 推这一次新建的对象，clashes 加
- * 记下的整数（原来逐列加的也是整数，和一样）。slow、tooLong 收集工厂时就推好了，不经过这里。
+ * 记下的值：每台选中的排列（只可能是 PERMS[0..3] 里的或 zeros(k)：k ≤ 3 时按 k 和各根偏移编成 0~255、第一次见到时记下那个共享数组，
+ * k > 3 记 256 + k）、断料（全通了不记，否则每台的断料根数）、本通道的碰撞数；slow、tooLong 收集工厂时就推好了，不经过这里。
  *
  * 存放：键、排列编号、断料根数首尾相接放在一条 Int32 的环形区（arena，按需翻倍，最大 SC_ARENA 项）里；每条的哈希、位置、长度、碰撞数
- * 按槽号放在定长数组里，map 从哈希到槽号，放进去、拿出来都不新建对象。槽和 arena 都按放进去的先后用：条数到 SC_CAP，或者 arena
- * 要写的那截还被占着（写到头了从 0 再来），就挤掉最早的。查找：先按哈希找到槽，再逐项比完整的键（长度也比），一样才算命中；
- * 同一个哈希只留最新的一条（撞了的旧条目还在环里，轮到挤掉它时不从 map 里删别人的）。
+ * 按槽号放在定长数组里，map 从哈希到槽号。条数到 SC_CAP，或者 arena 要写的那截还被占着（写到头了从 0 再来），就挤掉最早的。
+ * 查找：先按哈希找到槽，再逐项比完整的键；同一个哈希只留最新的一条（撞了的旧条目还在环里，挤掉它时不从 map 里删别人的）。
  */
 let SC_CAP = 4096; // 最多这么多条（setSorterCacheLimits 只给检查脚本改小了试挤掉的那几条路）
 let SC_ARENA = 1 << 20; // arena 最多这么多项（4 MB）
@@ -458,11 +440,11 @@ for (const a of [-1, 0, 1]) {
 
 /**
  * @param graph 生产图
- * @param L route() 的中间结果（需已有 pos、rowCy、channels、segments、sides）
- * @param sideIo Map<gid, {bottom: Map<itemId,'in'|'out'>, top: ...}>
- * cache：按通道复用算过的落位（见 SC），开关结果逐字一样；关掉只给测试和量速度用（route.js 的 DEFAULTS.sorterCache）
+ * @param L route() 的中间结果（需已有 rows、pos、rowBelow、rowAbove、channels、segments）
+ * @param sideIo Map<块 ID, {bottom: Map<itemId,'in'|'out'>, top: ...}>
+ * cache：按通道复用算过的落位（见 SC），只影响速度（route.js 的 DEFAULTS.sorterCache）
  * countOnly：只走收集工厂那一段，数够不着（tooLong）和太慢（slow）各有几条，返回 { nTooLong, nSlow }，不排落位、不做动态规划、不碰缓存
- * （layout/score.js 的 preLegWantFloor：高架之前的代价下限）。条数和不带它时 tooLong、slow 的长度一样：同一段代码、同样的输入
+ * （layout/score.js 的 preLegWantFloor）。条数和不带它时 tooLong、slow 的长度一样：同一段代码、同样的输入
  */
 export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15, fourthTrack = false, wideTracks = false, cache = true, countOnly = false } = {}) {
   const speed = SORTER_SPEED[sorter];
@@ -474,7 +456,7 @@ export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15
   const tooLong = [];
   let nTooLong = 0; // countOnly 时数的
   let nSlow = 0;
-  // 段按通道分桶（见 POOL）：通道 ch 里的段按 segments 的先后，segFor 再按物品挑，和原来按 通道 -> 物品 -> 各段 的 Map 查出来的先后一样
+  // 段按通道分桶（见 POOL）：通道 ch 里的段按 segments 的先后，segFor 再按物品挑
   const segs = L.segments;
   let nSeg = 0;
   let maxCh = -1;
@@ -518,7 +500,7 @@ export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15
     }
     return undefined;
   };
-  // 收集工厂时当前这一块这一侧（wantOf 读）：io.forEach 的回调整个 assignSorters 只建这一个，不再每块每侧建一个闭包
+  // 收集工厂时当前这一块这一侧（wantOf 读）：io.forEach 的回调整个 assignSorters 只建这一个，不每块每侧建闭包
   let fc = 0; // 通道号
   let fn = 0; // 通道的轨道数
   let fBelow = false; // 来自下方行
@@ -533,7 +515,7 @@ export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15
     const seg = segFor(itemId, fc, fcx0, fbid);
     const track = seg ? seg.track : 0;
     const length = (fBelow ? track + 1 : fn - track) + fextra;
-    // 取料按这一组的消费量（consumers 里第一个是这一组的，没有记 0）：原来是 find 加闭包，换成循环，挑中的同一个
+    // 取料按这一组的消费量（consumers 里第一个是这一组的，没有记 0）
     const it = graph.items.get(itemId);
     let total = 0;
     if (dir === 'out') total = it.rate;
@@ -557,7 +539,7 @@ export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15
     w.length = length;
     w.rate = rate;
     w.k = k;
-    // 罐口那截只在储液罐时才读（原来只给储液罐的 want 加这一项）
+    // 罐口那截只在储液罐时才读
     w.stubOk = ftank && length === 1 && !!seg && seg.split == null && (seg.dir > 0 ? seg.a : seg.b) === fcx0;
     w.slow = false;
   };
@@ -566,7 +548,7 @@ export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15
   for (let ci = 0; ci < L.channels.length; ci++) {
     const chan = L.channels[ci];
     const c = chan.c;
-    // 碰撞规则的编码宽度（见下面 solve）：通道里 4 条轨道（route.js 的 fourthTrack，喷涂时开）每列 4 位，3 条以内照旧 3 位
+    // 碰撞规则的编码宽度（见下面 solve）：通道里 4 条轨道（route.js 的 fourthTrack，喷涂时开）每列 4 位，3 条以内 3 位
     // 宽通道（wideTracks，5~6 条轨）也是每列 4 位：1+t 下方（1~6）、7+t 上方（7~12）、15 已满
     const wide = wideTracks && chan.n > 4;
     const bits = (fourthTrack || wideTracks) && chan.n > 3 ? 4 : 3;
@@ -600,7 +582,7 @@ export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15
         // 排进行里的储液罐（箱子供货）：罐口那截带子当一根分拣器记（出蓝图换成两节带子），只能拐进紧贴的那条带的头一格，
         // 所以要长 1、那条带不劈开、罐在带子的上游头上（从侧面汇进带子的接法没实测过，不用）
         const tank = !!g.store?.tank;
-        // 这一块这一侧的各种物品：按 io 的先后放进 POOL.want[w0 .. w1)（wantOf，原来的 wants 数组）
+        // 这一块这一侧的各种物品：按 io 的先后放进 POOL.want[w0 .. w1)（wantOf）
         fc = c;
         fn = chan.n;
         fBelow = from === 'below';
@@ -619,15 +601,14 @@ export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15
         for (let j = w0; j < w1; j++) total += W[j].k;
         const cap = sideCap(g, side);
         while (total > cap) {
-          // k 最大（> 1）的里面排在最前的那个：和原来 filter 再按 k 从大到小稳定排序取第一个一样
+          // k 最大（> 1）的里面排在最前的那个减一根
           let w = null;
           for (let j = w0; j < w1; j++) if (W[j].k > 1 && (w === null || W[j].k > w.k)) w = W[j];
           if (!w) break;
           w.k--;
           total--;
         }
-        // 速度不够的物品和工厂中心无关，每台工厂各记一遍（顺序和原来一样：按工厂、再按物品）。
-        // 这一圈挪到建 needs 之前（countOnly 也要用）：两边读写的字段不相干，先后换了结果一样
+        // 速度够不够和工厂中心无关，先算好（countOnly 也要用）；不够的下面每台工厂各记一遍（按工厂、再按物品）
         for (let j = w0; j < w1; j++) {
           const w = W[j];
           w.slow = tank ? !w.stubOk : w.rate * headroom > w.k * (speed[w.length] ?? 0) + 1e-9;
@@ -690,7 +671,7 @@ export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15
         units = merged;
       }
     } else {
-      // units 比 nU 长（复用的数组），只排前 nU 项：切出来排好再写回（稳定排序，和原来对整个数组排一样；实际走不到这里）
+      // units 比 nU 长（复用的数组），只排前 nU 项：切出来排好再写回（稳定排序；实际走不到这里）
       const sorted = units.slice(0, nU).sort((p, q) => p.cx - q.cx || (p.from === 'below' ? -1 : 1));
       for (let i = 0; i < nU; i++) units[i] = sorted[i];
     }
@@ -754,7 +735,7 @@ export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15
         return opts;
       };
       // 取料列不能在同一段带（劈开的带按两半分别算）所有出料列的上游，否则拿不到货。
-      // 每段带最上游的出料列记在 UP 里（本轮 stamp），代替原来的 Map
+      // 每段带最上游的出料列记在 UP 里（本轮 stamp）
       const upstreamOut = () => {
         const ep = nextEpoch(UP, 'stamp');
         const upCol = UP.col;
@@ -799,9 +780,8 @@ export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15
       // 4 条轨道（bits = 4）时每列 4 位：1+t 下方（1~4）、6+t 上方（6~9）、15 已满，状态 12 位，同一套逻辑
       const WCLASH = 100;
       const WSTARVE = 1000;
-      // 状态只有 9 位（512 种），实际走到的只有十来种：每层存「按第一次出现排的状态表」和对应的回溯指针（上一状态 × 64 + 排列序号，
-      // 排列最多 6 种），查重和取代价用复用的定长数组（轮次号代替清空）。遍历顺序和原来 Map 的插入顺序一样，平局时选中的排列也一样。
-      // withUps：按当前 UP（upstreamOut 的结果）加断料代价
+      // 每层存「按第一次出现排的状态表」和对应的回溯指针（上一状态 × 64 + 排列序号，排列最多 6 种），
+      // 查重和取代价用复用的定长数组（轮次号代替清空）。withUps：按当前 UP（upstreamOut 的结果）加断料代价
       const solve = (withUps) => {
         let cost = DP.costA;
         cost[0] = 0;
@@ -824,7 +804,7 @@ export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15
           const below = u.from === 'below';
           const needs = u.needs;
           const k = needs.length;
-          // 每种排列的基础代价：顺序偏好 + 断料 + 离中心的距离；加法的先后和原来一样（顺序偏好、距离都是整数和，先加断料再加距离）
+          // 每种排列的基础代价：顺序偏好 + 断料 + 离中心的距离
           if (DP.fd.length < k) DP.fd = grown(DP.fd, k);
           const fds = DP.fd; // 每根的流向，各排列共用
           for (let i = 0; i < k; i++) fds[i] = flowDir(needs[i].seg, u.cx);
@@ -961,7 +941,7 @@ export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15
           const s1 = layer[ui + 1];
           let j = layer[ui];
           while (j < s1 && keys[j] !== bs) j++;
-          const v = j < s1 ? back[j] : undefined; // 找不到时和原来 back[-1] 一样
+          const v = j < s1 ? back[j] : undefined; // 找不到时 undefined（下面按 0 用）
           units[ui].pick = validCols(units[ui])[v & 63];
           bs = v >> 6;
         }
@@ -999,7 +979,7 @@ export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15
         }
       }
       // 统计碰撞：同一列里同一侧多于一根，或者上下两根的轨道没有错开（下方的轨道号必须小于上方的）。
-      // 每列只要两侧的根数和轨道号的最小、最大值（Math.min/max 逐个取，和对整列一起取一样）
+      // 每列只要两侧的根数和轨道号的最小、最大值
       const clashes0 = clashes;
       let lo = Infinity;
       let hi = -Infinity;
@@ -1054,7 +1034,7 @@ export function assignSorters(graph, L, sideIo, { sorter = 2013, headroom = 1.15
       const needs = u.needs;
       for (let i = 0; i < needs.length; i++) {
         const nd = needs[i];
-        // 储液罐的那根最后补上 stub（字段和先后和原来对象展开的写法一样；不带对象展开的字面量每个小一点）
+        // 储液罐的那根最后补上 stub（不用对象展开：字面量小一点）
         const so = { gid: u.gid, bid: u.bid, building: u.bi, cx: u.fcx, side: u.side, io: nd.dir, itemId: nd.itemId, segId: nd.seg?.id ?? null, col: u.cx + u.pick[i], length: nd.length };
         if (u.g.store?.tank) so.stub = true;
         sorters.push(so);

@@ -1,8 +1,7 @@
-// 分馏阵列的运力核对（稳态，游戏 0.10.35 的 FractionatorComponent 反编译推的，没进游戏量过）：
-//   一座塔最多流过 7200/分（极速带集装 4 层），只分走流过的 p，直通口出去的少 p；所以一个氢循环里第 k 座流过 7200·(1−p)^(k−1)，
-//   n 座的循环出 7200·(1−(1−p)^n)，不是 n × 7200p。产物口每帧放 1 个单层货物，一条极速带的收集带最多 1800/分。
+// 分馏阵列的运力核对（稳态，游戏 0.10.35 的 FractionatorComponent 反编译推的，没进游戏量过；docs/frac-anneal-design.md 第一节第 3、6 条）：
+//   一个氢循环里第 k 座流过 7200·(1−p)^(k−1)，n 座的循环出 7200·(1−(1−p)^n)，不是 n × 7200p；产物口放单层货物，收集带一条极速带最多 1800/分。
 // 从蓝图的链接认出每个循环（塔 2 号口 → 带 / 集装机 → 下一座塔 1 号口，绕回来）、并带点（新氢从侧面进来的那节）、每座塔 0 号口的带，
-// 算每座流过多少、每节收集带压着多少重氢。docs/frac-anneal-design.md 第一节第 3、6 条。
+// 算每座流过多少、每节收集带压着多少重氢。
 import { fromStr } from '../codec/parser.js';
 
 const FRAC = 2314, PILER = 2040, ST = 2104, SPLIT = 2020;
@@ -74,7 +73,7 @@ export function flowCheck(input, p) {
     let b = (fedBy.get(t.index) ?? []).find((x) => x.inputFromSlot === 0);
     const seen = new Set();
     let home = false;
-    let stacked = false; // 过了集装机、分流器以后带上的货物不再是单层，后面的不按单层 1800 算（用户原图两条收集带各过一台集装机再并成一条）
+    let stacked = false; // 过了集装机、分流器以后带上的货物不再是单层，后面的不按单层 1800 算（原图两条收集带各过一台集装机再并成一条）
     while (b && !seen.has(b.index)) {
       if (b.itemId === ST) { home = true; break; }
       seen.add(b.index);

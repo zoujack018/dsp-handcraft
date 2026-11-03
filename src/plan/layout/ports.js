@@ -21,8 +21,8 @@ function groundGrid(size) {
   return ++groundGen;
 }
 
-// 热路径里的循环都写成下标循环：for…of 在 placePorts 这个大函数里没被优化掉，每个循环都建一个迭代器、每一步一个 {value, done}
-// （2026/10/25 量过：普通布局每次 route() 约 6 KB）。下面几块共用的数组也是为了压每次 route() 的短命对象，同一线程里 placePorts 不会重入
+// 热路径里的循环都写成下标循环：for…of 在 placePorts 这个大函数里没被优化掉，每个循环都建一个迭代器、每一步一个 {value, done}。
+// 下面几块共用的数组也是为了少建短命对象，同一线程里 placePorts 不会重入
 
 /** 热点里反复用的临时整数数组：长度不够时换一块更长的，各次调用共用（用完即弃） */
 const SCRATCH = [];
@@ -36,7 +36,7 @@ const LISTS = [];
 const list = (slot) => (LISTS[slot] ??= []);
 
 // 侧边总线（groupPorts）里总线的口占掉的行（used）、要让开的行（avoid）：按行号的戳数组，每次 placePorts 换一个戳，不用清零。
-// 整数行号 0..长度−1 记在这里；别的值（不是整数、NaN、负数，几乎不会）记在各自用到才建的 Set 里，和原来的 Set 一样比（SameValueZero）
+// 整数行号 0..长度−1 记在这里；别的值（不是整数、NaN、负数，几乎不会）记在各自用到才建的 Set 里
 let rowUsed = new Int32Array(0);
 let rowAvoid = new Int32Array(0);
 let rowStamp = 0;
@@ -50,14 +50,14 @@ const UP_SLOTS = [0, 1, 2];
 const DOWN_SLOTS = [8, 7, 6];
 /** 每座站最多几条带：先按 9 条分，接不全再试 6、4 条（只读） */
 const CAPS = [9, 6, 4];
-/** 同一列相邻两站的中心至少隔 STATION_GAP（取整到 24 行，游戏规则） */
+/** 同一列相邻两站的中心至少隔 STATION_GAP（向上取整，game-rules 第 10 条） */
 const PITCH = Math.max(STATION_SIZE + 1, Math.ceil(STATION_GAP));
 
-/** 站位里往下推一遍：每座站不低于 3、不低于前一座 + PITCH（和原来 c.forEach((v, k) => (c[k] = Math.max(v, 3, …))) 一样，v 是这一格当时的值） */
+/** 站位里往下推一遍：每座站不低于 3、不低于前一座 + PITCH */
 const fwdCenters = (c, n) => {
   for (let k = 0; k < n; k++) c[k] = Math.max(c[k], 3, k ? c[k - 1] + PITCH : -Infinity);
 };
-/** 两份站位的前 n 项一样（NaN 也当相同，和原来 centers.every 里比的一样） */
+/** 两份站位的前 n 项一样（NaN 也当相同） */
 const sameCenters = (a, b, n) => {
   for (let k = 0; k < n; k++) {
     const v = a[k];
@@ -68,10 +68,9 @@ const sameCenters = (a, b, n) => {
 };
 
 /**
- * 站口方案（tryPlan 试算的、选中的）：原来每个方案建 plan、orphans 数组，plan 里每条带一个 {leg, k, slot, py, stub}、stub 是一串 [x, y] 小数组。
- * 现在只记紧凑的描述（第 i 条的 leg、k、slot、py 和车道的 x0、sy、up、nv 各记在同名数组的第 i 项，前 n 项是这个方案的；
- * up 是车道往上 1、往下 −1，右侧口记 0），stub 到落实时才按同样的格子、同样的先后建（见 sideStations 末尾）。
- * 两份交替用：试算写进备用的那份，选上了就和选中的那份对调（选中的那份不再被试算改动）；orphans 是分不到口的带，前 nOrph 项，先后不变。
+ * 站口方案（tryPlan 试算的、选中的）：第 i 条带的 leg、k、slot、py 和车道的 x0、sy、up、nv 各记在同名数组的第 i 项，前 n 项是这个方案的
+ * （up 是车道往上 1、往下 −1，右侧口记 0），stub 到落实时才建（见 sideStations 末尾）。
+ * 两份交替用：试算写进备用的那份，选上了就和选中的那份对调（选中的那份不再被试算改动）；orph 是分不到口的带，前 nOrph 项。
  * cost、groups、cen（站位的一份拷贝）只在选中时写
  */
 const planBuf = () => ({ n: 0, leg: [], k: [], slot: [], py: [], x0: [], sy: [], up: [], nv: [], nOrph: 0, orph: [], cost: 0, groups: null, cen: [] });
@@ -86,7 +85,7 @@ export function placePorts(c) {
   let { height } = c; // 物流站靠左侧时，站叠起来比生产区高，要把布局加高
   // ---------- E. 高架段与出入口 ----------
   // 地面上已占用的带子格：按 (x, y) 编成一维下标的 Int32Array（代替数字键的 Set，退火里每次 route() 都要把所有段的格子记一遍）。
-  // 表按布局四周各留 GM 格；物流站靠左侧时站叠起来可能比生产区高，按最多的站数留够高度。万一超出表的范围，退回 Set（用到才建），结果和原来一样
+  // 表按布局四周各留 GM 格；物流站靠左侧时站叠起来可能比生产区高，按最多的站数留够高度。万一超出表的范围，退回 Set（用到才建）
   const GM = 16;
   const GW = xR + 2 + 2 * GM;
   const GH = (side ? Math.max(height, (legs.length + 2) * PITCH) : height) + 2 * GM;
@@ -108,12 +107,12 @@ export function placePorts(c) {
     const s = segments[i];
     for (let x = s.a; x <= s.b; x++) putGround(x, s.y);
   }
-  // 研究站夹带（layout/belts.js 的 labGaps）：那一列的地面格；它的高架从带尾原地升起、往北一格到上方通道第一条轨头顶（gapOut 那一行）再拐向出口
+  // 研究站夹带（layout/belts.js 的 labGaps）：那一列的地面格；它的高架从带尾原地升起、往北一格到上方通道第一条轨头顶（gapRow 那一行）再拐向出口
   if (labGaps) for (let i = 0; i < labGaps.length; i++) for (let y = labGaps[i].y0; y <= labGaps[i].y1; y++) putGround(labGaps[i].x, y);
   /** 夹带那段高架水平走的那一行（当段尾所在的行用） */
   const gapRow = (leg) => labGaps[leg.gap].y1 + 1;
   const ports = [];
-  // 出入口这一格和它竖直方向上斜坡顶那一格的地面都要空着（原来写在 portY 里，每次调用新建一个；height 照样按调用时的值读）
+  // 出入口这一格和它竖直方向上斜坡顶那一格的地面都要空着
   const portOk = (xe, y0, yy) => {
     if (yy < 0 || yy >= height) return false;
     const up = yy === y0 ? null : yy + Math.sign(y0 - yy);
@@ -145,7 +144,7 @@ export function placePorts(c) {
     if (atPort(endX, col)) return true;
     if ((col - endX) * d <= 0) return false;
     if (!rowFree(endX, d, col, s.y)) return false;
-    // 原来是 for (const x of line(endX + d, col))：按 line 同样的步进和终止条件直接走，不建数组
+    // 和 line(endX + d, col) 一样的步进和终止条件，不建数组
     const from = endX + d;
     const step = col >= from ? 1 : -1;
     for (let x = from; x !== col + step; x += step) putGround(x, s.y);
@@ -157,17 +156,12 @@ export function placePorts(c) {
   };
   const stations = []; // 物流站：{x, y, items: [{itemId, role}], ports: [{slot, legId}]}
   if (!side) {
-    // 侧边总线（用户 2026/10/24「同一种原料的几个入口挨在一起」，opt.groupPorts；layout/belts.js 让这种原料都从右边进）：
+    // 侧边总线（opt.groupPorts：同一种原料的几个入口挨在一起；layout/belts.js 让这种原料都从右边进）：
     // 口全放在右边布局外最外那一列、相邻的几行；每条带从口进来原地升起往里走到自己那一列（xR + 1 起，每条一列），
     // 沿这一列竖着走到自己那段的行，再往里走到段首落下（layout/elevation.js）。往上走的、往下走的各排一边，离得近的走里面那列、
     // 口挨着中间：同一种原料的几条带互不交叉，第 1 层就够。几种原料的总线往外一组接一组，口都在最外那一列、各占不相交的几行。
     // 别的从右边进出的口不放总线口那几行（往外接的那一行要穿过总线的口）
-    // 总线也可以排左边（route.js 的 busSide 'auto'，试验开关）：从左边缘进的照样分组，镜像排在左边布局外（xL − 1 起往外，口在 x < 0）。
-    // 出入口都在左边（leftPorts，箱子供货的左侧仓列）时左边不排：仓组照旧接各自的口
-    if (opt.groupPorts && !opt.freeEnds) {
-      groupPorts(1);
-      if (opt.busSide === 'auto' && !opt.leftPorts) groupPorts(-1);
-    }
+    if (opt.groupPorts && !opt.freeEnds) groupPorts();
     for (let i = 0; i < legs.length; i++) {
       const leg = legs[i];
       if (leg.kind === 'link' || leg.bus != null || leg.gap != null) continue; // 夹带的在下面最后排
@@ -227,20 +221,17 @@ export function placePorts(c) {
       }
     }
   } else sideStations();
-  // 逐个写回（和 Object.assign(c, { ports, stations, height }) 按同样的先后写同样的字段）
+  // 逐个写回 c，不用先拼一个对象
   c.ports = ports;
   c.stations = stations;
   c.height = height;
 
   /**
-   * 侧边总线（见上面调用处）。原来按原料建 Map、各组 filter / sort、口的行放在 Set、方案放在 busPlans 里；现在都换成共用的数组和行号戳，
-   * 算法、先后不变：组按第一次出现的先后（和 Map 的插入先后一样），组里的带按 legs 的先后；排序都是稳定的插入排序、比较式照抄
-   * （值都是整数行号，和 sort 的结果一样）。没有哪种原料有 ≥ 2 条从右边缘进的带时整块不改任何状态（avoid 只经 pick 用、pick 只对
-   * ≥ 2 条的原料调，used、busPlans 都空着），直接返回。
-   * sd：1 右边（边缘列 xR，总线的列 xR + 1 起往右），−1 左边（边缘列 xL，xL − 1 起往左，busSide 'auto' 才排）；两边的口各占各的行，互不相干
+   * 侧边总线（见上面调用处），用共用的数组和行号戳：组按第一次出现的先后，组里的带按 legs 的先后，排序都是稳定的插入排序。
+   * 没有哪种原料有 ≥ 2 条从右边缘进的带时不改任何状态，直接返回。总线在右边：边缘列 xR，总线的列 xR + 1 起往右
    */
-  function groupPorts(sd) {
-    const xe = sd > 0 ? xR : xL; // 这一边的边缘列
+  function groupPorts() {
+    const xe = xR; // 右边的边缘列
     // 从这一边边缘进的原料带按原料（realItem）分组：第 i 条带在第 of[i] 组（别的带 −1），第 j 组的原料是 keys[j]、有 cnt[j] 条
     const of = scratch(0, legs.length);
     const keys = list(0);
@@ -279,7 +270,7 @@ export function placePorts(c) {
     const usedRows = list(1);
     let nUsed = 0;
     const isRow = (y) => (y | 0) === y && y >= 0 && y < RN;
-    /** used.add(y)：已经有了就不再记（和 Set 一样，先后按第一次加进来的） */
+    /** 把 y 记进 used：已经有了就不再记（先后按第一次加进来的） */
     const addUsed = (y) => {
       if (isRow(y)) {
         if (RU0[y] === rst) return;
@@ -301,8 +292,8 @@ export function placePorts(c) {
     }
     const blocked = (y) => y < 0 || y >= height || (isRow(y) ? RU0[y] === rst || RA0[y] === rst : (usedOdd !== null && usedOdd.has(y)) || (avoidOdd !== null && avoidOdd.has(y)));
     /**
-     * 从 y 起往 dir 那边挑 n 行能放口的（跳过放不了的，连着跳过不超过 3 行：用户说两个口中间空不超过 3 行就行），依次写进 out，返回挑了几行；
-     * 挑不够返回 −1（原来返回挑到的行的数组、挑不够返回 null；n 为 0 时是空数组，照样算挑到了）
+     * 从 y 起往 dir 那边挑 n 行能放口的（跳过放不了的，连着跳过不超过 3 行：两个口中间空不超过 3 行），依次写进 out，返回挑了几行；
+     * 挑不够返回 −1（n 为 0 时返回 0，算挑到了）
      */
     const pick = (y, dir, n, out) => {
       let m = 0;
@@ -316,7 +307,7 @@ export function placePorts(c) {
       return m;
     };
     const yOf = (l) => segments[l.to].y;
-    // 这一组的带（ls）、排好的行（ys）、往上那组（up）、往下那组（dn）、两组挑到的行（ru、rd）；方案（原来的 busPlans）记在 bLeg、bPy、bCol 的前 nb 项
+    // 这一组的带（ls）、排好的行（ys）、往上那组（up）、往下那组（dn）、两组挑到的行（ru、rd）；方案记在 bLeg、bPy、bCol 的前 nb 项
     const ls = list(2);
     const ys = list(3);
     const up = list(4);
@@ -327,12 +318,12 @@ export function placePorts(c) {
     const bPy = list(9);
     const bCol = list(10);
     let nb = 0;
-    let off = xe; // 下一组总线从哪一列往外排（往 sd 那边）
+    let off = xe; // 下一组总线从哪一列往外排（往右）
     for (let j = 0; j < ng; j++) {
       if (cnt[j] < 2) continue;
       let n = 0;
       for (let i = 0; i < legs.length; i++) if (of[i] === j) ls[n++] = legs[i];
-      // ys：各条带的行从小到大（原来 ls.map(yOf).sort((a, b) => a - b)）
+      // ys：各条带的行从小到大
       for (let i = 0; i < n; i++) {
         const y = yOf(ls[i]);
         let q = i - 1;
@@ -343,7 +334,7 @@ export function placePorts(c) {
         ys[q + 1] = y;
       }
       const mid = ys[(n - 1) >> 1];
-      // up：行不低于中位数的，近的在前（原来 filter 再 sort((a, b) => yOf(a) − yOf(b))）；dn：低于中位数的，近的在前（sort((a, b) => yOf(b) − yOf(a))）
+      // up：行不低于中位数的，近的在前；dn：低于中位数的，近的在前
       let nu = 0;
       let nd = 0;
       for (let i = 0; i < n; i++) {
@@ -368,7 +359,7 @@ export function placePorts(c) {
         }
       }
       // 往上那组从 at 起往上挑、往下那组从 at − 1 起往下挑；at 从中位数那一行往两边找（k = 0 只试中位数，之后先 mid − k 再 mid + k），
-      // 两组之间也不空超过 3 行。往上那组挑不到就不用挑往下那组（pick 不改状态，原来 ru && pick(…) 也不挑）
+      // 两组之间也不空超过 3 行。往上那组挑不到就不用挑往下那组（pick 不改状态）
       let got = false;
       let nru = 0;
       let nrd = 0;
@@ -383,27 +374,27 @@ export function placePorts(c) {
           got = true;
           break;
         }
-      if (!got) continue; // 放不下：照旧各走各的
+      if (!got) continue; // 放不下：各走各的
       for (let i = 0; i < nru; i++) addUsed(ru[i]);
       for (let i = 0; i < nrd; i++) addUsed(rd[i]);
       for (let i = 0; i < nd; i++) {
         bLeg[nb] = dn[i];
         bPy[nb] = rd[i];
-        bCol[nb++] = off + sd * (1 + i);
+        bCol[nb++] = off + 1 + i;
       }
       for (let i = 0; i < nu; i++) {
         bLeg[nb] = up[i];
         bPy[nb] = ru[i];
-        bCol[nb++] = off + sd * (1 + i);
+        bCol[nb++] = off + 1 + i;
       }
-      off += sd * Math.max(nu, nd);
+      off += Math.max(nu, nd);
     }
     for (let i = 0; i < nb; i++) {
       const leg = bLeg[i];
-      leg.edge = off + sd;
+      leg.edge = off + 1;
       leg.py = bPy[i];
       leg.bus = bCol[i];
-      ports.push({ kind: 'in', itemId: leg.itemId, x: off + sd, y: bPy[i], rate: leg.rate, leg: leg.id, direct: false, bus: true });
+      ports.push({ kind: 'in', itemId: leg.itemId, x: off + 1, y: bPy[i], rate: leg.rate, leg: leg.id, direct: false, bus: true });
     }
     for (let i = 0; i < nUsed; i++) putGround(xe, usedRows[i]); // 别的口不放这几行，也不直接接到这几行的边缘
   }
@@ -420,9 +411,7 @@ export function placePorts(c) {
     const yOf = (l) => (l.gap != null ? gapRow(l) : segments[l.kind === 'in' ? l.to : l.from].y);
     const segOf = (l) => (l.gap != null ? { y: gapRow(l) } : segments[l.kind === 'in' ? l.to : l.from]);
     // 按真实物品和进出分（同 stations.js 的 stationGroups）：送出去的设为供应，要进的设为需求；副产物和产线自己要用的同种物品
-    // 各占一格、不进同一座站（下面 groupBy；用户 2026/10/27：同一格里需求运来的料装满后副产物送不进去，那组工厂就停了）。
-    // （原来先 filter 出非 link 的带再逐条放进 Map，再 [...entries()].map(…).sort(…)；现在按同样的先后直接放，
-    // 平均行、供需的累加按原来 reduce 的先后逐条加，排序换成稳定的插入排序、比较式照抄）
+    // 各占一格、不进同一座站（下面 groupBy；game-rules 第 37 条）
     const byItem = new Map();
     for (let i = 0; i < legs.length; i++) {
       const l = legs[i];
@@ -432,7 +421,7 @@ export function placePorts(c) {
       if (!ls) byItem.set(k, (ls = []));
       ls.push(l);
     }
-    /** 有送出去的带、且送出的不比要进的少：供应，否则需求（原来 ls.some(…) && ls.reduce(…) >= 0） */
+    /** 有送出去的带、且送出的不比要进的少：供应，否则需求 */
     const roleOf = (ls) => {
       let out = false;
       for (let i = 0; i < ls.length && !out; i++) out = ls[i].kind === 'out';
@@ -447,7 +436,7 @@ export function placePorts(c) {
       let a = 0;
       for (let i = 0; i < ls.length; i++) a = a + yOf(ls[i]);
       const it = { itemId, legs: ls, y: a / ls.length, role: roleOf(ls) };
-      let j = items.length - 1; // 原来 sort((a, b) => a.y − b.y)
+      let j = items.length - 1; // 按 y 从小到大插入
       while (j >= 0 && items[j].y - it.y > 0) {
         items[j + 1] = items[j];
         j--;
@@ -464,7 +453,7 @@ export function placePorts(c) {
       if ((col - endX) * d <= 0) return false;
       return rowFree(endX, d, col, s.y);
     };
-    // 分组：按目标行从低到高贪心装站，每座站最多 5 种物品（翘曲器格占一格时 4 种）、cap 条带（同种物品超过 9 条时拆到下一座站，那座站也存它）
+    // 分组：按目标行从低到高贪心装站，每座站最多 5 种物品、cap 条带（同种物品超过 9 条时拆到下一座站，那座站也存它）
     const slots = opt.station?.slots ?? null;
     const kinds = stationItemCap(slots);
     const groupBy = (cap) => {
@@ -474,8 +463,7 @@ export function placePorts(c) {
       for (let q = 0; q < items.length; q++) {
         const it = items[q];
         for (let i = 0; i < it.legs.length; i += 9) {
-          // 不超过 9 条时这一份就是整种物品：直接用 it（原来抄一份 {...it, legs: it.legs.slice(0, 9)}，键、值都一样；
-          // 分组、站、试算只读它，谁都不改它和它的 legs）
+          // 不超过 9 条时这一份就是整种物品，直接用 it（分组、站、试算只读它，不改它和它的 legs）
           const part = it.legs.length <= 9 ? it : { ...it, legs: it.legs.slice(i, i + 9) };
           if (!cur || cur.length >= kinds || n + part.legs.length > cap || cur.some((q) => q.itemId === part.itemId && q.role !== part.role)) {
             groups.push((cur = []));
@@ -485,11 +473,11 @@ export function placePorts(c) {
           n += part.legs.length;
         }
       }
-      return keepFreeSlot(groups, slots); // 喷增产剂时至少留一个空格给增产剂
+      return keepFreeSlot(groups, slots); // 留够增产剂、翘曲器要的空格
     };
     /**
      * 每座站的中心行：尽量对准它那组带的平均行（mid：取整后的平均行，和平移无关，调用方先算好），相邻两站至少隔 PITCH（中间留出车道拐弯的空行）。
-     * 写进 out 的前 mid.length 项（原来每次 map 一个新数组）
+     * 写进 out 的前 mid.length 项
      */
     const centersFor = (mid, shift, out) => {
       const n = mid.length;
@@ -498,8 +486,7 @@ export function placePorts(c) {
       for (let k = n - 1; k >= 0; k--) out[k] = Math.min(out[k], height - 4, k < n - 1 ? out[k + 1] - PITCH : Infinity);
       fwdCenters(out, n);
     };
-    // ---- 试算一个站口方案（tryPlan）用的状态和小函数：原来每次 tryPlan 新建十来个闭包（use、isUsed、cellFree，每座站一个 assign、lanes，
-    // 每条车道、每种排列一个 forEach 回调），现在每次 placePorts 建一次，状态放在这几个变量里，每个方案开头重写 ----
+    // ---- 试算一个站口方案（tryPlan）用的状态和小函数：每次 placePorts 建一次（不在每个方案里新建闭包），状态放在这几个变量里，每个方案开头重写 ----
     let ust = 0; // 这个方案在 usedBuf 里的戳
     let farUsed = null; // 表外的格子（几乎不会）
     let cost = 0; // 这个方案目前的代价
@@ -517,7 +504,7 @@ export function placePorts(c) {
       return gx >= 0 && gy >= 0 && gx < GW && gy < GH ? usedBuf[gx * GH + gy] === ust : farUsed !== null && farUsed.has(gk(x, yy));
     };
     const cellFree = (x, yy) => yy >= 0 && yy < height && !onGround(x, yy) && !isUsed(x, yy);
-    /** 方案里记一条带的站口（原来 plan.push({leg, k, slot, py, stub})）：车道记 x0、sy、up、nv，右侧口 up 记 0 */
+    /** 方案里记一条带的站口：车道记 x0、sy、up、nv，右侧口 up 记 0 */
     const record = (leg, k, slot, py, x0, sy, up, nv) => {
       const i = T.n++;
       T.leg[i] = leg;
@@ -532,7 +519,7 @@ export function placePorts(c) {
     const orphan = (leg) => {
       T.orph[T.nOrph++] = leg;
     };
-    // 每座站分池用的共用数组：near、right（原来 near.slice(0, 3) 再补）、ups、downs、spill
+    // 每座站分池用的共用数组：near、right、ups、downs、spill
     const NEAR = list(11);
     const RIGHT = list(12);
     const UPS = list(13);
@@ -540,12 +527,11 @@ export function placePorts(c) {
     const SPILL = list(15);
     /**
      * 车道：up=1 往上（0/1/2 号口），up=-1 往下（8/7/6 号口）。离站近的车道用最靠右的口，拐弯不交叉。pool 的前 n 项是这一边的带，sy、k 是这座站。
-     * stub（原来是一串 [x, y]）：竖直那段从 sy + 2·up 走到 py（sy + 2·up、sy + 3·up、出了站体的第一格 start 起每格 py += up 走到 py 之前那格，
-     * 共 nv 格，再是 py），再是 x0 + 1 到 sx + 3 那一行（和 line(x0 + 1, sx + 3) 一样的步进）；这里按同样的格子、同样的先后标占用，
-     * 长度 2 + nv + 1 + 那一行的格数，代价照原式子加
+     * stub 的格子：竖直那段 sy + 2·up、sy + 3·up、出了站体的第一格 start 起 nv 格、py，再是 x0 + 1 到 sx + 3 那一行；
+     * 这里按这些格子、这个先后标占用，长度 2 + nv + 1 + 那一行的格数
      */
     const lanes = (pool, n, up, sy, k) => {
-      // 原来 pool.sort((a, b) => (yOf(a) − yOf(b)) × up)
+      // 按 yOf × up 从小到大排（稳定的插入排序）
       for (let i = 1; i < n; i++) {
         const l = pool[i];
         let j = i - 1;
@@ -564,8 +550,8 @@ export function placePorts(c) {
         const x0 = sx + dx;
         const start = sy + 4 * up; // 出了站体的第一格
         const want = up > 0 ? Math.max(yOf(leg), start, prev + 1) : Math.min(yOf(leg), start, prev - 1);
-        const st = sx + 3 >= x0 + 1 ? 1 : -1; // 右拐那一段的步进（和 line(x0 + 1, sx + 3) 一样；原来每格各算一遍，值一样）
-        let nv = 0; // 原来 vert.push([x0, py]) 的次数
+        const st = sx + 3 >= x0 + 1 ? 1 : -1; // 右拐那一段的步进（和 line(x0 + 1, sx + 3) 一样）
+        let nv = 0; // 竖直那段从 start 起到 py 之前的格数
         let py = start;
         let ok = false;
         for (; py >= 0 && py < height; py += up) {
@@ -592,7 +578,6 @@ export function placePorts(c) {
           continue;
         }
         prev = py;
-        // 原来的 assign(leg, slot, py, stub)
         record(leg, k, slot, py, x0, sy, up, nv);
         use(x0, sy + 2 * up);
         use(x0, sy + 3 * up);
@@ -604,7 +589,7 @@ export function placePorts(c) {
         use(col, py);
         const pd = Math.sign(s.y - py);
         if (pd) use(col, py + pd);
-        cost += nv + 3 + nt + Math.abs(py - yOf(leg)) * 3; // 原来 stub.length + …（长度是整数，先加哪几项都一样）
+        cost += nv + 3 + nt + Math.abs(py - yOf(leg)) * 3; // nv + 3 + nt 是 stub 的长度
       }
     };
     /**
@@ -629,7 +614,7 @@ export function placePorts(c) {
         const sy = centers[k];
         const ls = lss[k];
         // 分池：近的进右侧，远的按上下进车道；某个池满了，多出来的依次挪到右侧、对面车道，再不行就是 orphan
-        // near：离站心 3 行以内的，按离站心的远近（原来 filter 再 sort((a, b) => |yOf(a) − sy| − |yOf(b) − sy|)）；right 是它的前 3 条
+        // near：离站心 3 行以内的，按离站心从近到远；right 是它的前 3 条
         let nn = 0;
         for (let i = 0; i < ls.length; i++) {
           const l = ls[i];
@@ -646,8 +631,7 @@ export function placePorts(c) {
         }
         let nr = nn < 3 ? nn : 3;
         for (let i = 0; i < nr; i++) RIGHT[i] = NEAR[i];
-        // ups：不在 right 里、在站心或以上的，远的在前（sort((a, b) => yOf(b) − yOf(a))）；downs：在站心以下的（sort((a, b) => yOf(a) − yOf(b))）。
-        // 原来是两遍 filter，两个条件互斥，一遍分开先后一样
+        // ups：不在 right 里、在站心或以上的，远的在前；downs：在站心以下的，远的在前
         let nu = 0;
         let nd = 0;
         for (let i = 0; i < ls.length; i++) {
@@ -688,7 +672,7 @@ export function placePorts(c) {
         }
         lanes(UPS, nu, 1, sy, k);
         lanes(DOWNS, nd, -1, sy, k);
-        // 右侧 3 个口：按目标行从低到高试下中上的排列，出入口格被占了就换（原来 rest = right.sort((a, b) => yOf(a) − yOf(b))）
+        // 右侧 3 个口：按目标行从低到高试下中上的排列，出入口格被占了就换
         for (let i = 1; i < nr; i++) {
           const l = RIGHT[i];
           let j = i - 1;
@@ -698,7 +682,7 @@ export function placePorts(c) {
           }
           RIGHT[j + 1] = l;
         }
-        // 最好的排列是第 bq 种、代价 bc（原来的 best = {dys, c}，没有时 bq 为 −1）
+        // 最好的排列是第 bq 种（没有时 −1）、代价 bc
         const perms = RIGHT_DYS[nr];
         let bq = -1;
         let bc = 0;
@@ -737,9 +721,7 @@ export function placePorts(c) {
             use(col, py);
             cost += 2 + Math.abs(py - yOf(leg)) * 3;
           }
-          // 原来是 for (const p of plan.slice(-rest.length))：右侧口有几条就是刚记的那几条。没有右侧口时 slice(-0) 是整个方案，
-          // 把之前每条的 use(col, py + dir) 再标一遍：那些格加入时都已经用这个戳标过（车道在 assign 里同样的 segOf(leg).y 和 py，
-          // 右侧口在各自那座站的这一圈里），同一个戳重复标不改任何东西（usedBuf 原值、farUsed 的 Set 已经有），所以不用再标
+          // 只标刚记的这几条右侧口（之前记的都已经用这个戳标过）
           for (let e = T.n - nr; e < T.n; e++) {
             const dir = Math.sign(segOf(T.leg[e]).y - T.py[e]);
             if (dir) use(col, T.py[e] + dir);
@@ -770,7 +752,7 @@ export function placePorts(c) {
       const mid = lss.map((ls) => Math.round(ls.reduce((a, l) => a + yOf(l), 0) / ls.length));
       const nc = mid.length;
       // 平移越大，每座站的中心行都不减（centersFor 里只有取大、取小），所以同样的站位总是连成一段：
-      // 和上一个比就能去重（以前用 Set 记下全部站位的字符串，结果一样，NaN 也当相同）。当前写进不是 prev 的那份
+      // 和上一个比就能去重（NaN 也当相同）。当前写进不是 prev 的那份
       let prev = null;
       for (let shift = -height; shift <= height; shift++) {
         const centers = prev === CEN_A ? CEN_B : CEN_A;
@@ -805,7 +787,7 @@ export function placePorts(c) {
       leg.edge = col;
       leg.py = py;
       leg.station = { k, slot };
-      // stub：按原来的格子、先后建 [x, y, 0]（原来 stub.map(([x, yy]) => [x, yy, 0])），先写进共用数组再切一份刚好长度的
+      // stub：一串 [x, y, 0]，先写进共用数组再切一份刚好长度的
       const up = chosen.up[e];
       let ns = 0;
       if (up === 0) {

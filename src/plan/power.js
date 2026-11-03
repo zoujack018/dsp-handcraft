@@ -1,27 +1,17 @@
 // 供电：布局定下来之后，在空地上放电力感应塔或卫星配电站。这是后处理，不参与摆放搜索。
 //
-// 要覆盖的不只是工厂：分拣器也耗电，每根分拣器取料的那一头也必须在某个电力设施的范围内
-// （游戏的用电插头在建筑位置上，分拣器的位置是取料端，也就是蓝图里它的第一个坐标；docs/game-rules.md 第 33 条）。
-// 传送带不耗电。
-//
-// 距离换算：蓝图坐标以格为单位。标准星球（半径 200）赤道上一圈 1000 格，一格约 1.2566 m；
-// 纬度越高格子越窄，同样的米数覆盖的格子越多，所以按赤道算是最保守的。
-// 覆盖判定：工厂/分拣器的中心点在「以设施中心为圆心、覆盖半径为半径」的圆里就算接通（2026/10/03 用户实测：
-// 供电范围测试图 T 组电力感应塔接通 3 台、S 组卫星配电站接通 4 台，按中心距排即 7、7.07、8 格和 19、19.8、21、21.21 格，
-// 下一台 8.49 格、22 格没接通）。半径按官方米数在赤道上折成格子（电力感应塔 7.96 格、卫星配电站 20.69 格），
-// 比实测略小一点，可能是测试图贴的位置不在赤道、格子窄一些；赤道上是最紧的情况，不再另扣余量。
-// 连接距离 2026/10/08 实测（验证合集：一排塔间距 16、17、18、19、20 格，只有 16、17 连上）：官方 22 m ÷ 1.2566 = 17.5 格，不扣余量。
+// 要覆盖的不只是工厂：分拣器也耗电，看取料的那一头（蓝图里它的第一个坐标，game-rules 第 33 条）。传送带不耗电。
+// 覆盖：工厂/分拣器的中心点在覆盖半径以内就算接通（实测，game-rules 第 9 条）；半径、连接距离按官方米数在赤道上折成格子
+// （一格 1.2566 m，纬度越高格子越窄，按赤道算最保守），比实测略小或一致，不另扣余量（COVER_MARGIN、LINK_MARGIN）。
 //
 // 放在哪：
 //   电力感应塔 1×1：任何没有工厂、地面带、分拣器经过、头顶也没有高架带的空格。
-//   卫星配电站 3×3：九格全空的位置（2026/10/04 实测：紧挨制造台、熔炉本体也行）；两座要南北隔 6 或东西隔 7（顶盘比底座宽，gamedata.js 的 powerApart）。
+//   卫星配电站 3×3：九格全空的位置（实测紧挨制造台、熔炉本体也行）；两座要南北隔 6 或东西隔 7（顶盘比底座宽，gamedata.js 的 powerApart）。
 //   卫星配电站的顶盘比底座宽：离中心 2 格那圈里不能有顶盘那一截高度（4.18~5.27 层）的带子（markDisk）。
 //   卫星配电站不进物流站身外那 1 格碰撞圈（gamedata.js 的 STATION_CLEAR，按 9×9 算）；电力感应塔可以贴着站身（实测 D4）。
 //   布局里找不到时，在外沿加一条地，取加得少的一边。
-// 选址是集合覆盖：贪心每次挑能新覆盖最多目标的位置，最后倒序删掉多余的；
-// 设施之间超出连接距离时，在两群之间补一座中继。
+// 选址是集合覆盖：贪心每次挑能新覆盖最多目标的位置，最后倒序删掉多余的；设施之间超出连接距离时，在两群之间补一座中继。
 import { STATION_CLEAR, STATION_EW, SUBSTATION_DISK, powerCells, powerApart, powerHugs, substationPad, slotPoint } from '../gamedata.js';
-import { bankSorters, bankLanes } from './burn.js';
 import { portRays } from './layout/shared.js';
 import { chainTiles } from '../emit/blueprint.js';
 
@@ -41,8 +31,8 @@ export function powerReach(type, { cellM = CELL_M, coverMargin = COVER_MARGIN, l
 const K = (x, y) => `${x},${y}`;
 
 /**
- * 被占格子的位图（代替字符串键的 Set）：布局四周留 24 格余量，余量外的格子一律当空。
- * 搜索时每一步都要重建一次，位图比几千次字符串拼接快得多。给了 buf 就借它的前一截（搜索时反复用同一块，省得每步分配）。
+ * 被占格子的位图（搜索时每一步都要重建一次，比字符串键的 Set 快得多）：布局四周留 24 格余量，余量外的格子一律当空。
+ * 给了 buf 就借它的前一截（搜索时反复用同一块，省得每步分配）。
  */
 function occGrid(W, H, buf = null) {
   const M = 24;
@@ -67,7 +57,7 @@ function occGrid(W, H, buf = null) {
   };
 }
 
-/** 目标没有 bid 这个键（物流站、发电厂这些）；有 bid 键、值是 undefined 的照样留着键 */
+/** 目标没有 bid 这个键（物流站、喷涂机这些）；有 bid 键、值是 undefined 的照样留着键 */
 const NOBID = Symbol('nobid');
 /** 需要供电的目标：坐标、what、bid 分开按顺序存，搜索时只给落单的那几个生成对象 */
 const sink = () => ({ n: 0, x: [], y: [], what: [], bid: [] });
@@ -96,19 +86,18 @@ export function occupancy(L, { rowGaps = false, power = null } = {}) {
 
 /**
  * occupancy 的主体：被占的格子记进 occ，需要供电的目标按顺序记进 T（powerBands 搜索时直接用，不生成目标对象）。
- * ox：布局最左那一列（侧边总线排到左边时搜索里是负数，见 powerBands；别处 0），位图按它对齐：第 x 列记在位图的 x − ox + M 列
+ * 位图里第 x 列记在第 x + M 列
  */
-function mark(L, rowGaps, power, occ, T, ox = 0) {
+function mark(L, rowGaps, power, occ, T) {
   const { bits, GW, GH, M } = occ;
-  const MX = M - ox;
   const add = (x, y) => {
-    const gx = x + MX;
+    const gx = x + M;
     const gy = y + M;
     if (gx >= 0 && gy >= 0 && gx < GW && gy < GH) bits[gy * GW + gx] = 1;
   };
   const cells = (cs) => {
     for (let i = 0; i < cs.length; i++) {
-      const gx = cs[i][0] + MX;
+      const gx = cs[i][0] + M;
       const gy = cs[i][1] + M;
       if (gx >= 0 && gy >= 0 && gx < GW && gy < GH) bits[gy * GW + gx] = 1;
     }
@@ -122,14 +111,14 @@ function mark(L, rowGaps, power, occ, T, ox = 0) {
     }
     if (gy < 0 || gy >= GH) return;
     const o = gy * GW;
-    for (let gx = Math.max(x0 + MX, 0), b = Math.min(x1 + MX, GW - 1); gx <= b; gx++) bits[o + gx] = 1;
+    for (let gx = Math.max(x0 + M, 0), b = Math.min(x1 + M, GW - 1); gx <= b; gx++) bits[o + gx] = 1;
   };
   for (const p of L.pos.values()) {
     const cy = L.rowCy[p.row];
     const hw = ((p.g.bodyWidth ?? 3) - 1) / 2;
     const below = p.g.bodyBelow ?? ((p.g.bodyHeight ?? 3) - 1) / 2;
     const above = (p.g.bodyHeight ?? 3) - 1 - below;
-    // 本体外多算几格：卫星配电站按 gamedata.js 的 substationPad（化工厂左 1 格、下沿 1 行，叠层研究站四周 1 格，对撞机左 2 下 2 右 1 上 1，2026/10/08 实测）；
+    // 本体外多算几格：卫星配电站按 gamedata.js 的 substationPad（game-rules 第 28 条 S 组）；
     // 别的设施能贴就不多算，不能贴左右各 1 格（只看工厂种类，同一组每台都一样，提到循环外）
     const hug = power && powerHugs(power, p.g) ? 0 : 1;
     const sp = rowGaps ? { left: 0, right: 0, below: 0, above: 0 } : power === 2212 ? substationPad(p.g).pad : { left: hug, right: hug, below: 0, above: 0 };
@@ -179,14 +168,6 @@ function mark(L, rowGaps, power, occ, T, ox = 0) {
   // 增产剂带（多半在高架上，塔也不能放在它下面）；喷涂机、自动集装机都要通电
   for (const pl of L.proLines || []) cells(pl.cells);
   for (const w of L.warperLinks || []) cells(w.cells); // 翘曲器带
-  // 就地烧副产物的火力发电厂（plan/burn.js）：整块地不放供电设施；发电厂要在覆盖范围里才并网，上面的集装分拣器也要电
-  for (const b of L.burners || []) {
-    // 电力感应塔可以放进列与列之间的缝（bankLanes，推断），进料带那一行除外；别的设施（卫星配电站 3×3）塞不进
-    const lanes = new Set(power === 2201 ? bankLanes(b) : []);
-    for (let x = b.rect[0]; x <= b.rect[2]; x++) for (let y = b.rect[1]; y <= b.rect[3]; y++) if (!lanes.has(x) || y >= b.feedY) add(x, y);
-    for (const [x, y] of b.plants) put(T, x, y, '火力发电厂', NOBID);
-    for (const s of bankSorters(b)) put(T, s.p0[0], s.p0[1], '分拣器', NOBID); // p0 是取料端
-  }
   for (const d of [...(L.coaters || []), ...(L.pilers || [])]) put(T, d.x, d.y, L.coaters?.includes(d) ? '喷涂机' : '自动集装机', NOBID);
   // 箱子供货的储物仓、储液罐（plan/storage.js）：那一块地不放设施；仓口的分拣器、仓顶的物流配送器要通电（配送器要电是推断）
   for (const b of L.stores || []) {
@@ -228,10 +209,9 @@ function mark(L, rowGaps, power, occ, T, ox = 0) {
 }
 
 /**
- * 卫星配电站的顶盘（5.49 格见方、离地 6~7 m）比 3×3 底座宽：离中心 SUBSTATION_DISK.reach（2）格那一圈里，高度落在顶盘那一截（4.18~5.27 层）的带子会撞
- * （用户 2026/10/28 实测，docs/game-rules.md 第 38 条；独立检查 emit/check.js 报「顶盘撞上高架带」）。occupancy 记格子不分高度，只挡得住底座压着的带子；
- * 这里把这种高度的每节带子周围 3×3 也记进 occ，底座和它重叠的中心（离这节带子切比雪夫距离 ≤ 2）就不能放。
- * 只在放卫星配电站时用（placePower、fitPlacement；搜索里的 powerBands 照旧不看高度）。带子的范围和 plan/reroute.js 的 diskHits 一样：各条物品带、翘曲器带、增产剂带
+ * 卫星配电站的顶盘比 3×3 底座宽：离中心 SUBSTATION_DISK.reach（2）格那一圈里，4.18~5.27 层的带子会撞（实测，game-rules 第 38 条）。
+ * occupancy 记格子不分高度，只挡得住底座压着的带子；这里把这种高度的每节带子周围 3×3 也记进 occ，底座和它重叠的中心就不能放。
+ * 只在放卫星配电站时用（placePower、fitPlacement；搜索里的 powerBands 不看高度），带子的范围和 plan/reroute.js 的 diskHits 一样
  */
 function markDisk(L, occ) {
   const r = SUBSTATION_DISK.reach - 1; // 每节带子周围 r 格（3×3），加上底座半宽 1 正好是 reach
@@ -311,16 +291,13 @@ export function powerBands(L, type, opt = {}) {
   const { cover } = powerReach(type, opt);
   const W = L.width;
   const H = L.height;
-  // 侧边总线排到左边（route.js 的 busSide 'auto'）时布局从第 ox 列（< 0）起、宽 W：下面的列号都从 ox 数起（位图、可放格的表），
-  // 目标照旧是布局坐标，查的时候减 ox。没有时 ox 是 0
-  const ox = L.x0 ?? 0;
   // 和 occupancy 一样的格子、一样顺序的目标，只是位图借缓冲、目标先不生成对象
   BUF.occ = grow(BUF.occ, (W + 48) * (H + 48));
   const occ = occGrid(W, H, BUF.occ);
   const T = BUF.T;
   T.n = 0;
   const { rowGaps = false } = opt;
-  mark(L, rowGaps, spec.itemId, occ, T, ox);
+  mark(L, rowGaps, spec.itemId, occ, T);
   const h = (spec.size - 1) / 2;
   const r = ringOf(spec); // 等于 h
   const band = 1 + h + r; // 外沿加地的宽度（等于设施边长）
@@ -361,11 +338,10 @@ export function powerBands(L, type, opt = {}) {
   }
   const R = Math.floor(cover);
   const r2 = cover * cover;
-  // 一个目标附近有没有能放的格：原来是把外框 [X0, X1] × [Y0, Y1] 里每格都按 (x − t.x)² + (y − t.y)² ≤ r² 判一遍。
-  // 同一行里这个值往 t.x 两边单调不减，所以每行只要看 t.x 左边、右边离它最近的那一格可放格
-  // （塔：从 t.x 往两边走，走到第一格可放或第一格超出半径为止；配电站：查表），结果和逐格判一样。
-  // 从目标那一行往外找，找到就停。上一个目标找到的那格（wx, wy）先拿来判一下，相邻的目标多半一判就中：
-  // 半径不是负数时，外框外的格子至少隔 R + 1.5 格，一定超出半径，所以只要这格在半径内，原来逐格判也会判到它
+  // 一个目标附近（外框 [X0, X1] × [Y0, Y1] 里、(x − t.x)² + (y − t.y)² ≤ r²）有没有能放的格：同一行里这个值往 t.x 两边单调不减，
+  // 所以每行只要看 t.x 左边、右边离它最近的那一格可放格（塔：从 t.x 往两边走，走到第一格可放或第一格超出半径为止；配电站：查表）。
+  // 从目标那一行往外找，找到就停。上一个目标找到的那格（wx, wy）先拿来判一下，相邻的目标多半一判就中
+  // （半径不是负数时，外框外的格子一定超出半径，所以这格在半径内就算数）
   const reuse = cover >= 0;
   let wx = NaN;
   let wy = NaN;
@@ -404,13 +380,13 @@ export function powerBands(L, type, opt = {}) {
     return false;
   };
   const lonely = [];
-  for (let i = 0; i < T.n; i++) if (!near(T.x[i] - ox, T.y[i])) lonely.push(target(T, i));
+  for (let i = 0; i < T.n; i++) if (!near(T.x[i], T.y[i])) lonely.push(target(T, i));
   const none = { left: 0, right: 0, bottom: 0, top: 0 };
   if (!lonely.length) return { ext: none, extraArea: 0, unreachable: 0, lonely };
   // 每条边能够着哪些：设施中心离这条边外面那条地的距离 ≤ 覆盖半径（沿边方向随便挪）
   const reach = {
-    left: (t) => t.x - ox + 1 + h <= cover,
-    right: (t) => W + h - (t.x - ox) <= cover,
+    left: (t) => t.x + 1 + h <= cover,
+    right: (t) => W + h - t.x <= cover,
     bottom: (t) => t.y + 1 + h <= cover,
     top: (t) => H + h - t.y <= cover,
   };
@@ -446,9 +422,8 @@ export function placePower(L, type, opt = {}) {
   const h = (spec.size - 1) / 2;
   const blocked = portBlocks(L);
   const r2 = cover * cover;
-  // 一个位置覆盖哪些目标（下标从小到大）。目标按 BS 格见方分桶，只看覆盖半径多算 1 格以内的那几桶：
-  // 半径内的目标一定落在这几桶里，判断式和逐个看一模一样，最后按下标排序，结果和逐个筛出来的一样。
-  // 坐标不是有限数的目标原来的判断式永远不成立（谁也覆盖不到），不进桶
+  // 一个位置覆盖哪些目标（下标从小到大）。目标按 BS 格见方分桶，只看覆盖半径多算 1 格以内的那几桶（半径内的目标一定落在这几桶里），
+  // 最后按下标排序。坐标不是有限数的目标谁也覆盖不到，不进桶
   const BS = 8;
   const finite = (t) => Number.isFinite(t.x) && Number.isFinite(t.y);
   let tx0 = Infinity;
@@ -485,8 +460,7 @@ export function placePower(L, type, opt = {}) {
   };
   /**
    * 贪心选址：每轮挑能新覆盖最多目标的位置（一样多时挑离已选设施更远的，免得扎堆；再一样挑靠前的），和已有的、已选的设施都要隔够距离（apart）。
-   * 每个位置还能新覆盖几个（cnt）、隔得够不够（ok）、离已选设施最近的距离平方（sp）都随选中一座更新，不再每轮整个重算；
-   * 每轮比较的数和挑法和逐个重算一模一样（sp 在还没选时是 +∞，比不出大小，和原来距离都算 0 一样）
+   * 每个位置还能新覆盖几个（cnt）、隔得够不够（ok）、离已选设施最近的距离平方（sp）都随选中一座增量更新（sp 还没选时是 +∞，比不出大小）
    */
   const greedy = (cands, need, have = []) => {
     for (const c of cands) c.cov ??= covers(c);
@@ -531,7 +505,7 @@ export function placePower(L, type, opt = {}) {
     }
     return picked;
   };
-  // 设施实际占的格子（配电站 5×5 去四角）都在外框里、都空着
+  // 设施实际占的格子（powerCells：配电站 3×3）都在外框里、都空着
   const freeIn = (x, y, b) => cellsOf(spec, x, y).every(([cx, cy]) => cx >= b.x0 && cy >= b.y0 && cx < b.x1 && cy < b.y1 && !occ.has(cx, cy) && !blocked.has(K(cx, cy)));
   const inner = [];
   const b0 = bounds(W, H, { left: 0, right: 0, bottom: 0, top: 0 });
@@ -579,8 +553,8 @@ export function placePower(L, type, opt = {}) {
   // 2 换 1：两座设施各自独占的目标，如果某个空位能全部覆盖，就换成那一座。反复做到换不动为止
   if (opt.localSearch !== false) {
     const pool = inner.concat(nodes.filter((n) => n.side));
-    // 目标 → 覆盖它的空位（按 pool 里的先后）。要找的空位得覆盖 only 里每一个，当然也覆盖 only[0]：只看覆盖 only[0] 的那些，
-    // 按先后找第一个满足条件的，和整个 pool 从头找是同一个。目标集合（set）用到时才建
+    // 目标 → 覆盖它的空位（按 pool 里的先后）：要找的空位必定覆盖 only[0]，只在覆盖 only[0] 的那些里按先后找第一个满足条件的。
+    // 目标集合（set）用到时才建
     const revPool = new Map();
     pool.forEach((c, k) => {
       c.cov ??= covers(c);
