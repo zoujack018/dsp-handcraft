@@ -1,6 +1,8 @@
 // SVG 视口：坐标保持原样，仅改变观察范围；触控与鼠标共用相机。
 // 平时（预览）滚轮和触屏都交给页面滚动（不然往下滑页面时图会跟着放大），
 // 只有「大图」铺满时滚轮、双指才缩放；按钮、键盘缩放和鼠标拖动平移任何时候都能用。
+// drag：图上能整块拖的东西（无带蓝图的带子区）。grab(按下的元素) 说按在上面了没有，按住拖时 move(dx, dy) 给离按下时挪了多少（图上的单位），
+// 松开 end(true)，两指、取消时 end(false)
 export function zoomAround(camera, factor, anchor, width, height, fitScale) {
   const next = Math.min(24, Math.max(0.35, camera.zoom * factor));
   const before = fitScale * camera.zoom, after = fitScale * next;
@@ -11,7 +13,7 @@ export function zoomAround(camera, factor, anchor, width, height, fitScale) {
   };
 }
 
-export function createViewer({ box, enabled, onSelect, onFactory, onStation = () => {}, onMachine = () => {}, onClear, onZoom, zoomable = () => true }) {
+export function createViewer({ box, enabled, onSelect, onFactory, onStation = () => {}, onMachine = () => {}, onClear, onZoom, zoomable = () => true, drag = null }) {
   let svg = null, base = null, camera = null;
   const pointers = new Map();
   const fitScale = () => Math.max(0.01, Math.min((box.clientWidth - 36) / base.width, (box.clientHeight - 36) / base.height));
@@ -57,10 +59,17 @@ export function createViewer({ box, enabled, onSelect, onFactory, onStation = ()
     const factory = e.target.closest('.factory')?.querySelector('title')?.textContent;
     const station = e.target.closest('[data-station]')?.dataset.station; // 按在物流站上：页面开站的简介
     const machine = e.target.closest('[data-machine]')?.dataset.machine; // 按在工厂上：页面开工厂的小窗
-    pointers.set(e.pointerId, { ...point, start: point, moved: false, run: e.target.closest('[data-route-run]')?.dataset.routeRun, factory, station, machine, button: e.button });
-    if (pointers.size > 1) for (const p of pointers.values()) p.moved = true;
+    const grab = !pointers.size && e.button === 0 && !!drag?.grab(e.target);
+    pointers.set(e.pointerId, { ...point, start: point, moved: false, run: e.target.closest('[data-route-run]')?.dataset.routeRun, factory, station, machine, button: e.button, grab });
+    if (pointers.size > 1) for (const p of pointers.values()) {
+      p.moved = true;
+      if (p.grab) {
+        p.grab = false;
+        drag.end(false);
+      }
+    }
     box.setPointerCapture(e.pointerId);
-    box.classList.add('is-panning');
+    box.classList.add(grab ? 'is-dragging' : 'is-panning');
   });
   box.addEventListener('pointermove', (e) => {
     const p = pointers.get(e.pointerId);
@@ -69,7 +78,12 @@ export function createViewer({ box, enabled, onSelect, onFactory, onStation = ()
     const point = local(e), dx = point.x - p.x, dy = point.y - p.y;
     Object.assign(p, point);
     if (Math.hypot(p.x - p.start.x, p.y - p.start.y) > 4) p.moved = true;
-    if (pointers.size === 1) { if (p.moved) pan(dx, dy); }
+    if (pointers.size === 1) {
+      if (p.moved && p.grab) {
+        const scale = fitScale() * camera.zoom;
+        drag.move((p.x - p.start.x) / scale, (p.y - p.start.y) / scale);
+      } else if (p.moved) pan(dx, dy);
+    }
     else if (pointers.size === 2) {
       const after = [...pointers.values()];
       const center = (v) => ({ x: (v[0].x + v[1].x) / 2, y: (v[0].y + v[1].y) / 2 });
@@ -84,7 +98,8 @@ export function createViewer({ box, enabled, onSelect, onFactory, onStation = ()
     if (!p) return;
     pointers.delete(e.pointerId);
     if (box.hasPointerCapture(e.pointerId)) box.releasePointerCapture(e.pointerId);
-    if (!pointers.size) box.classList.remove('is-panning');
+    if (!pointers.size) box.classList.remove('is-panning', 'is-dragging');
+    if (p.grab) drag.end(!cancelled);
     if (!cancelled && !p.moved && p.button === 0) p.run ? onSelect(p.run) : p.station != null ? onStation(Number(p.station)) : p.machine ? onMachine(p.machine) : p.factory ? onFactory(p.factory) : onClear();
   }
   box.addEventListener('pointerup', (e) => release(e));
@@ -104,11 +119,17 @@ export function createViewer({ box, enabled, onSelect, onFactory, onStation = ()
     else if (e.key === 'ArrowDown') pan(0, -50);
   });
   return {
-    attach(element, reset = false) {
+    /** keepScale：图的范围变了也照原来的比例画（换上同一张图更新过的样子时用） */
+    attach(element, reset = false, keepScale = false) {
+      const scale = keepScale && camera && base ? fitScale() * camera.zoom : 0;
       svg = element;
       const b = svg.viewBox.baseVal;
       base = { x: b.x, y: b.y, width: b.width, height: b.height };
-      if (!camera || reset) fit(); else refresh();
+      if (!camera || reset) fit();
+      else {
+        if (scale) camera.zoom = scale / fitScale();
+        refresh();
+      }
     },
     fit, zoomBy, refresh,
     reset() { camera = null; svg = null; },

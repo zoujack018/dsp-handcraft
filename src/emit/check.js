@@ -200,14 +200,16 @@ function sorterTilt(s, B) {
 }
 
 /**
- * opt.noTech：按没解锁「超级磁场发生器」的存档查（docs/game-rules.md 第 34、38 条）：原地竖直升降、一格升降超过 NO_TECH_MAX_DZ 层的坡都报错
+ * opt.noTech：按没解锁「超级磁场发生器」的存档查（docs/game-rules.md 第 34、38 条）：原地竖直升降、一格升降超过 NO_TECH_MAX_DZ 层的坡都报错。
+ * opt.maxErrors：最多记几条错（默认 200）；无带流的蓝图光隔空连带子就有几百条，后面供电这些要看全时给 Infinity
  */
 export function checkBlueprint(str, opt = {}) {
   const bp = fromStr(str.trim());
   const B = bp.buildings;
   const errors = [];
   const warnings = [];
-  const err = (m) => errors.length < 200 && errors.push(m);
+  const cap = opt.maxErrors ?? 200;
+  const err = (m) => errors.length < cap && errors.push(m);
   // 坐标取整：垂直升降处较低的几节带子会错开 0.0016 的倍数（antian 的写法），按所在格子算
   const P = (b) => {
     const o = b.localOffset[0];

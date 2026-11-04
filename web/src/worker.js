@@ -6,19 +6,21 @@ import { SORTER_SPEED } from '../../src/plan/sorters.js';
 import { pileCapOf } from '../../src/plan/piling.js';
 import { DEFAULTS as ROUTE_DEFAULTS } from '../../src/plan/route.js';
 import { buildGraph } from '../../src/plan/graph.js';
-import { powerDemand, powerText, fmtWatts, generatorsFor, IDLE_W, PILER_W, PILER_IDLE_W, COATER_W, COATER_IDLE_W, STATION_IDLE_W, STATION_CHARGE_W } from '../../src/metrics/energy.js';
+import { powerDemand, powerText, fmtWatts, generatorsFor, IDLE_W, SORTER_W, PILER_W, PILER_IDLE_W, COATER_W, COATER_IDLE_W, STATION_IDLE_W, STATION_CHARGE_W } from '../../src/metrics/energy.js';
 import { runTask } from '../../src/plan/tasks.js';
 import { validate } from '../../src/plan/validate.js';
 import { emitBlueprint, stationSettings, chainTiles } from '../../src/emit/blueprint.js';
 import { beltStats } from '../../src/plan/reroute.js';
 import { checkBlueprint } from '../../src/emit/check.js';
-import { ITEMS, RAW_ITEM_IDS, BELT_IDS, PILE_SORTER_TECH, factory, hasHighLatitude, recipeChoices, defaultRecipe, addGameData, plannable, recipe as recipeOf } from '../../src/gamedata.js';
+import { ITEMS, RAW_ITEM_IDS, BELT_IDS, PILE_SORTER_TECH, factory, hasHighLatitude, recipeChoices, defaultRecipe, addGameData, plannable, recipe as recipeOf, baseItem } from '../../src/gamedata.js';
 import { renderModel, groupLabels } from './model.js';
 import { autoWatcher, previewShapeOk } from './autowatch.js';
 import vanilla from '../../data/Vanilla.json' with { type: 'json' };
 import { fractionatorArray, checkArray, arrayModel, arrayPlan } from '../../src/fractionate/array.js';
 import { annealedArray, annealedEstimate } from '../../src/fractionate/anneal.js';
 import { fromStr, toStr } from '../../src/codec/parser.js';
+import { beltlessBlueprint } from '../../src/beltless/index.js';
+import { dsqInput } from '../../src/beltless/input.js';
 
 // 重氢的「分馏塔阵列」：不是普通配方（分馏塔不接分拣器、带子从塔里穿过），选了它就单独生成一张分馏阵列蓝图
 const DEUTERIUM = 1121;
@@ -871,7 +873,7 @@ function withPrefs(str, prefs) {
   return toStr(bp);
 }
 /**
- * 看现成的蓝图（量产计算器「生成无带蓝图」排好带过来的，handoff.js 的 beltless）：解开、独立检查，给页面画图要的那点东西；不排、不改蓝图。
+ * 看一张蓝图（无带蓝图，handoff.js 的 beltless）：解开、独立检查，给页面画图要的那点东西；不排、不改蓝图。
  * buildings 每个建筑：编号、物品、两头坐标 [x, y, z]、朝向、下游 out / 上游 in（建筑编号，没有是 -1）、配方出得最多的那样产物（等离子精炼画精炼油）、
  * 分拣器筛的物品、带子上的标签物品
  */
@@ -937,6 +939,19 @@ function steepSteps(L) {
   return n;
 }
 
+/**
+ * 这张蓝图里每组工厂做了什么、从外面接了什么（游戏 ID、每分钟），量产计算器把它记成「已完成」，设备、配方照这张写（见 handoff.js）。
+ * 一组做几样的（shared）台数只记在第一样，group 相同；研究站按台数（不按叠数）；supplied 含箱子供货时仓里供的
+ */
+function madeOf(calc) {
+  const rate = (u, id) => calc.flows.reduce((a, f) => (f.from === u.id && f.itemId === id && !f.byproduct ? a + f.rate : a), 0);
+  const parts = calc.units
+    .filter((u) => u.recipeId && !u.store)
+    .flatMap((u, group) => [u.itemId, ...(u.shared ?? [])].map((id, k) => ({ id, rate: rate(u, id), factory: u.factoryId, count: k ? 0 : (u.labs ?? u.count), recipe: u.recipeId, spray: u.spray?.mode ?? null, group })));
+  const supplied = [...calc.raw.map((r) => ({ id: baseItem(r.itemId), rate: r.rate })), ...calc.units.filter((u) => u.store?.kind === 'in').map((u) => ({ id: baseItem(u.itemId), rate: u.store.rate }))];
+  return { parts, supplied };
+}
+
 /** 规划结果 → 页面要的结果：出蓝图、独立检查、各种数字和说明 */
 function describePlan(plan, calc, p, effort, threadCount) {
   const L = plan.layout;
@@ -993,6 +1008,7 @@ function describePlan(plan, calc, p, effort, threadCount) {
       return gs.length ? { factory: [...new Set(gs.map((g) => g.factory))].join('、'), high: gs[0].latitude === 'high' } : null;
     })(),
     byproducts: calc.byproducts.map((b) => ({ name: b.item, rate: b.rate, of: ITEMS.get(b.of).name })),
+    made: madeOf(calc),
     recipes: calc.units.filter((u) => recipeChoices(u.itemId)[0]?.id !== u.recipeId).map((u) => ({ item: u.item, recipe: u.recipe })),
     addons: {
       spray: calc.spray ? { name: calc.spray.name, rate: calc.spray.rate, units: calc.units.filter((u) => u.spray).map((u) => `${u.item}（${u.spray.mode === 'extra' ? `增产 +${Math.round((u.spray.outMul - 1) * 1000) / 10}%` : `加速 +${Math.round((u.spray.speedMul - 1) * 100)}%`}）`) } : null,
@@ -1152,6 +1168,13 @@ function fracEnergy(r) {
   });
 }
 
+/** 无带蓝图的用电（字段同 powerDemand）：工厂照产线算（同排有带的，台数和蓝图里的一样），分拣器、喷涂机、自动集装机、物流站照蓝图里数的 */
+function flatEnergy(calc, buildings, p) {
+  const of = (keep) => buildings.filter((b) => keep(b.itemId));
+  const parts = { sorters: of((id) => id in SORTER_W).length, coaters: of((id) => id === 2313), pilers: of((id) => id === 2040), stations: of((id) => id === 2104) };
+  return energyTexts(powerDemand(calc, parts, { sorter: Number(p.sorter) }));
+}
+
 /**
  * 快照 → 发给上层的消息体：步数、温度、代价每次都带；绘图模型（几十 KB）最多一秒一份，
  * 其余时候只带数字（半秒一报，给实测估时用）。转模型失败只丢这一份预览，绝不影响搜索。
@@ -1238,11 +1261,30 @@ self.onmessage = async (ev) => {
     else if (msg.type === 'chain') self.postMessage({ type: 'chain', id: msg.id, data: chain(msg.params) });
     else if (msg.type === 'forecast') self.postMessage({ type: 'forecast', id: msg.id, data: forecast(msg.params) });
     else if (msg.type === 'patch') self.postMessage({ type: 'patched', id: msg.id, data: patchStation(msg) });
-    else if (msg.type === 'inspect') {
-      // 看现成的蓝图：出错也回 inspected（不能走最后那个 catch：它回的 result 会被当成排布的结果）
+    else if (msg.type === 'beltless') {
+      // 无带蓝图（量产计算器「生成无带蓝图」带过来的）：照页面的设置（同排有带的，msg.params）算产线、拼 DSQ 无带流生成器的输入（src/beltless/input.js），
+      // 出整张、重新摆放（带子区、物流站照画布上拖到的地方放），解出建筑表、跑独立检查。
+      // 出错也回 inspected（不能走最后那个 catch：它回的 result 会被当成排布的结果）
       let data;
       try {
-        data = inspectBlueprint(msg.str);
+        const p = msg.params;
+        const targets = p.targets.map((t) => ({ target: Number(t.target), rate: Number(t.rate) }));
+        const frac = splitFraction(targets, (p.raw || []).filter(Boolean), p.recipes || {});
+        if (frac.on && frac.isGoal) throw new Error('重氢选了分馏塔阵列，无带蓝图排不了');
+        const calc = calculate(lineInput({ ...p, supply: '' }, targets, frac));
+        const plan = dsqInput(calc, { belt: p.belt, sorter: p.sorter, labStack: p.labstack });
+        const { text, zone } = beltlessBlueprint(plan, {
+          zoneAt: msg.zoneAt,
+          partShift: msg.partShift,
+          station: p.station === 'ils' ? { pile: Number(p.pile) || 1, warper: p.warper === '1', belt: Number(p.belt) } : null,
+          sorter: Number(p.sorter),
+          belt: Number(p.belt),
+          power: p.power,
+          wide: p.chemwide === '1',
+          limits: { maxWidth: p.maxwidth ? Number(p.maxwidth) : null, maxHeight: p.maxheight ? Number(p.maxheight) : null, maxAspect: p.aspect ? Number(p.aspect) : null },
+        });
+        const look = inspectBlueprint(text);
+        data = { ...look, text, zone, energy: flatEnergy(calc, look.buildings, p) };
       } catch (e) {
         data = { error: e.message };
       }

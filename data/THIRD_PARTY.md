@@ -7,6 +7,7 @@
 | `data/Vanilla.json`、`data/Buildings.json` | [antian369/dsp-calc](https://github.com/antian369/dsp-calc)（数据源自 [DSPCalculator/dsp-calc](https://github.com/DSPCalculator/dsp-calc)） | 木兰宽松许可证 第2版，见 `LICENSE-dsp-calc-MulanPSL2.txt` |
 | `src/codec/*`（蓝图字符串编解码） | antian369/dsp-calc 的 `src/blueprint/`，其 README 注明改自 [cying314/edit-dspblue-print](https://github.com/cying314/edit-dspblue-print) | 上游 cying314 仓库为 GPL-2.0 |
 | `src/gamedata.js` 的 `STACK_SIZE`、`FLUIDS`（物品堆叠上限、哪些是液体） | [dsp2b/dsp2b](https://github.com/dsp2b/dsp2b) 的 `data/itemProtoSet.json`（原版游戏物品表导出） | GPL-3.0 |
+| `src/beltless/dsq.js`（无带流蓝图生成器）、`src/beltless/ids.js`（物品名对游戏 ID） | 同上 DSQ 的 `Scripts/blueprint.js`、`Scripts/data.js` 末尾的 `GAME_ITEM_IDS`，改成模块：开头引 pako 和 ids.js、末尾导出，代码原样不动 | GPL-3.0 |
 | `icons/*.png`（物品图标）、`favicon.ico`（网站图标） | [122474363/DSQ](https://github.com/122474363/DSQ)（戴森球计划量产量化计算器）的 `Scripts/data.json`、`favicon.ico` 导出；物品图标原图是游戏《戴森球计划》的美术素材 | DSQ 仓库为 GPL-3.0；游戏素材版权归原作者 |
 
 本项目对这些文件的修改：

@@ -5,6 +5,7 @@ import { sliceRoutes, drawingSvg, routeColor, linkedRuns, footprint, LINE, FINE 
 import { createViewer } from './viewer.js';
 import { readHandoff, readDefs } from './handoff.js';
 import { beltlessSvg } from './beltless.js';
+import { placeZone, nearestPlace, turn, partsFit } from '../../src/beltless/perimeter.js';
 
 const $ = (id) => document.getElementById(id);
 const STORE = 'dsp-handcraft:settings';
@@ -47,9 +48,9 @@ let firstVisit = false; // 第一次打开（没存过设置）：默认目标�
 let iconMode = false; // 页面旁边有 icons/ 目录时改用其中的图片
 let pickMode = { add: true }; // 物品面板这次是添加目标还是更换第 i 个目标
 let inspectId = 0;
-let flat = null; // 正在看的无带蓝图（量产计算器排好带过来的，handoff.js 的 beltless）：{ text, targets, svg, items, ends, stats, far, issues }；排了自己的一张就清掉
+let flat = null; // 正在看的无带蓝图（量产计算器带过来的输入出的，handoff.js 的 beltless）：{ text, zone 蓝图里带子区放在哪, place / moves 图上拖到哪, dom, targets, svg, items, ends, stats, far, issues }；排了自己的一张就清掉
 
-const viewer = createViewer({ box: $('drawing'), enabled: () => true, onSelect: selectRoute, onFactory: selectFactory, onStation: selectStation, onMachine: selectMachine, onClear: clearRoute, onZoom: (n) => $('zoom-label').textContent = `${n}%`, zoomable: () => $('sheet').classList.contains('is-expanded') });
+const viewer = createViewer({ box: $('drawing'), enabled: () => true, onSelect: selectRoute, onFactory: selectFactory, onStation: selectStation, onMachine: selectMachine, onClear: clearRoute, onZoom: (n) => $('zoom-label').textContent = `${n}%`, zoomable: () => $('sheet').classList.contains('is-expanded'), drag: { grab: (el) => grabZone(el), move: (dx, dy) => moveZone(dx, dy), end: (ok) => dropZone(ok) } });
 
 // ---------- 后台线程（打不开时退回到主线程运行） ----------
 // 有的浏览器不允许本地文件启动后台线程，而且是异步报错；在第一条回复到达之前出错就整体切到主线程。
@@ -138,7 +139,13 @@ function handle(m) {
   } else if (m.type === 'result' && m.id === reqId) {
     finish(m.data);
   } else if (m.type === 'inspected' && m.id === inspectId) {
-    showFlat(m.data);
+    const wait = flatWait;
+    const keep = flatKeep;
+    flatWait = null;
+    flatKeep = false;
+    if (!wait && !m.data.error) resetLike(); // 点「生成蓝图」出的新一张：一次生成点一次赞（复制时照拖到的位置重出的不算）
+    showFlat(m.data, keep);
+    wait?.(m.data);
   } else if (m.type === 'patched') {
     patchWaiters.get(m.id)?.(m.data);
     patchWaiters.delete(m.id);
@@ -1571,7 +1578,7 @@ function renderForecast() {
   const d = forecastData;
   if (!d || d.error || !d.machines) return ($('forecast').textContent = '');
   const kinds = d.byFactory.slice(0, 4).map((f) => `${f.name} ${fmt(f.count)}`).join('、') + (d.byFactory.length > 4 ? ' 等' : '');
-  const rest = [d.seconds > 0 ? `预计约 ${Math.ceil(d.seconds)} 秒` : '', `工厂满负荷约 ${d.power.maxText}`].filter(Boolean);
+  const rest = [d.seconds > 0 && !handoff?.beltless ? `预计约 ${Math.ceil(d.seconds)} 秒` : '', `工厂满负荷约 ${d.power.maxText}`].filter(Boolean); // 无带蓝图不退火，不写用时
   $('forecast').textContent = `建筑 ${fmt(d.machines)} 台（${kinds}）· ${rest.join(' · ')}`;
 }
 $('spec').addEventListener('submit', (e) => {
@@ -1590,6 +1597,7 @@ $('spec').addEventListener('submit', (e) => {
     return;
   }
   saveSettings();
+  if (handoff?.beltless) return genFlat(); // 量产计算器「生成无带蓝图」带过来的：出无带蓝图
   const params = buildParams();
   // 同样的输入再点一次换一个种子（对这张不满意，再点就换一张）；改了输入再回来也接着换，不重复
   const key = JSON.stringify(params);
@@ -1625,7 +1633,7 @@ function finish(d) {
   show(d);
   goalNote(d.goal);
   // 排好一张：嵌在别的网页里时由 bridge.js 转告那边做的是哪几样（量产计算器把它们标成已完成，见 handoff.js）
-  window.dispatchEvent(new CustomEvent('dsphc-done', { detail: { targets: state.targets.map((t) => ({ id: t.id, rate: t.rate })), ok: !!(d.feasible && d.check?.ok) } }));
+  window.dispatchEvent(new CustomEvent('dsphc-done', { detail: { targets: state.targets.map((t) => ({ id: t.id, rate: t.rate })), ok: !!(d.feasible && d.check?.ok), made: d.made ?? null } }));
 }
 
 /**
@@ -1641,7 +1649,6 @@ function goalNote(g) {
 function show(d) {
   last = d;
   flat = null;
-  $('belt-key').hidden = true;
   $('rail-tabs').hidden = false;
   floors = sliceRoutes(d.model.routes);
   view.level = 'all'; // 出图先看总览（地面实线、高架虚线叠在一起），要看单层再点右边的 L1、L2…
@@ -1673,17 +1680,49 @@ function show(d) {
   $('bp-meta').textContent = `${d.blueprint.length.toLocaleString()} 字符`;
 }
 
-// ---------- 现成的无带蓝图（量产计算器「生成无带蓝图」排好带过来的） ----------
+// ---------- 无带蓝图（量产计算器「生成无带蓝图」带过来的输入；点「生成蓝图」时后台出整张、重新摆放） ----------
 // 图纸照布线图的画法画（beltless.js），标题栏写尺寸、工厂、分拣器、带子；右栏换成带子运什么和怎么用，没有楼层、图层开关；
-// 下面蓝图字符串、接口（带头进的原料、带尾出的产物）、检查。独立检查照常跑：分拣器离连着的带子太远、建好会断开这一类是无带流本来就这样
-// （要原地重建一次才连上），合成一句说明，别的照常报错
+// 下面蓝图字符串、接口（带头进的原料、带尾出的产物，接了站是每座站的需求、供应）、检查。独立检查照常跑：分拣器离连着的带子太远、
+// 建好会断开这一类是无带流本来就这样（要原地重建一次才连上），合成一句说明，别的照常报错。
+// 拖：不接站时带子区围着机器那一圈拖（perimeter.js：底边贴着机器、口朝外，拐过角就转过来）；接了站时每座站、中间产物带各自拖
+// （partsFit：不压机器、不重叠、站心隔够）。拖的时候只挪图，复制时才让后台照拖到的地方重出蓝图码
 const FAR_LINK = /^分拣器 (\d+) (?:起点|终点)(?:不在所连传送带上|离所连传送带 [\d.]+ m，建好时会断开)/;
-function showFlat(data) {
+let flatWait = null; // 复制时重出的那张：后台回信时交给它
+let flatPending = null;
+let flatKeep = false; // 下一张回信是同一张重出的：图上照原来的大小、位置画
+let flatReq = null; // 最近一次让后台出的那张用的设置（复制时重出照它，不照后来改过的设置）
+/** 让后台出无带蓝图：req = { params 页面的设置（同排有带的，buildParams）, zoneAt 带子区放在哪, partShift 各块挪的格数 } */
+function requestBeltless(req) {
+  flatReq = req;
+  send({ type: 'beltless', id: ++inspectId, ...req });
+}
+/** 图上现在拖到的地方：不接站是带子区放在哪，接了站是各块（照默认位置）挪的格数 */
+const arrangement = () => (!flat?.zone ? {} : flat.zone.parts ? { partShift: flat.zone.parts.map((p, k) => [p.shift[0] + flat.moves[k][0], p.shift[1] + flat.moves[k][1]]) } : { zoneAt: flat.place });
+/** 点「生成蓝图」：照现在的设置出；接不接站没变的话，图上拖过的位置留着（放不下了后台照默认的放） */
+function genFlat() {
+  const params = buildParams();
+  const same = !!flat && (flatReq?.params.station === 'ils') === (params.station === 'ils');
+  flatKeep = !!flat;
+  setStatus('正在生成无带蓝图…');
+  requestBeltless({ params, ...(same ? arrangement() : {}) });
+}
+/** 复制时照图上拖到的地方重出一张，给出蓝图码（出错时 reject）；连点几下也只出一次 */
+function regenFlat() {
+  flatPending ||= new Promise((ok, fail) => {
+    flatWait = (d) => (d.error ? fail(new Error(d.error)) : ok(d.text));
+    flatKeep = true;
+    requestBeltless({ params: flatReq.params, ...arrangement() });
+  }).finally(() => (flatPending = null));
+  return flatPending;
+}
+/** keepView：同一张重出的，图上照原来的大小、位置画，不重新适配 */
+function showFlat(data, keepView = false) {
   if (data.error) {
-    setStatus(`带过来的无带蓝图解不开：${data.error}`, true);
+    setStatus(`无带蓝图没生成出来：${data.error}`, true);
     return;
   }
-  const drawn = beltlessSvg(data.buildings, drawIcon);
+  const parts = data.zone?.parts ?? null;
+  const drawn = beltlessSvg(data.buildings, drawIcon, parts);
   const far = new Set();
   const issues = [];
   for (const e of data.check.errors) {
@@ -1692,65 +1731,188 @@ function showFlat(data) {
     else issues.push(e);
   }
   if (data.check.warnings.length) console.info('[dsp-handcraft] 无带蓝图检查提醒：\n' + data.check.warnings.map((x) => `- ${x}`).join('\n'));
-  flat = { text: handoff.beltless, targets: handoff.targets.map((t) => ({ id: t.id, rate: t.rate })), ...drawn, far: far.size, issues };
+  // 不接站时回信回来之前又拖过的，图上照拖到的画
+  const place = keepView && flat?.place && !parts ? flat.place : data.zone && { side: data.zone.side, offset: data.zone.offset };
+  flat = { text: data.text, zone: data.zone, place, moves: parts?.map(() => [0, 0]) ?? null, targets: handoff.targets.map((t) => ({ id: t.id, rate: t.rate })), ...drawn, far: far.size, issues };
+  if (!flatWait)
+    setStatus(
+      data.zone?.shiftRejected ? '拖到的位置放不下（压到机器、和别的块重叠或两站太近），照原来的位置出了'
+      : `无带蓝图生成好了，复制就能用；${parts ? '物流站、中间产物带可以各自拖到别处' : '带子区可以围着机器拖到别的边上'}，复制时照拖到的位置出${data.zone?.limitMiss ? '。宽、长上限守不住，照最接近的出了' : ''}`,
+      !!data.zone?.shiftRejected,
+    );
   last = null; // 楼层、线路、物流站、工厂小窗这些只给自己排的图
   Object.assign(view, { level: 'all', focus: '', selected: '', factory: '', station: null, machine: null });
   renderStation();
   $('route-info').hidden = true;
   $('sheet-alert').hidden = true;
   $('result-details').hidden = true;
-  drawFlat();
+  drawFlat(keepView);
   const names = flat.targets.map((t) => `${byId.get(t.id)?.name ?? t.id} ${fmt(t.rate)}/分`).join(' + ');
   $('sheet-name').textContent = `无带蓝图 · ${names}`;
   const st = flat.stats;
   $('sheet-stats').hidden = false;
   $('sheet-stats').innerHTML =
-    `<span><b>${st.width}×${st.height}</b>格</span><span>工厂<b>${st.factories}</b></span><span>分拣器<b>${st.sorters}</b></span><span>传送带<b>${st.belts}</b></span>` +
-    (issues.length ? `<span class="warn" role="button" tabindex="0" title="看下面的「检查」">需注意 ${issues.length} 处</span>` : '<span class="ok">检查通过</span>');
-  // 右栏：带子运什么、怎么用（没有楼层、用电两页）
+    `<span><b>${st.width}×${st.height}</b>格</span><span>工厂<b>${st.factories}</b></span><span>分拣器<b>${st.sorters}</b></span><span>传送带<b>${st.belts}</b></span>`;
+  // 右栏两页：带子运什么、怎么用（没有楼层），用电（同有带的）；同一张重出、再点「生成蓝图」时停在原来那页
+  const onPower = keepView && $('tab-power').getAttribute('aria-selected') === 'true';
   $('layer-rail').hidden = false;
-  $('rail-tabs').hidden = true;
-  $('floor-list').hidden = true;
-  $('power-pane').hidden = true;
-  $('belt-key').hidden = false;
+  $('rail-tabs').hidden = false;
+  $('tab-floors').hidden = true;
+  $('tab-belts').hidden = false;
+  fillPowerCard(data.energy);
+  railTab(onPower && !!data.energy);
   $('belt-key-list').innerHTML = flat.items.map((x) => `<li><i style="--c:${x.color}"></i>${byId.get(x.id) ? pic(byId.get(x.id)) : ''}<span>${esc(byId.get(x.id)?.name ?? x.id)}</span></li>`).join('');
+  // 图下面：工厂图例（同布线图的 fillLegend；带子运的写在右栏）
+  $('sheet-foot').hidden = false;
+  $('legend').innerHTML = '';
+  $('titleblock').hidden = true;
+  $('factory-legend').innerHTML = flat.groups.map((g) => `<span><b>${g.letter}</b>${esc(byId.get(g.product)?.name ?? '')} <small>×${g.count}${g.levels > 1 ? ` 叠×${g.levels} 层` : ''}</small></span>`).join('');
   $('layer-controls').hidden = true;
   $('sheet-tools').querySelectorAll('button').forEach((b) => (b.disabled = false));
   $('floor-name').textContent = '无带蓝图';
-  $('floor-description').textContent = '虚线：分拣器隔空连着的带子';
+  $('floor-description').textContent = parts ? '物流站、中间产物带可以各自拖' : '带子区可以围着机器拖';
   $('floor-meta').textContent = `${st.width} × ${st.height} 格`;
   // 下面：蓝图字符串、接口、检查
-  $('bp').value = flat.text;
   $('copy').disabled = false;
   $('copy').textContent = '复制蓝图';
   $('copy-top').hidden = false;
   $('copy-top').textContent = '复制蓝图';
-  $('like').hidden = true;
-  $('bp-meta').textContent = `${flat.text.length.toLocaleString()} 字符`;
+  zoneStale();
   const listOf = (ids) => ids.map((id) => esc(byId.get(id)?.name ?? id)).join('、');
-  $('ports').innerHTML = [flat.ends.in.length ? `<li>原料从带子区这几条带的带头送进来：${listOf(flat.ends.in)}</li>` : '', flat.ends.out.length ? `<li>产物从带尾出来：${listOf(flat.ends.out)}</li>` : ''].join('') || '<li>没有标出进出口的带子</li>';
-  const li = [];
-  if (far.size) li.push(`<li>${far.size} 个分拣器隔空连着带子：无带流本来就这样，蓝图贴下去建好一遍后，整片拆掉、原地重建一次才会连上。</li>`);
-  // 别的问题按种类合并（数字不同算同一类），每类举一条、写共几处；逐条的进控制台
-  const kinds = new Map();
-  for (const e of issues) {
-    const k = e.replace(/[\d.]+/g, '#');
-    const v = kinds.get(k) ?? { n: 0, first: e };
-    v.n++;
-    kinds.set(k, v);
-  }
-  for (const { n, first } of kinds.values()) li.push(`<li class="err">${esc(first)}${n > 1 ? `（同类共 ${n} 处）` : ''}</li>`);
+  $('notes').closest('.panel').hidden = true; // 无带蓝图不报规则警告（DSQ 的槽位写法、隔空连带子是无带流本来的样子），逐条的进控制台
+  const stations = data.zone?.stations;
+  $('ports').innerHTML = stations
+    ? stations.map(({ items }, i) => {
+        const ids = (kind) => items.filter((it) => it.kind === kind).map((it) => it.itemId);
+        return `<li>物流站 ${i + 1}：${[ids('in').length ? `需求 ${listOf(ids('in'))}` : '', ids('out').length ? `供应 ${listOf(ids('out'))}` : ''].filter(Boolean).join('，')}</li>`;
+      }).join('') + warperNote(data.zone.warper, stations.findIndex((st) => st.warper) + 1)
+    : (data.zone?.stationSkip ? `<li class="err">${data.zone.stationSkip === 'spray' ? '喷了增产剂的线还接不了物流站（喷涂机和增产剂带要跟着挪）' : '物流站接不上'}，带子区的口照原样留着</li>` : '') +
+      ([flat.ends.in.length ? `<li>原料从带子区这几条带的带头送进来：${listOf(flat.ends.in)}</li>` : '', flat.ends.out.length ? `<li>产物从带尾出来：${listOf(flat.ends.out)}</li>` : ''].join('') || '<li>没有标出进出口的带子</li>');
   if (issues.length) console.info('[dsp-handcraft] 无带蓝图检查：\n' + issues.map((x) => `- ${x}`).join('\n'));
-  if (!issues.length) li.push(`<li class="ok">${far.size ? '其余检查通过。' : '检查通过。'}</li>`);
-  $('notes').innerHTML = li.join('');
 }
-/** 把无带蓝图画到图纸上（出了别的图、搜索预览之后要画回来时也用） */
-function drawFlat() {
-  viewer.reset();
+/** 接站时翘曲器怎么放的（station.js 的 linkWarpers）；home：存翘曲器的是第几座站 */
+function warperNote(w, home) {
+  if (!w) return '';
+  const parts = [`物流站 ${home} 存一格翘曲器（星际需求）`];
+  if (w.linked) parts.push(`翘曲器带接到另外 ${w.linked} 座站`);
+  if (w.own) parts.push(`${w.own} 座接不上带子，自己也存一格`);
+  if (w.missed) parts.push(`${w.missed} 座接不上、也没空格放`);
+  return `<li${w.missed ? ' class="err"' : ''}>${parts.join('，')}</li>`;
+}
+/** 把无带蓝图画到图纸上（出了别的图、搜索预览之后要画回来时也用；拖过还没重出的照拖到的画）。keep：照原来的大小、位置画 */
+function drawFlat(keep = false) {
+  if (!keep) viewer.reset();
   const box = $('drawing');
   box.classList.add('has-svg');
   box.innerHTML = flat.svg;
-  viewer.attach(box.querySelector('svg'), true);
+  const svg = box.querySelector('svg');
+  if (flat.moves) {
+    flat.dom = [...svg.querySelectorAll('.bl-part')];
+    flat.moves.forEach((d, k) => movePart(k, d));
+  } else {
+    flat.dom = zoneParts(svg);
+    showPlace(flat.place);
+  }
+  viewer.attach(svg, !keep, keep);
+}
+/** 图上的带子区：整块转的那组、跟着挪不跟着转的图标和那行字，各记下画出来时（照 flat.zone 放）的位置 */
+function zoneParts(svg) {
+  const g = svg.querySelector('.bl-zone');
+  if (!g) return null;
+  const f = g.querySelector('rect[stroke-dasharray]');
+  const n = (el, k) => Number(el.getAttribute(k));
+  return {
+    g,
+    icons: [...svg.querySelectorAll('.bl-zone-marks > g')].map((el) => {
+      const [, x, y, rest] = /translate\(([-\d.]+) ([-\d.]+)\)(.*)/.exec(el.getAttribute('transform'));
+      return [el, Number(x), Number(y), rest];
+    }),
+    label: svg.querySelector('.bl-zone-marks > text'),
+    frame: [n(f, 'x'), n(f, 'y'), n(f, 'width'), n(f, 'height')],
+  };
+}
+const F3 = (v) => Math.round(v * 1000) / 1000;
+/** 图上把带子区放到 place：照 flat.zone 画的那张，带子区整块转回原来的朝向、再照 place 放（图上 y 朝下） */
+function showPlace(place) {
+  const p = flat.dom;
+  if (!p || !flat.zone || !place) return;
+  const { zone: z, machines: m } = flat.zone;
+  const a = placeZone(z, m, flat.zone.side, flat.zone.offset);
+  const b = placeZone(z, m, place.side, place.offset);
+  const map = ([x, y]) => {
+    const [u, v] = turn(b.k - a.k, [x - a.tx, -y - a.ty]);
+    return [u + b.tx, -(v + b.ty)];
+  };
+  const [e, c1, c2] = [map([0, 0]), map([1, 0]), map([0, 1])];
+  p.g.setAttribute('transform', `matrix(${c1[0] - e[0]} ${c1[1] - e[1]} ${c2[0] - e[0]} ${c2[1] - e[1]} ${F3(e[0])} ${F3(e[1])})`);
+  for (const [el, x, y, rest] of p.icons) {
+    const [u, v] = map([x, y]);
+    el.setAttribute('transform', `translate(${F3(u)} ${F3(v)})${rest}`);
+  }
+  // 框上那行字：写在挪过以后的框外头、离机器远的那边（放在下边时写在框下面），靠左
+  const [fx, fy, fw, fh] = p.frame;
+  const corners = [[fx, fy], [fx + fw, fy], [fx, fy + fh], [fx + fw, fy + fh]].map(map);
+  p.label?.setAttribute('x', F3(Math.min(...corners.map((c) => c[0]))));
+  p.label?.setAttribute('y', F3(place.side === 'bottom' ? Math.max(...corners.map((c) => c[1])) + 0.85 : Math.min(...corners.map((c) => c[1])) - 0.35));
+}
+/** 接了站时图上第 k 块挪 d 格（游戏坐标，y 朝北） */
+const movePart = (k, [dx, dy]) => flat.dom[k]?.setAttribute('transform', `translate(${dx} ${-dy})`);
+/** 接了站时第 k 块挪到 d 放不放得下（同后台：partsFit） */
+function partFits(k, d) {
+  const ps = flat.zone.parts.map((p, i) => {
+    const [dx, dy] = i === k ? d : flat.moves[i];
+    return { box: { x0: p.box.x0 + dx, x1: p.box.x1 + dx, y0: p.box.y0 + dy, y1: p.box.y1 + dy }, center: p.center && [p.center[0] + dx, p.center[1] + dy] };
+  });
+  return partsFit(ps.map((q) => q.box), ps.map((q) => q.center), flat.zone.machines, flat.zone.span);
+}
+let zoneLive = null; // 正在拖：不接站时 { c: 按下时带子区的中心（游戏坐标）, place: 拖到的 }；接了站时 { part 第几块, d 拖到的格数 }
+function grabZone(el) {
+  if (!flat?.dom) return false;
+  if (!flat.moves) return !!el.closest?.('.bl-zone, .bl-zone-marks');
+  const g = el.closest?.('.bl-part');
+  if (!g) return false;
+  const k = Number(g.dataset.part);
+  zoneLive = { part: k, d: flat.moves[k] };
+  return true;
+}
+function moveZone(dx, dy) {
+  if (flat.moves) {
+    // 接了站：照格挪，放不下的地方不去（停在上一个放得下的位置）
+    const { part: k } = zoneLive;
+    const d = [flat.moves[k][0] + Math.round(dx), flat.moves[k][1] - Math.round(dy)];
+    if ((d[0] === zoneLive.d[0] && d[1] === zoneLive.d[1]) || !partFits(k, d)) return;
+    zoneLive.d = d;
+    movePart(k, d);
+    return;
+  }
+  const { zone: z, machines: m } = flat.zone;
+  if (!zoneLive) {
+    const { box } = placeZone(z, m, flat.place.side, flat.place.offset);
+    zoneLive = { c: [(box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2], place: flat.place };
+  }
+  const at = nearestPlace(z, m, zoneLive.c[0] + dx, zoneLive.c[1] - dy);
+  if (at.side === zoneLive.place.side && at.offset === zoneLive.place.offset) return;
+  zoneLive.place = at;
+  showPlace(at);
+}
+function dropZone(ok) {
+  const live = zoneLive;
+  zoneLive = null;
+  if (!live || !flat) return;
+  if (flat.moves) {
+    if (ok) flat.moves[live.part] = live.d;
+    else movePart(live.part, flat.moves[live.part]);
+  } else if (ok) flat.place = live.place;
+  else showPlace(flat.place);
+  zoneStale();
+}
+const zoneMoved = () => (flat?.moves ? flat.moves.some(([dx, dy]) => dx || dy) : !!flat?.zone && !!flat.place && (flat.place.side !== flat.zone.side || flat.place.offset !== flat.zone.offset));
+/** 拖过了还没重出：蓝图码先空着（复制时照拖到的地方出） */
+function zoneStale() {
+  const moved = zoneMoved();
+  $('drawing').querySelector('.bl-free')?.toggleAttribute('hidden', moved); // 站和站之间的翘曲器带：复制时照新位置重接
+  $('bp').value = moved ? '' : flat.text;
+  $('bp-meta').textContent = moved ? `${flat.moves ? '物流站、中间产物带' : '带子区'}挪过了，复制时照现在的位置出蓝图码` : `${flat.text.length.toLocaleString()} 字符`;
 }
 
 /** 图纸上方的红条：这张图不可行时醒目地说出来，并说怎么办 */
@@ -1786,23 +1948,27 @@ function fillSheetStats(d) {
 }
 /** 图纸右下角标题栏的内容：第一行是图名，其余是图纸参数 */
 
-/** 右侧栏两页：楼层、用电 */
+/** 右侧栏两页：楼层（无带蓝图是带子）、用电 */
 function railTab(power) {
-  $('tab-floors').setAttribute('aria-selected', String(!power));
-  $('tab-power').setAttribute('aria-selected', String(power));
-  $('floor-list').hidden = power;
-  $('power-pane').hidden = !power;
+  const pages = [['tab-floors', 'floor-list', !power && !flat], ['tab-belts', 'belt-key', !power && !!flat], ['tab-power', 'power-pane', power]];
+  for (const [tab, page, on] of pages) {
+    $(tab).setAttribute('aria-selected', String(on));
+    $(page).hidden = !on;
+  }
 }
 $('tab-floors').addEventListener('click', () => railTab(false));
+$('tab-belts').addEventListener('click', () => railTab(false));
 $('tab-power').addEventListener('click', () => railTab(true));
 
 function renderFloorNav(d) {
   $('layer-controls').hidden = false;
   $('layer-rail').hidden = false;
   $('tab-floors').hidden = false;
+  $('tab-belts').hidden = true;
   railTab(false);
   $('sheet-foot').hidden = false;
   $('result-details').hidden = false;
+  $('notes').closest('.panel').hidden = false; // 无带蓝图藏起来的检查
   $('sheet-tools').querySelectorAll('button').forEach((b) => b.disabled = false);
   const cards = [{ z: 'all', name: '总览' }, ...floors.map((f) => ({ z: f.z, name: `L${f.z + 1}` }))];
   $('floor-list').innerHTML = cards.map((f) => {
@@ -2367,18 +2533,38 @@ function fillPowerCard(e) {
     (e.stations ? `<p>物流站充电另算（${e.stations} 座最多 ${esc(e.stationChargeText)}，电存满后就很少）</p>` : '');
 }
 
-$('copy').addEventListener('click', async () => {
-  const text = $('bp').value;
+/** 写进剪贴板；text 还没出来（Promise，复制时才重出的无带蓝图）时点下去那一刻就交给剪贴板等它：过了点击那一下，有的浏览器不让写 */
+async function writeClipboard(text) {
+  if (typeof text !== 'string' && typeof ClipboardItem === 'function' && navigator.clipboard?.write) {
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ 'text/plain': text.then((t) => new Blob([t], { type: 'text/plain' })) })]);
+      return;
+    } catch {
+      // 等不了的浏览器：出来了再写
+    }
+  }
+  const t = await text;
   try {
-    await navigator.clipboard.writeText(text);
+    await navigator.clipboard.writeText(t);
   } catch {
+    $('bp').value = t;
     $('bp').select();
     document.execCommand('copy');
   }
+}
+$('copy').addEventListener('click', async () => {
+  const fresh = zoneMoved() ? regenFlat() : null;
+  if (fresh) for (const b of [$('copy'), $('copy-top')]) b.textContent = '复制中…';
+  try {
+    await writeClipboard(fresh ?? $('bp').value);
+  } catch (err) {
+    for (const b of [$('copy'), $('copy-top')]) b.textContent = '复制蓝图';
+    setStatus(`无带蓝图没生成出来：${err.message}`, true);
+    return;
+  }
   for (const b of [$('copy'), $('copy-top')]) b.textContent = '已复制';
-  if (flat) {
-    window.dispatchEvent(new CustomEvent('dsphc-done', { detail: { targets: flat.targets, ok: !flat.issues.length, kind: 'beltless' } }));
-  } else showLike();
+  if (flat) window.dispatchEvent(new CustomEvent('dsphc-done', { detail: { targets: flat.targets, ok: !flat.issues.length, kind: 'beltless' } }));
+  showLike();
   setTimeout(() => {
     for (const b of [$('copy'), $('copy-top')]) b.textContent = '复制蓝图';
   }, 2000);
@@ -2386,8 +2572,8 @@ $('copy').addEventListener('click', async () => {
 $('copy-top').addEventListener('click', () => $('copy').click());
 
 // ---------- 点赞：括号里是全站的总数；一次生成点一次 ----------
-// 点赞总数存在公共计数服务上（全站共享，不记人），换地方改这里
-const LIKES = { base: 'https://abacus.jasoncameron.dev', ns: 'dsp-handcraft', key: 'likes' };
+// 点赞总数存在公共计数服务上（全站共享，不记人），换地方改这里；无带蓝图另记一个数（beltless），不和排有带的合在一起
+const LIKES = { base: 'https://abacus.jasoncameron.dev', ns: 'dsp-handcraft', key: 'likes', beltless: 'beltless-likes' };
 let likes = null; // 总数，没取到时为空
 let likedThis = false; // 这一次生成的结果点过了
 function renderLike() {
@@ -2396,7 +2582,7 @@ function renderLike() {
 /** 问计数服务：get 只读总数（还没人点过时是 404，算 0），hit 加一再回总数；连不上就算了，不报错 */
 function askLikes(op) {
   try {
-    fetch(`${LIKES.base}/${op}/${LIKES.ns}/${LIKES.key}`, { cache: 'no-store', referrerPolicy: 'no-referrer' })
+    fetch(`${LIKES.base}/${op}/${LIKES.ns}/${handoff?.beltless ? LIKES.beltless : LIKES.key}`, { cache: 'no-store', referrerPolicy: 'no-referrer' })
       .then((r) => (op === 'get' && r.status === 404 ? { value: 0 } : r.json()))
       .then((j) => {
         if (!Number.isFinite(j?.value) || (op === 'get' && likes != null)) return; // 点过以后才回来的 get 不认
@@ -2429,7 +2615,6 @@ $('like').addEventListener('click', () => {
   renderLike();
   askLikes('hit');
 });
-askLikes('get');
 
 // 标题栏里「需注意」点一下跳到检查
 $('sheet-stats').addEventListener('click', (e) => {
@@ -2453,6 +2638,7 @@ function initView() {
 // ---------- 从别的网页带过来的方案（地址里的 #plan=，见 handoff.js） ----------
 // 目标、配方、设备先填好；外部供应是物品 ID，等物品列表到了换成名字，再按建议补齐（需要原油精炼厂等的中间产物），然后自动排一次
 let handoff = readHandoff(location.hash);
+askLikes('get'); // 无带蓝图、排有带的各取各的数，所以等 handoff 定了再问
 function applyHandoff() {
   state.targets = handoff.targets.map((t) => ({ ...t }));
   state.legacyTarget = null; // 带过来的目标为准，存着的老写法不再拿来换
@@ -2466,13 +2652,14 @@ function applyHandoff() {
     if (el) el.checked = true;
   }
   $('labstack').value = state.labstack;
+  // 无带蓝图不退火：「搜索力度」用不上
+  if (handoff.beltless) document.querySelector('fieldset[data-name="effort"]').hidden = true;
   // 地址里的方案只用一次：刷新页面时保留自己后来的改动（设置已经存下了）
   history.replaceState(null, '', location.pathname + location.search);
 }
 function takeHandoffExt() {
   if (!handoff || handoff.took) return;
   handoff.took = true;
-  if (handoff.beltless) send({ type: 'inspect', id: ++inspectId, str: handoff.beltless });
   const missing = state.targets.filter((t) => !byId.get(t.id));
   if (missing.length) {
     handoff.auto = false;
@@ -2485,7 +2672,7 @@ function takeHandoffExt() {
   // 带过来时说了先别排（auto: false，量产计算器这样带）：等用户改好数量自己点
   setStatus(
     handoff.beltless
-      ? `无带蓝图是${handoff.from ? `「${handoff.from}」` : '那边'}排好的，复制就能用；要带传送带的，点「生成蓝图」另排一张`
+      ? `已按${handoff.from ? `「${handoff.from}」` : ''}带过来的无带蓝图填好目标，点「生成蓝图」生成无带蓝图（物流方式选物流站时接站）`
       : `已按${handoff.from ? `「${handoff.from}」` : ''}带过来的方案填好目标、配方和设备，${handoff.auto ? '正在排布…' : '数量可以再改，好了点「生成蓝图」'}`,
   );
   autoSuggest = true;

@@ -134,7 +134,7 @@ const stationShade = (x, y, t, hatch, a = 3.4, b = 2.6) => {
  * 熔炉（小写字母 a、b、c…）、分馏塔圆圈里挤，字母照常居中，数字挪到右下角压着圆、描一圈底色。
  * hidden（这一层已经高过机器）按看不见的轮廓画成虚线，不画阴影。mini（楼层缩略图）只画轮廓。
  */
-function factoryShape(kind, cx, cy, w, h, o) {
+export function factoryShape(kind, cx, cy, w, h, o) {
   const { letter: mark, num, mini, text, tag, hidden, hatch, levels = 1 } = o;
   const letter = mark;
   // 标号写在宽 room 的地方：字号不超过 size；按「字母 + 细空 + 两位数」估宽：0.62 + 0.12 + 2 × 0.55 ≈ 1.9 个字号
@@ -188,6 +188,60 @@ function factoryShape(kind, cx, cy, w, h, o) {
   s += `<path d="${rectD(x0 + k, y0 + k, x1 - k, y1 - k)}" fill="none" stroke="${FINE}" stroke-width="${THIN}"/>`;
   return s + (letter ? label(cx, cy, 1.0, w - 2 * k - 0.2) : '');
 }
+/** 物流站：粗线八角轮廓 + 两道细线圆 + 圆上的四个中心标记，中间写 label（T1、T2…）；mini（楼层缩略图）只画轮廓。text 同 factoryShape */
+export function stationShape(x, y, label, { hatch, text, mini = false }) {
+  const o = `M${x - 2.6} ${y - 3.4}H${x + 2.6}L${x + 3.4} ${y - 2.6}V${y + 2.6}L${x + 2.6} ${y + 3.4}H${x - 2.6}L${x - 3.4} ${y + 2.6}V${y - 2.6}Z`;
+  const marks = `<path d="M${x} ${y - 2.65}v0.7M${x} ${y + 1.95}v0.7M${x - 2.65} ${y}h0.7M${x + 1.95} ${y}h0.7" stroke="${FINE}" stroke-width="${THIN}"/>`;
+  return `<path d="${o}" fill="${PAPER}"/>${mini ? '' : stationShade(x, y, 0.45, hatch)}<path d="${o}" fill="none" stroke="${mini ? FINE : LINE}" stroke-width="${mini ? 0.25 : HEAVY}"/>${mini ? '' : `${ring(x, y, 2.3, FINE, MED)}${ring(x, y, 1.55, FINE, THIN)}${marks}${text(x, y, label, 1.05, LINE, 500)}`}`;
+}
+/** 供电设施：电力感应塔（size 1）是一个黄圈，里面一个「+」；卫星配电站（size 3）是圆角方框加「+」 */
+export function powerShape(x, y, size) {
+  return size > 1
+    ? `<rect x="${x - size / 2 + 0.1}" y="${y - size / 2 + 0.1}" width="${size - 0.2}" height="${size - 0.2}" rx="0.3" fill="rgba(255,214,102,0.18)" stroke="${POWER}" stroke-width="0.1"/><path d="M${x} ${y - 0.8}V${y + 0.8}M${x - 0.8} ${y}H${x + 0.8}" stroke="${POWER}" stroke-width="0.12"/>`
+    : `<circle cx="${x}" cy="${y}" r="0.36" fill="rgba(255,214,102,0.25)" stroke="${POWER}" stroke-width="0.09"/><path d="M${x} ${y - 0.22}V${y + 0.22}M${x - 0.22} ${y}H${x + 0.22}" stroke="${POWER}" stroke-width="0.08"/>`;
+}
+/** 压在带子上的小设备：自动集装机（piler）是小方框里三道横线，四向分流器（splitter）是方框加十字，喷涂机（别的）是菱形 */
+export function deviceShape(kind, x, y) {
+  if (kind === 'piler') return `<path d="${rectD(x - 0.3, y - 0.3, x + 0.3, y + 0.3)}" fill="${PAPER}" stroke="${LINE}" stroke-width="${MED}"/><path d="M${F3(x - 0.18)} ${F3(y - 0.12)}h0.36M${F3(x - 0.18)} ${F3(y)}h0.36M${F3(x - 0.18)} ${F3(y + 0.12)}h0.36" stroke="${FINE}" stroke-width="${THIN}"/>`;
+  if (kind === 'splitter') return `<path d="${rectD(x - 0.34, y - 0.34, x + 0.34, y + 0.34)}" fill="${PAPER}" stroke="${LINE}" stroke-width="${MED}"/><path d="M${F3(x)} ${F3(y - 0.22)}V${F3(y + 0.22)}M${F3(x - 0.22)} ${F3(y)}H${F3(x + 0.22)}" stroke="${FINE}" stroke-width="${THIN * 1.4}"/>`;
+  return `<path d="M${F3(x)} ${F3(y - 0.32)}L${F3(x + 0.32)} ${F3(y)}L${F3(x)} ${F3(y + 0.32)}L${F3(x - 0.32)} ${F3(y)}Z" fill="${PAPER}" stroke="${FINE}" stroke-width="${MED}"/>`;
+}
+/**
+ * 分拣器（机械臂的平面符号）：工厂一端 (fx, fy) 一个空心转轴圈，一根臂伸到所接那格带子的中心 (bx, by)，那里一个实心圆点是爪（压在带子上）；
+ * 臂竖着（vertical）或横着。臂中间一个开口箭头指向搬运方向（out：从工厂搬到带子），放在带子前面半格的空当里（两条轨道之间、不被带子压住）；
+ * 臂太短（1 格长、贴着工厂）就不画
+ */
+export function sorterShape(fx, fy, bx, by, out, c, vertical) {
+  const [af, ab, p] = vertical ? [fy, by, fx] : [fx, bx, fy];
+  const d = Math.sign(ab - af) || 1;
+  const k = out ? d : -d;
+  const mid = ab - d * 0.5;
+  const pt = (a, q) => (vertical ? `${F3(q)} ${F3(a)}` : `${F3(a)} ${F3(q)}`);
+  const arrow = Math.abs(ab - af) > 0.62 ? `<path d="M${pt(mid - 0.08 * k, p - 0.13)}L${pt(mid + 0.06 * k, p)}L${pt(mid - 0.08 * k, p + 0.13)}" fill="none" stroke="${c}" stroke-width="${THIN * 1.4}"/>` : '';
+  const arm = vertical ? seg(p, af + d * 0.12, p, ab, c, 0.06) : seg(af + d * 0.12, p, ab, p, c, 0.06);
+  return `${arm}${ring(fx, fy, 0.12, c, MED, PAPER)}<circle cx="${F3(bx)}" cy="${F3(by)}" r="0.11" fill="${c}"/>${arrow}`;
+}
+/**
+ * 一段带（pts：折线的点，图上坐标，坡上接着的那一格也在里面；cells：本层那几格）：底下一道纸色衬线把交叉的线隔开，上面照物品颜色，方头、尖角；
+ * 固定间距加方向箭头（只放在本层的格上），短段也至少一个。只有一个点的画成小方块。width 线宽，plain 不画衬线和箭头（缩略图），dashed 画虚线（总览里高架的）
+ */
+export function runShape(pts, cells, c, { width = 0.3, plain = false, dashed = false } = {}) {
+  if (pts.length === 1) return `<rect x="${pts[0][0] - 0.17}" y="${pts[0][1] - 0.17}" width="0.34" height="0.34" fill="${c}"/>`;
+  const line = pts.map(([x, y]) => `${x},${y}`).join(' ');
+  let s = plain ? '' : `<polyline points="${line}" fill="none" stroke="${PAPER}" stroke-width="0.52" stroke-linecap="square" stroke-linejoin="miter"/>`;
+  s += `<polyline points="${line}" fill="none" stroke="${c}" stroke-width="${width}" stroke-linecap="square" stroke-linejoin="miter" ${dashed ? 'stroke-dasharray="0.52 0.2"' : ''}/>`;
+  if (!plain) for (let i = cells.length > 3 ? 2 : 1; i < cells.length; i += 6) {
+    const a = cells[i - 1], b = cells[i];
+    const dx = b[0] - a[0], dy = -(a[1] - b[1]); // 往左走时 dy 是 -0，箭头写 rotate(-180)
+    if (!Math.hypot(dx, dy)) continue;
+    s += `<path d="M-0.22 -0.21L0.06 0L-0.22 0.21" transform="translate(${b[0]} ${b[1]}) rotate(${Math.atan2(dy, dx) * 180 / Math.PI})" fill="none" stroke="${c}" stroke-width="0.10"/>`;
+  }
+  return s;
+}
+/** 同一格里换高度的升降点：小方块加「+」 */
+export const viaShape = (x, y, c) => `<rect x="${x - 0.27}" y="${y - 0.27}" width="0.54" height="0.54" fill="${PAPER}" stroke="${c}" stroke-width="0.1"/><path d="M${x - 0.12} ${y}H${x + 0.12}M${x} ${y - 0.12}V${y + 0.12}" stroke="${c}" stroke-width="0.08"/>`;
+/** 进出口：带子那一格外面一圈，原料入口（input）虚线、成品出口实线 */
+export const portShape = (x, y, c, input) => `<circle cx="${x}" cy="${y}" r="0.46" fill="none" stroke="${c}" stroke-width="0.1" ${input ? 'stroke-dasharray="0.18 0.12"' : ''}/>`;
 /** 熔炉、分馏塔的编号：圆（半径 r）右下角外面一点，压着圆，描一圈底色免得和圆线混在一起 */
 const corner = (cx, cy, r, num, text) => (num ? text(F3(cx + r * 0.82), F3(cy + r * 0.78), num, 0.46, LINE, 600, ` stroke="${PAPER}" stroke-width="0.14" paint-order="stroke" stroke-linejoin="round"`) : '');
 
@@ -262,10 +316,7 @@ export function drawingSvg(model, floors, { level = 0, focus = '', selected = ''
     }
     (model.stations || []).forEach((st, k) => {
       const x = X(st.x), y = Y(st.y);
-      // 物流站：粗线八角轮廓 + 两道细线圆 + 圆上的四个中心标记，中间写 T1、T2…
-      const o = `M${x - 2.6} ${y - 3.4}H${x + 2.6}L${x + 3.4} ${y - 2.6}V${y + 2.6}L${x + 2.6} ${y + 3.4}H${x - 2.6}L${x - 3.4} ${y + 2.6}V${y - 2.6}Z`;
-      const marks = `<path d="M${x} ${y - 2.65}v0.7M${x} ${y + 1.95}v0.7M${x - 2.65} ${y}h0.7M${x + 1.95} ${y}h0.7" stroke="${FINE}" stroke-width="${THIN}"/>`;
-      parts.push(`<g class="station" data-station="${k}">${title(`物流塔 ${k + 1} · 点一下看站口、存储，可以改供需和上限`)}<path d="${o}" fill="${PAPER}"/>${mini ? '' : stationShade(x, y, 0.45, hatch)}<path d="${o}" fill="none" stroke="${mini ? FINE : LINE}" stroke-width="${mini ? 0.25 : HEAVY}"/>${mini ? '' : `${ring(x, y, 2.3, FINE, MED)}${ring(x, y, 1.55, FINE, THIN)}${marks}${text(x, y, `T${k + 1}`, 1.05, LINE, 500)}`}</g>`);
+      parts.push(`<g class="station" data-station="${k}">${title(`物流塔 ${k + 1} · 点一下看站口、存储，可以改供需和上限`)}${stationShape(x, y, `T${k + 1}`, { hatch, text, mini })}</g>`);
     });
   }
   if (buildings) for (const st of model.stationSites || []) {
@@ -296,21 +347,11 @@ export function drawingSvg(model, floors, { level = 0, focus = '', selected = ''
       // 横着的（研究站夹带的侧面分拣器，x1 是带子那一列）：转轴圈画在工厂轮廓的左边或右边上，臂横着伸到带子那格
       const b = buildings ? boxes.find((q) => so.x >= q.x0 - 0.5 && so.x <= q.x1 + 0.5 && so.y0 >= q.y0 - 0.01 && so.y0 <= q.y1 + 0.01) : null;
       const xf = X(b ? (so.x1 > so.x ? b.x1 : b.x0) : so.x), xb = X(so.x1), y = Y(so.y0);
-      const d = Math.sign(xb - xf) || 1;
-      const k = so.io === 'out' ? d : -d; // 箭头朝搬的方向
-      const mid = xb - d * 0.5;
-      const arrow = Math.abs(xb - xf) > 0.62 ? `<path d="M${F3(mid - 0.08 * k)} ${F3(y - 0.13)}L${F3(mid + 0.06 * k)} ${F3(y)}L${F3(mid - 0.08 * k)} ${F3(y + 0.13)}" fill="none" stroke="${c}" stroke-width="${THIN * 1.4}"/>` : '';
-      sorterParts.push(`<g ${attrs(so.itemId)}>${seg(xf + d * 0.12, y, xb, y, c, 0.06)}${ring(xf, y, 0.12, c, MED, PAPER)}<circle cx="${F3(xb)}" cy="${F3(y)}" r="0.11" fill="${c}"/>${arrow}</g>`);
+      sorterParts.push(`<g ${attrs(so.itemId)}>${sorterShape(xf, y, xb, y, so.io === 'out', c, false)}</g>`);
       continue;
     }
     const x = X(so.x), yf = Y(buildings ? pivotY(so) : so.y0), yb = Y(so.y1);
-    const d = Math.sign(yb - yf) || 1;
-    const from = so.io === 'out' ? yf : yb, to = so.io === 'out' ? yb : yf;
-    const k = Math.sign(to - from) || 1;
-    // 箭头放在所接那条带前面半格的空当里（两条轨道之间、不被带子压住）；臂太短（1 格长、贴着工厂）就不画
-    const mid = yb - d * 0.5;
-    const arrow = Math.abs(yb - yf) > 0.62 ? `<path d="M${F3(x - 0.13)} ${F3(mid - 0.08 * k)}L${F3(x)} ${F3(mid + 0.06 * k)}L${F3(x + 0.13)} ${F3(mid - 0.08 * k)}" fill="none" stroke="${c}" stroke-width="${THIN * 1.4}"/>` : '';
-    sorterParts.push(`<g ${attrs(so.itemId)}>${seg(x, yf + d * 0.12, x, yb, c, 0.06)}${ring(x, yf, 0.12, c, MED, PAPER)}<circle cx="${F3(x)}" cy="${F3(yb)}" r="0.11" fill="${c}"/>${arrow}</g>`);
+    sorterParts.push(`<g ${attrs(so.itemId)}>${sorterShape(x, yf, x, yb, so.io === 'out', c, true)}</g>`);
   }
   // 单看一层时，本层的带在升降点前后接着走的别层那几段（linkedRuns）画在本层下面：照带的颜色，又淡又细的虚线，
   // 一眼能分出不是这一层的；只是示意，不带 route-hit、点不中。总览和缩略图不画
@@ -334,24 +375,8 @@ export function drawingSvg(model, floors, { level = 0, focus = '', selected = ''
         else hits.push(`<circle cx="${X(run.cells[0][0])}" cy="${Y(run.cells[0][1])}" r="0.12" ${hitAttrs}/>`);
       }
       parts.push(`<g ${attrs(run.itemId)}>${title(`${model.items[run.itemId]?.name} · L${floor.z + 1} · z=${floor.z}`)}`);
-      if (line.length === 1) {
-        const [x, y] = run.cells[0];
-        parts.push(`<rect x="${X(x) - 0.17}" y="${Y(y) - 0.17}" width="0.34" height="0.34" fill="${c}"/>`);
-      } else {
-        if (!mini) parts.push(`<polyline points="${pts}" fill="none" stroke="${PAPER}" stroke-width="0.52" stroke-linecap="square" stroke-linejoin="miter"/>`);
-        parts.push(`<polyline points="${pts}" fill="none" stroke="${c}" stroke-width="${mini ? 0.5 : selected === runId ? 0.46 : 0.3}" stroke-linecap="square" stroke-linejoin="miter" ${all && floor.z > 0 ? 'stroke-dasharray="0.52 0.2"' : ''}/>`);
-        if (!mini) {
-          // 固定间距加方向箭头；短段也至少显示一次。
-          for (let i = run.cells.length > 3 ? 2 : 1; i < run.cells.length; i += 6) {
-            const a = run.cells[i - 1], b = run.cells[i];
-            const dx = b[0] - a[0], dy = -(b[1] - a[1]);
-            const len = Math.hypot(dx, dy);
-            if (!len) continue;
-            const angle = Math.atan2(dy, dx) * 180 / Math.PI;
-            parts.push(`<path d="M-0.22 -0.21L0.06 0L-0.22 0.21" transform="translate(${X(b[0])} ${Y(b[1])}) rotate(${angle})" fill="none" stroke="${c}" stroke-width="0.10"/>`);
-          }
-        }
-      }
+      const at = ([x, y]) => [X(x), Y(y)];
+      parts.push(runShape(line.map(at), run.cells.map(at), c, { width: mini ? 0.5 : selected === runId ? 0.46 : 0.3, plain: mini, dashed: all && floor.z > 0 }));
       parts.push('</g>');
     }
     if (!mini) {
@@ -363,7 +388,7 @@ export function drawingSvg(model, floors, { level = 0, focus = '', selected = ''
       }
       for (const via of grouped.values()) {
         const x = X(via.x), y = Y(via.y), c = tint(via.itemId, routeColor(model, via.itemId));
-        parts.push(`<g ${attrs(via.itemId)}>${title(`${model.items[via.itemId]?.name} · L${floor.z + 1} ↔ ${via.to.map((z) => `L${z}`).join(' / ')} · ${via.direction > 0 ? '上行' : '下行'}`)}<rect x="${x - 0.27}" y="${y - 0.27}" width="0.54" height="0.54" fill="${PAPER}" stroke="${c}" stroke-width="0.1"/><path d="M${x - 0.12} ${y}H${x + 0.12}M${x} ${y - 0.12}V${y + 0.12}" stroke="${c}" stroke-width="0.08"/></g>`);
+        parts.push(`<g ${attrs(via.itemId)}>${title(`${model.items[via.itemId]?.name} · L${floor.z + 1} ↔ ${via.to.map((z) => `L${z}`).join(' / ')} · ${via.direction > 0 ? '上行' : '下行'}`)}${viaShape(x, y, c)}</g>`);
       }
     }
     parts.push('</g>');
@@ -373,19 +398,10 @@ export function drawingSvg(model, floors, { level = 0, focus = '', selected = ''
   if (!mini && (all || level === 0)) for (const dv of model.devices || []) {
     const x = X(dv.x), y = Y(dv.y);
     const name = { piler: '自动集装机', splitter: '四向分流器', coater: '喷涂机' }[dv.kind] ?? dv.kind;
-    let body;
-    if (dv.kind === 'piler') body = `<path d="${rectD(x - 0.3, y - 0.3, x + 0.3, y + 0.3)}" fill="${PAPER}" stroke="${LINE}" stroke-width="${MED}"/><path d="M${F3(x - 0.18)} ${F3(y - 0.12)}h0.36M${F3(x - 0.18)} ${F3(y)}h0.36M${F3(x - 0.18)} ${F3(y + 0.12)}h0.36" stroke="${FINE}" stroke-width="${THIN}"/>`;
-    else if (dv.kind === 'splitter') body = `<path d="${rectD(x - 0.34, y - 0.34, x + 0.34, y + 0.34)}" fill="${PAPER}" stroke="${LINE}" stroke-width="${MED}"/><path d="M${F3(x)} ${F3(y - 0.22)}V${F3(y + 0.22)}M${F3(x - 0.22)} ${F3(y)}H${F3(x + 0.22)}" stroke="${FINE}" stroke-width="${THIN * 1.4}"/>`;
-    else body = `<path d="M${F3(x)} ${F3(y - 0.32)}L${F3(x + 0.32)} ${F3(y)}L${F3(x)} ${F3(y + 0.32)}L${F3(x - 0.32)} ${F3(y)}Z" fill="${PAPER}" stroke="${FINE}" stroke-width="${MED}"/>`;
-    parts.push(`<g class="device">${title(name)}${body}</g>`);
+    parts.push(`<g class="device">${title(name)}${deviceShape(dv.kind, x, y)}</g>`);
   }
   if (!mini && model.power && (all || level === 0 || power)) for (const n of model.power.nodes) {
-    // 供电设施：电力感应塔是一个黄圈，里面一个「+」；卫星配电站是圆角方框加「+」
-    const x = X(n.x), y = Y(n.y), z = model.power.size;
-    const body = z > 1
-      ? `<rect x="${x - z / 2 + 0.1}" y="${y - z / 2 + 0.1}" width="${z - 0.2}" height="${z - 0.2}" rx="0.3" fill="rgba(255,214,102,0.18)" stroke="${POWER}" stroke-width="0.1"/><path d="M${x} ${y - 0.8}V${y + 0.8}M${x - 0.8} ${y}H${x + 0.8}" stroke="${POWER}" stroke-width="0.12"/>`
-      : `<circle cx="${x}" cy="${y}" r="0.36" fill="rgba(255,214,102,0.25)" stroke="${POWER}" stroke-width="0.09"/><path d="M${x} ${y - 0.22}V${y + 0.22}M${x - 0.22} ${y}H${x + 0.22}" stroke="${POWER}" stroke-width="0.08"/>`;
-    parts.push(`<g>${title(model.power.name)}${body}</g>`);
+    parts.push(`<g>${title(model.power.name)}${powerShape(X(n.x), Y(n.y), model.power.size)}</g>`);
   }
   const marks = []; // 原料入口的物品图标：等标尺画完再放，压在标尺上面
   if (!mini) for (const route of model.routes || []) {
@@ -393,7 +409,7 @@ export function drawingSvg(model, floors, { level = 0, focus = '', selected = ''
       if (!enabled || !p || (!all && zKey(p[2]) !== level)) continue;
       const x = X(p[0]), y = Y(p[1]);
       const bp = rot ? [p[1] + oy, W - 1 - (p[0] + ox)] : [p[0] + ox, p[1] + oy]; // 提示里的坐标按出出来的蓝图说
-      parts.push(`<g ${attrs(route.itemId)}>${title(`${kind} · ${model.items[route.itemId]?.name} · (${bp[0]}, ${bp[1]})`)}<circle cx="${x}" cy="${y}" r="0.46" fill="none" stroke="${tint(route.itemId, routeColor(model, route.itemId))}" stroke-width="0.1" ${kind === '原料入口' ? 'stroke-dasharray="0.18 0.12"' : ''}/></g>`);
+      parts.push(`<g ${attrs(route.itemId)}>${title(`${kind} · ${model.items[route.itemId]?.name} · (${bp[0]}, ${bp[1]})`)}${portShape(x, y, tint(route.itemId, routeColor(model, route.itemId)), kind === '原料入口')}</g>`);
       // 原料入口旁边的物品图标（只有带子、箱子送料才有入口，物流站没有）：口在左右边上（或往里一格）就放到图框外面、贴着框，
       // 在图里面的（箱子的出口）放在圈上面；竖排时转回来摆正
       const g = kind === '原料入口' && icon?.(route.itemId);

@@ -244,10 +244,12 @@ button { -webkit-tap-highlight-color: transparent; }
 .route-hit { cursor: pointer; }
 .route-hit:focus-visible { outline: none; stroke: #ffffff55; }
 .drawing:not(.is-panning) .factory { cursor: pointer; } /* 工厂也能单击看介绍；按下拖动时照旧是抓手 */
+.drawing:not(.is-panning) :is(.bl-zone, .bl-zone-marks, .bl-part), .drawing.is-dragging, .drawing.is-dragging * { cursor: move; } /* 无带蓝图的带子区、物流站拖 */
 .drawing:focus-visible { outline: 1px solid #92bde5; outline-offset: -2px; }
 .empty { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; padding: 24px; color: #abc3df; font-size: 14px; }
 .empty strong { color: #e6f0ff; font-size: 19px; font-weight: 500; }
 .empty p { margin: 10px 0 0; }
+.empty .on-top { display: none; } /* 窄屏左栏挪到图纸上面：提示里的「左侧」换成「上方」 */
 .layer-rail { width: 100px; flex: 0 0 100px; border-left: 1px solid var(--rule); padding: 8px; overflow-y: auto; background: #163a63; }
 .floor-list { display: grid; gap: 6px; }
 .floor-card { background: transparent; color: #e6f0ff; border: 1px solid #3d6084; padding: 6px; cursor: pointer; text-align: left; min-width: 0; }
@@ -479,7 +481,7 @@ body.viewer-expanded { overflow: hidden; }
 .pill .pill-ico .gl { width: 18px; height: 18px; }
 .pill .pill-off { display: inline-flex; filter: grayscale(1); opacity: 0.45; }
 .stage .num, dialog .num { font-family: var(--num); } /* 原样：图纸、弹窗里的数用 DIN */
-/* 无带蓝图（量产计算器排好带过来的）：右栏没有楼层、用电，换成带子运什么和怎么用，样子同用电那页 */
+/* 无带蓝图（量产计算器排好带过来的）：右栏第一页不是楼层，是带子运什么和怎么用，样子同用电那页 */
 .belt-key { display: grid; gap: 8px; color: #e6f0ff; font-size: 12px; }
 .belt-key h3 { margin: 0; font: 600 12px/1.2 var(--ui); }
 .belt-key p { margin: 0; color: #acc2da; }
@@ -829,6 +831,8 @@ dialog .go:focus-visible { outline: 3px solid #7fb0e8; outline-offset: 2px; }
 @media (max-width: 860px) {
   .app { grid-template-columns: minmax(0, 1fr); }
   .side { position: static; height: auto; overflow: visible; border-right: 0; border-bottom: 1px solid var(--line); }
+  .empty .on-side { display: none; }
+  .empty .on-top { display: inline; }
   .main { padding: 12px; }
   .sheet-foot { grid-template-columns: minmax(0, 1fr); }
 }
@@ -1077,7 +1081,7 @@ dialog .go:focus-visible { outline: 3px solid #7fb0e8; outline-offset: 2px; }
       <div class="sheet-workspace">
         <div class="viewer-stage">
           <div class="drawing" id="drawing" tabindex="0" role="region" aria-label="图纸预览，拖动移动、点击线路查看简介，按钮或「大图」里滚轮缩放">
-            <div class="empty"><strong>生成蓝图后在这里查看</strong></div>
+            <div class="empty"><strong>点击<span class="on-side">左侧</span><span class="on-top">上方</span>「生成蓝图」</strong></div>
           </div>
           <section class="station-info" id="station-info" aria-labelledby="station-title" hidden>
             <header><h2 id="station-title"></h2><button type="button" id="close-station" aria-label="关闭物流站简介">×</button></header>
@@ -1095,14 +1099,14 @@ dialog .go:focus-visible { outline: 3px solid #7fb0e8; outline-offset: 2px; }
           </section>
           <div class="rail-tabs" id="rail-tabs" role="tablist">
             <button type="button" role="tab" id="tab-floors" aria-selected="true" aria-controls="floor-list">楼层</button>
+            <button type="button" role="tab" id="tab-belts" aria-selected="false" aria-controls="belt-key" hidden>带子</button>
             <button type="button" role="tab" id="tab-power" aria-selected="false" aria-controls="power-pane">用电</button>
           </div>
           <div class="floor-list" id="floor-list" role="tabpanel" aria-label="选择预览楼层"></div>
           <div class="power-pane" id="power-pane" role="tabpanel" aria-labelledby="tab-power" hidden></div>
-          <!-- 无带蓝图（量产计算器排好带过来的）：没有楼层，右栏换成带子运什么和怎么用 -->
-          <section class="belt-key" id="belt-key" hidden>
+          <!-- 无带蓝图（量产计算器排好带过来的）：没有楼层，第一页换成带子：运什么、怎么用 -->
+          <section class="belt-key" id="belt-key" role="tabpanel" aria-labelledby="tab-belts" hidden>
             <h3>传送带运的</h3>
-            <p>虚线：分拣器隔空连着的那条带子</p>
             <ul id="belt-key-list"></ul>
             <p class="howto"><b>怎么用</b>蓝图贴下去建好一遍后，整片拆掉、原地重建一次，分拣器才会全部连上。</p>
           </section>

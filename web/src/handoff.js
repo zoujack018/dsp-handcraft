@@ -7,11 +7,14 @@
 //   assembler / smelter / chemical / lab: 建筑 ID；belt: 1~3；sorter: 分拣器 ID；pile: 物流站出货叠几层 1~4；labstack: 1~15
 //   auto: 到了就自动生成一次（默认是；false 时只填好，等用户改好数量自己点）
 //   from: 来源网页的名字（页面上显示「从 xx 带过来的方案」）
-//   beltless: 那边排好的无带蓝图（蓝图字符串，量产计算器「生成无带蓝图」带过来的）：这边照常填好目标等，图纸先画这张、能看数、检查、复制，
-//             复制了才发 dsphc-done（kind: 'beltless'）；点「生成蓝图」另排一张带传送带的
+//   beltless: true 时出无带蓝图（量产计算器「生成无带蓝图」）：这边照常填好目标等，先不出；点「生成蓝图」照这边的设置出无带蓝图
+//             （worker.js 照自己的产线计算出 DSQ 无带流生成器的输入，src/beltless 出整张、重新摆放），能看数、拖带子区和物流站、复制，
+//             复制了才发 dsphc-done（kind: 'beltless'）
 //   defs: { items: [{ ID, Name }], recipes: [{ ID, Type, Factories, Name, Items, ItemCounts, Results, ResultCounts, TimeSpend, Proliferator }] }
 //         来源网页自己的物品和配方（写法同 data/Vanilla.json）。配方以那边为准：没有的加进来，数不一样的换成那边的；物品只加没有的（src/gamedata.js 的 addGameData）
-// 每排好一张，页面发 dsphc-done 事件（detail: { targets: [{ id, rate }] 这一张的目标, ok: 检查都过了没有, kind: 无带蓝图是 'beltless' }），嵌在别的网页里时 bridge.js 转给那边
+// 每排好一张，页面发 dsphc-done 事件（detail: { targets: [{ id, rate }] 这一张的目标, ok: 检查都过了没有, kind: 无带蓝图是 'beltless',
+//   made: { parts: [{ id, rate, factory, count, recipe, spray, group }] 每组工厂做了什么, supplied: [{ id, rate }] 从外面接的 }（worker.js 的 madeOf，无带蓝图没有） }），
+// 嵌在别的网页里时 bridge.js 转给那边
 
 const OPTION_KEYS = ['assembler', 'smelter', 'chemical', 'lab', 'belt', 'sorter', 'pile'];
 
@@ -34,7 +37,7 @@ export function readHandoff(hash) {
   const options = {};
   for (const k of OPTION_KEYS) if (p[k] != null && p[k] !== '') options[k] = String(p[k]);
   const labstack = Number(p.labstack) > 0 ? Number(p.labstack) : null;
-  const beltless = typeof p.beltless === 'string' && p.beltless.startsWith('BLUEPRINT:') && p.beltless.length < 8e6 ? p.beltless : null;
+  const beltless = p.beltless === true;
   return { targets, ext, recipes, options, labstack, defs: readDefs(p.defs), auto: p.auto !== false && !beltless, from: typeof p.from === 'string' ? p.from.slice(0, 40) : null, beltless };
 }
 
