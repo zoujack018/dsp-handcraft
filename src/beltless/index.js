@@ -78,5 +78,5 @@ export function beltlessBlueprint(plan, opt = {}) {
     }
     text = toStr(bp);
   }
-  return { text, zone: out.zone };
+  return { text, zone: out.zone, picked: out.picked };
 }

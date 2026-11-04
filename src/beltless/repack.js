@@ -155,9 +155,10 @@ function occupancy(overBody) {
  * 行里隔 every 格放一个，一排一排错开半个 every；holes.before（块的编号）时不按网格，排到这几块时在它前面放一个，
  * 再有 holes.swap 时空位顶掉那一块的位置、那一块挪到最后排
  */
-function packShelves(units, W, overBody, street = null, holes = null) {
+function packShelves(units, W, overBody, street = null, holes = null, band = null) {
   const all = occupancy(overBody);
   const at = new Map();
+  const holesAt = []; // 放了的空位：{ x, cy 这一行身子的中心, tall, row 供电行的第几行（不是供电行的空位为 0） }
   let top = 0;
   let line = -Infinity; // 上一行的底边
   let floor = -Infinity; // 最近一条供电道的上沿：之后的行整行在它上面
@@ -182,36 +183,74 @@ function packShelves(units, W, overBody, street = null, holes = null) {
       at.set(u, [tx, ty + by]);
       top = Math.max(top, u.frame.y1 + ty + by);
       right = Math.max(right, u.frame.x1 + tx);
+      if (u.hole) holesAt.find((h) => h.u === u).cy = ty + by;
     }
     line = by;
   };
   let row = [];
   let here = occupancy(overBody); // 这一行自己（底边放在 y = 0）
-  const place = (u) => {
+  const place = (u, minTx = -Infinity) => {
     const ty = Math.round(-u.base);
-    let tx = Math.ceil(-u.frame.x0 - EPS);
+    let tx = Math.max(Math.ceil(-u.frame.x0 - EPS), minTx);
     if (row.length) tx = Math.max(tx, row[row.length - 1].tx + Math.floor(row[row.length - 1].u.frame.x0 - u.frame.x0));
     while (!here.fits(u, tx, ty)) tx++;
     return { tx, ty };
   };
-  const hole = (pad) => {
-    const h = holes.half + pad;
-    return { members: [], bodies: [{ x: 0, y: 0, w: 2 * h, h: 2 * h, solid: true }], spans: [], frame: { x0: -h, x1: h, y0: -h, y1: h }, base: -h };
+  // 空位默认底边对齐（low）：3×3 的空位在熔炉行（身子 2.4 高、行距 3）里往上多出 1 格、把上一行顶高 1 格，配电站半截挂在机器堆底下，
+  // 最底下一行（上面一行多半要让）只有这样放得进；按网格留的、原来定点的两路都照旧这样。holes.align（整体规划的那一路）和供电行的空位
+  // 改成和旁边那台机器的身子同心（ref：这一行里它前面那块，没有就是它后面那块），不顶高下一行，配电站离上下两行都不用让才放得进。
+  // tall：往上多占 1 格（供电行的第一行：把第二行顶高 1 格，配电站骑在两行之间时离上下两边要让的机器才够 1.5 格）
+  const hole = (h, ref, tall = false, low = false, kind = 'before') => {
+    const cy = ref ? ref.bodies[0].y + Math.round(-ref.base) : h;
+    const u = { members: [], bodies: [{ x: 0, y: tall ? 0.5 : 0, w: 2 * h, h: 2 * h + (tall ? 1 : 0), solid: true }], spans: [], frame: { x0: -h, x1: h, y0: -h, y1: h + (tall ? 1 : 0) }, base: low ? -h : -cy, hole: { cy, tall, kind } };
+    return u;
   };
   let line2 = holes?.every ? holes.every / 2 : Infinity; // 下一条空位线
   let odd = false;
   let holeX = Infinity; // 这一行下一个空位在哪
   const startRow = (u) => {
     holeX = Infinity;
+    if (bandRow === 1) {
+      bandRow = 2;
+      rowHoles = bands[0].holesX.slice();
+      bandTall = false;
+    } else if (bandRow === 2) {
+      bandRow = 0;
+      rowHoles = [];
+      bands.shift();
+    }
     if (!holes?.every || top + (u.frame.y1 - u.frame.y0) / 2 < line2 - EPS) return;
     holeX = holes.every * (odd ? 1 : 0.5);
     odd = !odd;
     line2 += holes.every;
   };
+  // 到了下一条供电行的高度：把不用让的块插到队里（从 i 起），这一行按供电行排。后面还有供电行时只给这一条两行的量（加上空位占的），
+  // 剩下的留给后面的；最后一条拿走全部
+  const startBand = (queue, i) => {
+    if (!bands.length || bandRow || !bandLeft.length || top < bands[0].y - EPS) return false;
+    let take = bandLeft.length;
+    if (bands.length > 1) {
+      let used = bands[0].holesX.length * 3;
+      for (take = 0; take < bandLeft.length && used < 2 * W - EPS; take++) used += Math.ceil(bandLeft[take].frame.x1 - bandLeft[take].frame.x0 - EPS);
+    }
+    queue.splice(i, 0, ...bandLeft.splice(0, take));
+    bandRow = 1;
+    rowHoles = bands[0].holesX.slice();
+    bandTall = !!bands[0].tall;
+    return true;
+  };
   const add = (u, p) => {
     here.put(u, p.tx, p.ty);
     row.push({ u, ...p });
+    if (u.hole) holesAt.push({ x: p.tx, cy: p.ty, tall: u.hole.tall, kind: u.hole.kind, row: bandRow, u }); // cy 先记行内的，整行贴下去（close）时再加上
   };
+  // 供电行（band：{ units 不用让的块, at 每条供电行从哪个高度起, holesX 每条供电行里空位的横坐标, tall 第一行的空位往上多占 1 格 }）：
+  // 排到 top 过了 at 时把这些块插进队里接着排，头两行在 holesX 这几处放空位（第二行的和第一行的对齐，配电站骑在两行之间）
+  const bands = band ? band.at.map((y, i) => ({ y, holesX: band.holesX[i], tall: band.tall[i] })) : [];
+  let bandRow = 0; // 现在排的是供电行的第几行（0 不是）
+  let rowHoles = []; // 这一行还没放的空位横坐标
+  let bandLeft = band ? band.units.slice() : [];
+  let bandTall = false;
   // 换位顶掉的块（holes.swap）先放着，哪一行排满前右头还空得下就塞进去，最后还剩的接着往后排
   const spare = [];
   // （塞了会让这一行整行抬高的不塞：别种机器的分拣器常和上下行的撞）
@@ -226,25 +265,37 @@ function packShelves(units, W, overBody, street = null, holes = null) {
       spare.splice(k--, 1);
     }
   };
-  const newRow = (u) => {
+  const newRow = (u, queue, i) => {
     if (holes?.fill) fillSpare();
     close(row);
     row = [];
     here = occupancy(overBody);
     startRow(u);
+    if (queue && startBand(queue, i)) return queue[i];
+    return u;
   };
-  if (units.length) startRow(units[0]);
   const queue = units.slice();
+  if (band && !startBand(queue, 0) && !units.length) queue.push(...bandLeft), (bandLeft = []);
+  if (queue.length) startRow(queue[0]);
   const holed = new Set();
-  for (let i = 0; i < queue.length || spare.length; i++) {
-    if (i === queue.length) queue.push(spare.shift());
+  for (let i = 0; i < queue.length || spare.length || bandLeft.length; i++) {
+    if (i === queue.length) queue.push(spare.length ? spare.shift() : bandLeft.shift()); // 供电行还没插进去（没排到那个高度）就接在最后
     const u = queue[i];
     let p = place(u);
+    // 供电行里到了空位的地方：先放一个空位（正好放在规划的横坐标上，前面空着就空着；放不进这一行的不放）
+    while (rowHoles.length && p.tx + u.frame.x1 > rowHoles[0] - 1.5 - EPS) {
+      const X = rowHoles.shift();
+      const h = hole(1.5, row[row.length - 1]?.u ?? u, bandTall, false, 'band');
+      const q = place(h, X);
+      if (h.frame.x1 + q.tx > W + EPS) continue;
+      add(h, q);
+      p = place(u);
+    }
     // 定点的空位（holes.before：块的编号）：排这一块之前先放一个（这一行放不下就放到下一行头上）；
     // holes.swap 时空位顶掉这一块的位置，这一块先放着（后面的块不跟着往后挤）：holes.fill 时塞进哪一行右头的空余，不然排到最后
     if (holes?.before?.has(u.key) && !holed.has(u.key)) {
       holed.add(u.key);
-      const h = hole(holes.pads ? Math.max(u.pad, row[row.length - 1]?.u.pad ?? 0) : 0);
+      const h = hole(holes.half + (holes.pads ? Math.max(u.pad, row[row.length - 1]?.u.pad ?? 0) : 0), row[row.length - 1]?.u ?? u, false, line === -Infinity || !holes.align);
       let q = place(h);
       if (h.frame.x1 + q.tx > W + EPS && row.length) {
         newRow(u);
@@ -260,7 +311,7 @@ function packShelves(units, W, overBody, street = null, holes = null) {
     }
     // 到了空位的地方：先放一个空位（这一行放不下了就不放）
     while (holes?.every && p.tx + u.frame.x0 >= holeX - holes.half - EPS) {
-      const h = hole(holes.pads ? Math.max(u.pad, row[row.length - 1]?.u.pad ?? 0) : 0);
+      const h = hole(holes.half + (holes.pads ? Math.max(u.pad, row[row.length - 1]?.u.pad ?? 0) : 0), row[row.length - 1]?.u ?? u, false, true, 'grid');
       const q = place(h);
       if (h.frame.x1 + q.tx > W + EPS) {
         holeX = Infinity;
@@ -272,14 +323,17 @@ function packShelves(units, W, overBody, street = null, holes = null) {
     }
     if (u.frame.x1 + p.tx > W + EPS) {
       if (!row.length) return null; // 这个宽度连这一块都放不下
-      newRow(u);
+      if (newRow(u, queue, i) !== u) {
+        i--; // 这一行起开供电行：插进来的块排在前头，这一块等会儿再排
+        continue;
+      }
       p = place(u);
       if (u.frame.x1 + p.tx > W + EPS) return null;
     }
     add(u, p);
   }
   if (row.length) close(row);
-  return { at, top };
+  return { at, top, holesAt };
 }
 
 /**
@@ -298,12 +352,13 @@ export function repack(buildings, opt = {}) {
   if (opt.street !== undefined) return repackOnce(buildings, opt);
   // 先试行里留空位（从稀往密），再试供电道
   const type = opt.power === 'substation' ? 'substation' : 'tesla';
-  const tries = [...HOLES[type].map((holes) => ({ holes })), ...STREETS[type].map((street) => ({ street }))];
+  const tries = [...HOLES[type].map((holes) => ({ kind: 'grid', holes })), ...STREETS[type].map((street) => ({ kind: 'street', street }))];
   // 留不留、怎么留只看默认位置（带子区、各块都没拖）：拖过以后复制时机器不跟着变
   const plain = !opt.zoneAt && !opt.partShift;
-  const probe = (t) => repackOnce(buildings, { ...opt, zoneAt: undefined, partShift: undefined, street: null, holes: null, ...t });
+  const probe = (t) => repackOnce(buildings, { ...opt, zoneAt: undefined, partShift: undefined, street: null, holes: null, ...t, kind: undefined });
   let out = probe({});
   const plainOut = out;
+
   let pick = {};
   // 机器不多的每种都试（默认位置全够得着也试：放在外面的供电会撑大外框），挑都够得着里分（同挑宽度：外框按占地的面积，偏离长宽比加罚；
   // 有宽长上限时先挑守得住的）最小的；多的（每试一种都得整张重排）挑头一个都够得着的
@@ -319,7 +374,7 @@ export function repack(buildings, opt = {}) {
     if (r && (r.uncovered < fewest || (!r.uncovered && !fewest && cost(r) < cost(out) - EPS))) [fewest, pick, out] = [r.uncovered, t, r];
   };
   // 带子区折了，上面那块空地就没了（原来供电常放那儿）：机器不多的也试不折的，放好供电再比
-  if (all) consider({ fold: false }, probe({ fold: false }));
+  if (all) consider({ kind: 'nofold', fold: false }, probe({ fold: false }));
   // 照默认那张的顺序，宽度在它的往上 k 格里挑（只重排这几种，比整张换排法便宜得多）
   const around = (k, from = out) => ({ order: from.fixed.order, W: Array.from({ length: k + 1 }, (_, i) => from.fixed.W + i) });
   // 定点留空位（机器不多的）：默认那张框里够不着的机器、分拣器扎堆的地方，挑一块在它前面留空位，再排再看，还有够不着的再补，最多几轮
@@ -333,7 +388,7 @@ export function repack(buildings, opt = {}) {
       const add = aimHoles(r.missed, reach, before);
       if (!add.length) break;
       for (const key of add) before.add(key);
-      const t = { holes: { half, pads, before: new Set(before) }, fixed };
+      const t = { kind: 'aim', holes: { half, pads, before: new Set(before) }, fixed };
       r = probe(t);
       consider(t, r);
     }
@@ -344,29 +399,51 @@ export function repack(buildings, opt = {}) {
     const { half, pads } = HOLES[type][0];
     const reach = powerReach(type).cover - AIM_SLACK[type];
     const fixed = around(AIM_WIDEN[type], plainOut);
-    // 挤掉的塞不塞进别的行右头的空余（fill），两种各自从头补到底
-    for (const fill of [false, true]) {
-      const before = new Set();
-      let r = plainOut;
-      for (let k = 0; k < AIM_ROUNDS && r?.missed.length; k++) {
-        const add = swapSites(r, reach, before);
-        if (!add.length) break;
-        for (const key of add) before.add(key);
-        const t = { holes: { half, pads, before: new Set(before), swap: true, fill }, fixed };
-        r = probe(t);
-        consider(t, r);
+    // 挤掉的塞不塞进别的行右头的空余（fill）、空位底边对齐还是和机器同心（align：同心的不顶高下一行，顶掉的块四周都不用让时配电站放得进），
+    // 四种各自从头补到底
+    for (const fill of [false, true])
+      for (const align of [false, true]) {
+        const before = new Set();
+        let r = plainOut;
+        for (let k = 0; k < AIM_ROUNDS && r?.missed.length; k++) {
+          const add = swapSites(r, reach, before);
+          if (!add.length) break;
+          for (const key of add) before.add(key);
+          const t = { kind: 'swap', holes: { half, pads, before: new Set(before), swap: true, fill, align }, fixed };
+          r = probe(t);
+          consider(t, r);
+        }
+      }
+  }
+  // 卫星配电站整体规划（机器不多的）：框里的空地和顶掉不用让的机器留 3×3 空位，规划的位置交给放配电站那一步先放；同样照默认那张的顺序、宽度往上几格里排
+  if (all && type === 'substation' && plainOut.missed.length) {
+    const plan = planSites(plainOut, type, !!opt.wide);
+    if (plan) {
+      const { half, pads } = HOLES[type][0];
+      const fixed = around(AIM_WIDEN[type], plainOut);
+      for (const fill of [true, false]) {
+        const t = { kind: 'plan', holes: { half, pads, before: plan.before, swap: true, fill, align: true }, seeds: plan.seeds, fixed };
+        consider(t, probe(t));
       }
     }
   }
+  // 供电行（机器不多的卫星配电站）：不用让的块排成两行一条的供电行插在规划的高度，空位对齐、配电站骑在两行之间
+  if (all && type === 'substation' && plainOut.missed.length)
+    for (const band of planBands(plainOut, type, !opt.station)) {
+      const t = { kind: 'band', band, fixed: around(AIM_WIDEN[type], plainOut) };
+      consider(t, probe(t));
+    }
   // 机器多的电力感应塔：空位要一档档往密里试（稀的够不着），整张换排法一档就要好几秒，先照默认那张的顺序、宽度往上几格里排，
   // 各档都够不着再整张搜（卫星配电站头一两档就够得着，照旧整张搜）
-  const quick = all || type !== 'tesla' ? [] : HOLES[type].map((holes) => ({ holes, fixed: around(QUICK_WIDEN) }));
+  const quick = all || type !== 'tesla' ? [] : HOLES[type].map((holes) => ({ kind: 'grid', holes, fixed: around(QUICK_WIDEN) }));
   if (fewest || all)
     for (const t of [...quick, ...tries]) {
       if (!fewest && !all) break;
       consider(t, probe(t));
     }
-  return plain ? out : repackOnce(buildings, { ...opt, street: null, holes: null, ...pick });
+  const final = plain ? out : repackOnce(buildings, { ...opt, street: null, holes: null, ...pick, kind: undefined });
+  if (final) final.picked = pick.kind ?? 'plain'; // 挑中了哪一路（只给量的脚本看）
+  return final;
 }
 /** 定点补空位：空位离要够着的点让出的格数（插空位会把后面的机器往右挤，空位也不正好落在要的地方）；宽度在原来的往上几格里挑；最多补几轮 */
 const AIM_SLACK = { substation: 4, tesla: 2 };
@@ -499,6 +576,92 @@ function swapSites(r, reach, used) {
   return out;
 }
 /**
+ * 卫星配电站放哪（照默认那张排好的位置整体规划；只给机器不多的线）：要盖住每个要供电的点，位置从两种里挑——框里的空地（不占地，
+ * 带子区旁边、短行右头的空余）和顶掉一台四周都不用给配电站让的机器（熔炉、制造台、单层研究站；空位 3×3 和它同心，不顶高下一行）。
+ * 带权的贪心覆盖：每次挑「新盖住的点 ÷ 代价」最大的（空地算 1、空位算 6：空位本身 3 格加顶掉那台要另找地方），彼此照 powerApart 隔开。
+ * 返回 { before 顶掉哪几块, seeds 规划的位置 }；一个空位都用不上（全靠空地就够、或没有能顶的块）返回 null
+ */
+function planSites(r, type, wide) {
+  const power = new Set([POWER.substation.itemId, TOWER]);
+  const B = r.buildings.filter((b) => !power.has(b.itemId));
+  const { cover, half, targets, free, box } = siteChecker(B, r.keepOut ?? (() => false), type, wide);
+  const inBox = ([x, y]) => x - half >= box.x0 - EPS && x + half <= box.x1 + EPS && y - half >= box.y0 - EPS && y + half <= box.y1 + EPS;
+  const cands = [];
+  // 空地只要机器堆（连分拣器）外头的：短行右头的空余重排时会被顶掉的块塞掉，不算
+  const pile = { x0: Infinity, x1: -Infinity, y0: Infinity, y1: -Infinity };
+  for (const o of r.spots) Object.assign(pile, { x0: Math.min(pile.x0, o.x0), x1: Math.max(pile.x1, o.x1), y0: Math.min(pile.y0, o.y0), y1: Math.max(pile.y1, o.y1) });
+  const outPile = (x, y) => x + half <= pile.x0 + EPS || x - half >= pile.x1 - EPS || y + half <= pile.y0 + EPS || y - half >= pile.y1 - EPS;
+  for (let x = Math.floor(box.x0); x <= Math.ceil(box.x1); x++) for (let y = Math.floor(box.y0); y <= Math.ceil(box.y1); y++) if (inBox([x, y]) && outPile(x, y) && free(x, y)) cands.push({ at: [x, y], cost: 1 });
+  // 顶掉的块：自己不用让，3×3 的空位四周（按各块要让的距离）也碰不到要让的块
+  const hit = (o, x, y) => o.x0 < x + half + o.pad - EPS && o.x1 > x - half - o.pad + EPS && o.y0 < y + half + o.pad - EPS && o.y1 > y - half - o.pad + EPS;
+  for (const s of r.spots) {
+    if (s.pad) continue;
+    const at = [Math.round(s.bx), Math.round(s.by)];
+    if (r.spots.some((o) => o.pad > 0 && hit(o, at[0], at[1]))) continue;
+    cands.push({ at, cost: 6, key: s.key });
+  }
+  const alive = new Uint8Array(targets.length).fill(1);
+  let left = targets.length;
+  const gain = ([x, y]) => {
+    let n = 0;
+    for (let t = 0; t < targets.length; t++) if (alive[t] && (targets[t].x - x) ** 2 + (targets[t].y - y) ** 2 <= cover * cover) n++;
+    return n;
+  };
+  const chosen = [];
+  const before = new Set();
+  while (left) {
+    let best = null;
+    for (const c of cands) {
+      if (!chosen.every((d) => powerApart(POWER[type].itemId, POWER[type].itemId, d[0] - c.at[0], d[1] - c.at[1]))) continue;
+      const n = gain(c.at);
+      if (n && (!best || n / c.cost > best.n / best.cost + EPS)) best = { ...c, n };
+    }
+    if (!best) break;
+    chosen.push(best.at);
+    if (best.key != null) before.add(best.key);
+    for (let t = 0; t < targets.length; t++) if (alive[t] && (targets[t].x - best.at[0]) ** 2 + (targets[t].y - best.at[1]) ** 2 <= cover * cover) alive[t] = 0, left--;
+  }
+  return before.size ? { before, seeds: chosen } : null;
+}
+/**
+ * 供电行怎么排（卫星配电站；照默认那张的机器堆算）：不用让的块（熔炉、制造台、单层研究站）排成两行一条的供电行，插在机器堆里规划的高度，
+ * 两行里各留 n 个对齐的 3×3 空位，配电站骑在两行之间（第一行的空位往上多占 1 格，离上下两边要让的机器才够）。
+ * 每条供电行盖住上下各 r 格（r 按横向隔 s 格算：√(R² − (s/2)²)），从底往上一条接一条；不接站时机器堆顶上（带子区旁的空地）
+ * 配电站放得下，顶上那截不用供电行。n 从少往多试，取头两个排得出的（不用让的块够排 2k 行）。返回几种 { at, holesX, tall }，没有返回 []
+ */
+function planBands(r, type, topFree) {
+  const R = powerReach(type).cover - 1;
+  const pile = { x0: Infinity, x1: -Infinity, y0: Infinity, y1: -Infinity };
+  let loose = 0;
+  for (const o of r.spots) {
+    Object.assign(pile, { x0: Math.min(pile.x0, o.x0), x1: Math.max(pile.x1, o.x1), y0: Math.min(pile.y0, o.y0), y1: Math.max(pile.y1, o.y1) });
+    if (!o.pad) loose += Math.ceil(o.x1 - o.x0 - EPS); // 机器位置是整格，一块占整数格
+  }
+  const W = pile.x1 - pile.x0;
+  const H = pile.y1 - pile.y0;
+  const topCover = topFree ? Math.sqrt(R * R - 6.5 * 6.5) - 3 : 0; // 顶上那排（横向约隔 13 格、在机器堆顶上 3 格）盖到多低
+  const out = [];
+  for (let n = 1; n <= 8 && out.length < 2; n++) {
+    const s = W / n;
+    if (s / 2 >= R - 2) continue;
+    const reach = Math.sqrt(R * R - (s / 2) ** 2);
+    const span = 2 * reach - 1; // 一条供电行盖多高
+    const k = Math.max(1, Math.ceil((H - topCover) / span));
+    if (loose < 2 * k * W * 0.9) continue; // 不用让的块排不满 2k 行
+    const holesX = Array.from({ length: n }, (_, j) => Math.max(2, Math.min(Math.round(W) - 2, Math.round(s * (j + 0.5)))));
+    const at = [];
+    const tall = [];
+    for (let i = 0; i < k; i++) {
+      const c = reach - 1 + i * span - 2; // 第一行身子的中心（配电站在它上面 2 格）
+      const bottom = c - 1.5 < 4; // 贴着机器堆底边的供电行：底下没有要让的，不用多占 1 格，配电站在中心上面 1 格
+      at.push(bottom ? -Infinity : c - 2.5);
+      tall.push(!bottom);
+    }
+    out.push({ at, holesX: at.map(() => holesX), tall });
+  }
+  return out;
+}
+/**
  * 空位从稀往密试（every：上下、左右隔几格一个；错开排时最远的点离空位约 0.56 个 every）：卫星配电站覆盖 20.7 格，空位 3×3 再加让的；
  * 电力感应塔覆盖 8 格，塔 0.48 格见方、离工厂的框要 0.25 格，空位半格见方就够（贴着的两台中心隔开塔要的距离，分拣器也进不来）
  */
@@ -591,10 +754,14 @@ function repackOnce(buildings, opt) {
   let best = null;
   const widths = new Set();
   for (let k = limited ? 0.3 : 0.5; k <= (limited ? 4 : 2); k += 0.05) widths.add(Math.max(Math.ceil(widest), Math.round(base * k)));
+  // opt.band：供电行（repack 的 planBands）：不用给卫星配电站让的块（熔炉、制造台、单层研究站）另排成供电行，到了规划的高度插进去
+  const bandSet = opt.band ? new Set(list.filter((u) => !u.pad)) : null;
   orders.forEach((order, oi) => {
     if (opt.fixed && oi !== opt.fixed.order) return;
     for (const W of opt.fixed ? opt.fixed.W : widths) {
-      const r = packShelves(order, W, opt.sorterOverBody ?? true, opt.street ?? null, opt.holes ?? null);
+      const seq = bandSet ? order.filter((u) => !bandSet.has(u)) : order;
+      const band = bandSet ? { ...opt.band, units: order.filter((u) => bandSet.has(u)) } : null;
+      const r = packShelves(seq, W, opt.sorterOverBody ?? true, opt.street ?? null, opt.holes ?? null, band);
       if (!r) continue;
       // 带子区默认放上面，底边贴着机器、隔一格（别的边是画布上拖过去的）；折不折按分数挑，一样好时不折
       for (const side of opt.sides ?? ['top'])
@@ -699,7 +866,10 @@ function repackOnce(buildings, opt) {
   }
   const type = opt.power === 'substation' ? 'substation' : 'tesla';
   const keyOf = new Map(list.flatMap((u) => u.members.map((b) => [b, u.key])));
-  const { at: towers, uncovered, missed } = placeTowers(kept, keepOut, type, !!opt.wide, keyOf);
+  // 规划好的位置先放：整体规划那一路的定点空位（中心）、供电行第一行的空位（骑在两行之间：往上多占了 1 格的在身子中心往上 2 格，不然 1 格）
+  // 和 opt.seeds（planSites 挑的空地）；按网格留的、原来定点两路的空位不算（照旧全交给贪心）
+  const seeds = [...r.holesAt.filter((h) => (h.kind === 'band' && h.row === 1) || (h.kind === 'before' && opt.holes?.align)).map((h) => [h.x, h.cy + (h.row ? (h.tall ? 2 : 1) : 0)]), ...(opt.seeds ?? [])];
+  const { at: towers, uncovered, missed } = placeTowers(kept, keepOut, type, !!opt.wide, keyOf, seeds);
   const template = towerTemplate ?? { areaIndex: 0, yaw: [0, 0], itemId: TOWER, modelIndex: 44, outputObjIdx: -1, inputObjIdx: -1, outputToSlot: 0, inputFromSlot: 0, outputFromSlot: 0, inputToSlot: 0, outputOffset: 0, inputOffset: 0, recipeId: 0, filterId: 0, parameters: null }; // 参数写 null（同 DSQ 的建筑模板；{} 编蓝图码时会被当成数组）
   for (const [x, y] of towers) {
     const t = structuredClone(template);
@@ -726,22 +896,17 @@ function repackOnce(buildings, opt) {
       const c = part.kind === 'station' ? [part.members[0].localOffset[0].x, part.members[0].localOffset[0].y] : null;
       return { kind: part.kind, members: part.members.map((b) => b.index), box: r, center: c, shift: part.shift };
     });
+  // 每块排好的外框、要让几格、身子（第一台机器的碰撞框）的中心和高
   const spots = list.map((u) => {
     const [tx, ty] = r.at.get(u);
-    return { key: u.key, x0: u.frame.x0 + tx, x1: u.frame.x1 + tx, y0: u.frame.y0 + ty, y1: u.frame.y1 + ty, pad: u.pad };
+    return { key: u.key, x0: u.frame.x0 + tx, x1: u.frame.x1 + tx, y0: u.frame.y0 + ty, y1: u.frame.y1 + ty, pad: u.pad, bx: u.bodies[0].x + tx, by: u.bodies[0].y + ty, bh: u.bodies[0].h };
   });
-  return { buildings: kept, towers: towers.length, uncovered, missed, spots, fixed: { order: best.oi, W }, zone: zoneAt };
+  return { buildings: kept, towers: towers.length, uncovered, missed, spots, fixed: { order: best.oi, W }, zone: zoneAt, keepOut };
 }
 
 const KIND = { 2302: 'smelter', 2315: 'smelter', 2319: 'smelter', 2303: 'assembler', 2304: 'assembler', 2305: 'assembler', 2318: 'assembler', 2309: 'chemical', 2317: 'chemical', 2308: 'refinery', 2310: 'collider', 2901: 'lab', 2902: 'lab' };
-/**
- * 供电（type：tesla 电力感应塔 / substation 卫星配电站，POWER）：覆盖每台工厂（中心）、每根分拣器（取料那头，game-rules 第 33 条）、每台喷涂机、
- * 每座物流站。电力感应塔（0.48 格见方）不碰工厂的框、站身；卫星配电站 3×3，离工厂照 substationPad 再让开，格子不进物流站身外那圈（9×9）
- * 和站心东西两边窄了会撞的那截（同规划器、独立检查的 STATION_CLEAR、STATION_EW，game-rules 第 17、19、39 条）。都不压带子、分拣器经过的格子、喷涂机，不进 keepOut，彼此照 powerApart 隔开。
- * 贪心：先只在整张（供电以外）的外框里挑，每次挑能新覆盖最多的格子；框里够不着的才往外放（挑外框撑得最少的）；最后连不成一张网的补中继。
- * keyOf：建筑 → 块的编号（missed 里记，定点留空位用）
- */
-function placeTowers(B, keepOut, type = 'tesla', wide = false, keyOf = new Map()) {
+/** 放供电的前提（placeTowers、planSites 共用）：要供电的点（和块的编号）、free(x, y) 这个位置放不放得下一座（不压带子、分拣器、喷涂机，离工厂、站照规矩让开，不进 keepOut）、候选范围、整张（供电以外）的外框 */
+function siteChecker(B, keepOut, type, wide, keyOf = new Map()) {
   const id = POWER[type].itemId;
   const { cover, link } = powerReach(type);
   const bodies = B.filter((b) => MACHINES.has(b.itemId) && b.localOffset[0].z <= 0.01).map((b) => bodyOf(b, wide));
@@ -803,14 +968,25 @@ function placeTowers(B, keepOut, type = 'tesla', wide = false, keyOf = new Map()
     if (stations.some((c) => near(Math.abs(c.x - x), Math.abs(c.y - y)))) return false;
     return !padded.some((r) => x - 1.5 < r.x1 - EPS && r.x0 < x + 1.5 - EPS && y - 1.5 < r.y1 - EPS && r.y0 < y + 1.5 - EPS);
   };
+  const half = id === 2212 ? 1.5 : 0.5;
+  const box = footprint(B, wide);
+  return { id, cover, link, half, targets, owner, free, range: { x0, x1, y0, y1 }, box };
+}
+/**
+ * 供电（type：tesla 电力感应塔 / substation 卫星配电站，POWER）：覆盖每台工厂（中心）、每根分拣器（取料那头，game-rules 第 33 条）、每台喷涂机、
+ * 每座物流站。电力感应塔（0.48 格见方）不碰工厂的框、站身；卫星配电站 3×3，离工厂照 substationPad 再让开，格子不进物流站身外那圈（9×9）
+ * 和站心东西两边窄了会撞的那截（同规划器、独立检查的 STATION_CLEAR、STATION_EW，game-rules 第 17、19、39 条）。都不压带子、分拣器经过的格子、喷涂机，不进 keepOut，彼此照 powerApart 隔开。
+ * 贪心：先只在整张（供电以外）的外框里挑，每次挑能新覆盖最多的格子；框里够不着的才往外放（挑外框撑得最少的）；最后连不成一张网的补中继。
+ * keyOf：建筑 → 块的编号（missed 里记，定点留空位用）；seeds：规划好的位置（planSites），放得下的先放上，剩下的再贪心
+ */
+function placeTowers(B, keepOut, type = 'tesla', wide = false, keyOf = new Map(), seeds = []) {
+  const { id, cover, link, half, targets, owner, free, range: { x0, x1, y0, y1 }, box } = siteChecker(B, keepOut, type, wide, keyOf);
   const cands = [];
   const pad = id === 2212 ? 3 : 1;
   for (let x = Math.floor(x0) - pad; x <= Math.ceil(x1) + pad; x++) for (let y = Math.floor(y0) - pad; y <= Math.ceil(y1) + pad; y++) if (free(x, y)) cands.push([x, y]);
   const chosen = [];
   const ok = ([x, y]) => chosen.every(([a, b]) => powerApart(id, id, a - x, b - y));
   // 整张（供电以外）的外框：整个落在框里的供电不撑大外框，先只在框里挑；框里的都够不着了才往外放，挑撑大的面积 ÷ 新覆盖的最少的
-  const half = id === 2212 ? 1.5 : 0.5;
-  const box = footprint(B, wide);
   const inBox = ([x, y]) => x - half >= box.x0 - EPS && x + half <= box.x1 + EPS && y - half >= box.y0 - EPS && y + half <= box.y1 + EPS;
   const growOf = (r, [x, y]) => (Math.max(r.x1, x + half) - Math.min(r.x0, x - half)) * (Math.max(r.y1, y + half) - Math.min(r.y0, y - half)) - (r.x1 - r.x0) * (r.y1 - r.y0);
   // 贪心：每次挑新覆盖最多的（一样多挑 cands 里排前的）。要供电的点按 cover 见方分桶，每个候选只数周围几桶；
@@ -848,6 +1024,8 @@ function placeTowers(B, keepOut, type = 'tesla', wide = false, keyOf = new Map()
     expand(box, c);
   };
   const expand = (r, [x, y]) => Object.assign(r, { x0: Math.min(r.x0, x - half), x1: Math.max(r.x1, x + half), y0: Math.min(r.y0, y - half), y1: Math.max(r.y1, y + half) });
+  // 规划好的位置（planSites）先放：排好以后还放得下、彼此隔得够的
+  for (const c of seeds) if (left && free(c[0], c[1]) && ok(c) && gain(c)) take(c);
   const later = []; // 框外的候选
   while (left && heap.size) {
     const top = heap.pop();
