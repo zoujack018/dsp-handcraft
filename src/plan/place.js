@@ -355,33 +355,166 @@ export function exactKey(value) {
 // 不用再把十几个初始解各算一遍。route() 是确定的，记下的和重算的一样；初始解和结果都只读
 let candsMemo = null;
 
+/** 搜索要的几样派生参数（只看图和走线参数）：prepare、evalCands 共用 */
+function searchSetup(graph, routeOptions) {
+  const ts = routeOptions.core === 'typeset';
+  return {
+    // 限宽时一行里能放工厂的列数：紧凑布局去掉左右边缘各 1 列；物流站靠左侧时去掉站列和走廊 8 列、右边缘 1 列
+    usable: routeOptions.maxWidth ? routeOptions.maxWidth - (routeOptions.station ? STATION_COLS + 1 : 2) : null,
+    // 排版内核：每组一块最多几台（运力断块，typeset.js 的 blockCaps）；边缘放站时估要几座站，排版留站位
+    caps: ts ? blockCaps(graph, routeOptions) : null,
+    // 主干内核也按运力切块（同一个 blockCaps；开自动集装机时产物、中间品按集装后的运力，同 score.js 的超运力）：
+    // 拆块上限放到切得开（maxBlocks），初始解里超运力的块就地切开（splitOver）
+    masterCaps: ts ? null : blockCaps(graph, routeOptions, true),
+    stations: ts && routeOptions.stationHoles ? stationEstimate(graph, routeOptions) : 0,
+    gapsOn: ts && routeOptions.power === 'tesla', // 供电缝（typeset.js 的 gapChunk）
+    // 目标长宽比（排版内核用，见 typeset.js 的 widthRange）
+    aspect: ts ? routeOptions.aspectTarget ?? null : null,
+  };
+}
+
+/** 还没评估的初始解，按生成的先后（prepare 排序之前那张单子）。routeOptions.core = 'typeset'：排版内核（typeset.js），状态是一条组的队和行宽，布局由队排版出来 */
+function makeStates(graph, routeOptions, initial, S) {
+  const states = routeOptions.core === 'typeset' ? typesetStates(graph, S.usable, S.caps, S.stations, S.gapsOn, S.aspect) : initialStates(graph, S.usable, S.masterCaps);
+  return initial ? [splitOver({ rows: initial, blocks: wholeBlocks(graph), pads: {} }, S.masterCaps)] : states;
+}
+
+// 分开评估初始解（routeOptions.splitCands，plan/index.js 的 planLineAsync）：同一个线程先评估自己那一片（evalCands）、再跑一轮，
+// 两次用同一张没评估的单子（键同 candsMemo）；主线程记排好的名次（rankMemo），同样的参数再搜一段时不用再分片评估
+let statesMemo = null;
+let rankMemo = null;
+function cachedStates(graph, routeOptions, initial, S, key) {
+  if (key !== null && statesMemo?.graph === graph && statesMemo.key === key) return statesMemo.states;
+  const states = makeStates(graph, routeOptions, initial, S);
+  statesMemo = key === null ? null : { graph, key, states };
+  return states;
+}
+
+/**
+ * 单子里每个初始解和前面哪个一模一样（行、块、空列、辅路，连键的先后，见 exactKey）：canon[i] 是头一个一样的下标（自己是头一个时等于 i）。
+ * route() 只看这几样、又是确定的，一样的初始解评估出来一样。排版内核不同的队、行宽常排成同一张（一两成到一半多）
+ */
+const canonMemo = new WeakMap();
+function canonOf(states) {
+  let canon = canonMemo.get(states);
+  if (canon) return canon;
+  canon = new Int32Array(states.length);
+  const first = new Map();
+  states.forEach((st, i) => {
+    const k = exactKey([st.rows, st.blocks, st.pads, st.streets || []]);
+    const j = k === null ? undefined : first.get(k);
+    if (j === undefined) {
+      canon[i] = i;
+      if (k !== null) first.set(k, i);
+    } else canon[i] = j;
+  });
+  canonMemo.set(states, canon);
+  return canon;
+}
+
+/**
+ * 一份「评估初始解」的活：单子（makeStates）里第 part、part + parts、part + 2·parts…个归这一片（隔着取：单子按队、行宽排，
+ * 挨着的几个评估起来一样慢，隔着取各片才匀），返回各个的 [代价, 可行]。和 prepare 里逐个评估的一样（route() 确定）；只回数，布局不回传。
+ * 一样的初始解只评估头一个（canonOf；routeOptions.dedupCands 写 false 关）：隔着取的是去掉重复以后那张单子，第 0 片带上 canon，rankCands 照它补上重复的
+ */
+export function evalCands(graph, options = {}, part = 0, parts = 1) {
+  const routeOptions = options.routeOptions || {};
+  const key = exactKey([routeOptions, options.initial ?? null]);
+  const states = cachedStates(graph, routeOptions, options.initial, searchSetup(graph, routeOptions), key);
+  const n = states.length;
+  const list = [];
+  const evalOne = (st) => {
+    const L = route(graph, st.rows, routeOptions, st.pads, st.blocks, st.streets || []);
+    list.push([L.cost, L.feasible]);
+  };
+  if (routeOptions.dedupCands === false) {
+    for (let i = part; i < n; i += parts) evalOne(states[i]);
+    return { n, part, parts, list };
+  }
+  const canon = canonOf(states);
+  for (let i = 0, d = 0; i < n; i++) {
+    if (canon[i] !== i) continue;
+    if (d % parts === part) evalOne(states[i]);
+    d++;
+  }
+  return { n, part, parts, list, ...(part === 0 ? { canon: Array.from(canon) } : {}) };
+}
+
+/**
+ * 各片的结果拼成名次：order 是按代价排好的下标（和 prepare 一样的稳定排序、一样的比较），cost、ok 跟着 order。
+ * 主线程记下（rankMemo），同样的参数（键同 candsMemo）再问 cachedRank 就直接给
+ */
+export function rankCands(graph, options, parts) {
+  const n = parts[0]?.n ?? 0;
+  const cost = new Array(n);
+  const ok = new Array(n);
+  const canon = parts.find((p) => p.canon)?.canon ?? null;
+  if (canon) {
+    // 去掉重复评估的（evalCands）：第 j 个不重复的是单子里的第 at[j] 个；重复的照抄头一个
+    const at = [];
+    for (let i = 0; i < n; i++) if (canon[i] === i) at.push(i);
+    for (const p of parts) p.list.forEach(([c, f], k) => {
+      cost[at[p.part + k * p.parts]] = c;
+      ok[at[p.part + k * p.parts]] = f;
+    });
+    for (let i = 0; i < n; i++) if (canon[i] !== i) {
+      cost[i] = cost[canon[i]];
+      ok[i] = ok[canon[i]];
+    }
+  } else for (const p of parts) p.list.forEach(([c, f], k) => {
+    cost[p.part + k * p.parts] = c;
+    ok[p.part + k * p.parts] = f;
+  });
+  const order = Array.from({ length: n }, (_, i) => i).sort((a, b) => cost[a] - cost[b]);
+  const rank = { order, cost: order.map((i) => cost[i]), ok: order.map((i) => ok[i]) };
+  const key = exactKey([options.routeOptions || {}, options.initial ?? null]);
+  rankMemo = key === null ? null : { graph, key, rank };
+  return rank;
+}
+export function cachedRank(graph, options) {
+  const key = exactKey([options.routeOptions || {}, options.initial ?? null]);
+  return key !== null && rankMemo?.graph === graph && rankMemo.key === key ? rankMemo.rank : null;
+}
+
+/**
+ * 按名次（rankCands）建 prepare 的 cands：排序后第 0 个评估出完整布局；full 时可行的也评估（主线程合并各轮要拿它们进存档，同 prepare），
+ * 不然只留数。工作线程里的各轮只用第 0 个的布局（起始 best）和各个的代价、可行：可行的初始解由主线程合并时放进存档（mergeRounds），
+ * 每轮的存档里少了它们，合并出来的候选一样（同一形状只留代价最低的、整体取前 candidateLimit 个，和放进哪一份存档无关）
+ */
+function rankedCands(graph, routeOptions, initial, S, key, rank, evalState, full) {
+  const states = cachedStates(graph, routeOptions, initial, S, key);
+  const cands = rank.order.map((i, j) => ({ st: states[i], cost: rank.cost[j], feasible: rank.ok[j], L: null }));
+  for (let j = 0; j < cands.length; j++) if (j === 0 || (full && cands[j].feasible)) cands[j].L = evalState(cands[j].st);
+  return cands;
+}
+
+/** 主线程按名次填好 candsMemo（代替 precompute）：派完各轮以后在主线程做，和各轮并行 */
+export function adoptCands(graph, options, rank) {
+  const routeOptions = options.routeOptions || {};
+  const key = exactKey([routeOptions, options.initial ?? null]);
+  if (key === null || (candsMemo?.graph === graph && candsMemo.key === key)) return;
+  const evalState = (st) => route(graph, st.rows, routeOptions, st.pads, st.blocks, st.streets || []);
+  candsMemo = { graph, key, cands: rankedCands(graph, routeOptions, options.initial, searchSetup(graph, routeOptions), key, rank, evalState, true) };
+}
+
 /**
  * 搜索的准备：初始解各算一遍、按代价排好，以及几个闭包。完全确定，各个线程各算一遍结果一样。
  * snapshotMs / onSnapshot：实时预览的快照钩子（网页「观摩退火」用）。每隔约 snapshotMs 毫秒把当前状态
  * 报给 onSnapshot，钩子只读（不碰随机数、不多算 evalState、不改搜索状态），不影响结果。
+ * candRank：初始解已经分片评估过（rankCands 的名次，planLineAsync 带来），按它建 cands，不再逐个评估
  */
-function prepare(graph, { iterations = 5000, restarts = 4, seed = 7, routeOptions = {}, initial, candidateLimit = 12, snapshotMs = 0, onSnapshot = null, warm = null, masterWarm = null } = {}) {
+function prepare(graph, { iterations = 5000, restarts = 4, seed = 7, routeOptions = {}, initial, candidateLimit = 12, snapshotMs = 0, onSnapshot = null, warm = null, masterWarm = null, candRank = null } = {}) {
   const evalState = (st) => route(graph, st.rows, routeOptions, st.pads, st.blocks, st.streets || []);
   // 辅路（预留整列空地）默认不开：大产线上多出来的邻域动作把搜索搅散了。需要时 routeOptions.streets = true。
   const useStreets = routeOptions.streets === true;
-  // 限宽时一行里能放工厂的列数：紧凑布局去掉左右边缘各 1 列；物流站靠左侧时去掉站列和走廊 8 列、右边缘 1 列
-  const usable = routeOptions.maxWidth ? routeOptions.maxWidth - (routeOptions.station ? STATION_COLS + 1 : 2) : null;
+  const S = searchSetup(graph, routeOptions);
+  const { usable, caps, masterCaps, stations, gapsOn, aspect } = S;
   const key = exactKey([routeOptions, initial ?? null]);
-  // 排版内核：每组一块最多几台（运力断块，typeset.js 的 blockCaps）；边缘放站时估要几座站，排版留站位
-  const caps = routeOptions.core === 'typeset' ? blockCaps(graph, routeOptions) : null;
-  // 主干内核也按运力切块（同一个 blockCaps；开自动集装机时产物、中间品按集装后的运力，同 score.js 的超运力）：
-  // 拆块上限放到切得开（maxBlocks），初始解里超运力的块就地切开（splitOver）
-  const masterCaps = routeOptions.core === 'typeset' ? null : blockCaps(graph, routeOptions, true);
-  const stations = routeOptions.core === 'typeset' && routeOptions.stationHoles ? stationEstimate(graph, routeOptions) : 0;
-  const gapsOn = routeOptions.core === 'typeset' && routeOptions.power === 'tesla'; // 供电缝（typeset.js 的 gapChunk）
-  // 目标长宽比（排版内核用，见 typeset.js 的 widthRange）
-  const aspect = routeOptions.core === 'typeset' ? routeOptions.aspectTarget ?? null : null;
   let cands;
   if (key !== null && candsMemo?.graph === graph && candsMemo.key === key) cands = candsMemo.cands;
+  else if (candRank) cands = rankedCands(graph, routeOptions, initial, S, key, candRank, evalState, false);
   else {
-    // routeOptions.core = 'typeset'：排版内核（typeset.js），状态是一条组的队和行宽，布局由队排版出来
-    const states = routeOptions.core === 'typeset' ? typesetStates(graph, usable, caps, stations, gapsOn, aspect) : initialStates(graph, usable, masterCaps);
-    cands = (initial ? [splitOver({ rows: initial, blocks: wholeBlocks(graph), pads: {} }, masterCaps)] : states)
+    cands = makeStates(graph, routeOptions, initial, S)
       .map((st) => {
         const L = evalState(st);
         return { st, cost: L.cost, feasible: L.feasible, L };

@@ -158,7 +158,7 @@ function layout(graph, rows, options, opt, pads, blocks, streets, holePlan) {
     beltCap: undefined, chains: undefined, legs: undefined, pileCap: undefined, rawCap: undefined, segments: undefined, sides: undefined, labGaps: undefined,
     // layout/tracks.js、layout/ports.js（height 两步都写）
     channels: undefined, height: undefined, rowCy: undefined, ports: undefined, stations: undefined,
-    // layout/elevation.js
+    // layout/score.js 的 scoreLayout（路网统计，提前拒绝的两问都过了才写）
     roads: undefined,
     // 下面的 earlySorters：高架之前排好的分拣器（scoreLayout 直接用）
     sorterPlan: undefined,

@@ -14,12 +14,16 @@
 
 /** 按线程复用的缓冲区：a 够 size 长就原样用，不够换一个更大的同类型的（旧内容不要：用的人先写后读，或者自己清零） */
 const room = (a, size) => (a.length >= size ? a : new a.constructor(Math.max(size, Math.ceil(a.length * 1.5))));
+let levelBuf = new Int32Array(0);
 let belowOff = new Int32Array(0);
 let belowAdj = new Int32Array(0);
 let deadBuf = new Uint8Array(0);
 let indegBuf = new Int32Array(0);
 let doneBuf = new Uint8Array(0);
+let orderBuf = new Int32Array(0);
+let liveBuf = new Int32Array(0);
 // fit 用的
+let idsBuf = new Int32Array(0);
 let domOff = new Int32Array(0);
 let domLen = new Int32Array(0);
 let domBuf = new Int32Array(0);
@@ -27,8 +31,13 @@ let freeBuf = new Int32Array(0);
 let isFreeBuf = new Uint8Array(0);
 let posBuf = new Int32Array(0);
 let clBuf = new Int32Array(0);
-let fenBuf = new Int32Array(0);
+let wordBuf = new Int32Array(0); // 有冲突的段的位表（见 fitSearch）
+let wcntBuf = new Int32Array(0);
 let perBuf = new Int32Array(0);
+let maskA = new Int32Array(0); // 段数不超过 32 时 fitSearch 按位找邻居（见那里）
+let maskB = new Int32Array(0);
+let maskN = new Int32Array(0);
+let lvlBuf = new Int32Array(0);
 let tabuBuf = new Int32Array(0);
 let pickBuf = new Int32Array(0);
 let bestBuf = new Int32Array(0);
@@ -100,7 +109,9 @@ function csrOf(n, rows) {
  * @returns {number[]} 每段的层，0 表示断开
  */
 export function solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel, top, onGreedy = null, hookCtx = null }) {
-  const level = new Array(n).fill(0);
+  // 算的时候用按线程复用的整数表，返回前抄成新数组
+  const level = (levelBuf = room(levelBuf, n));
+  level.fill(0, 0, n);
   const N = csrOf(n, neq);
   const A = csrOf(n, above);
   const nOff = N.off;
@@ -120,13 +131,14 @@ export function solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel, top, o
   for (let i = 0; i < n; i++) for (let t = aOff[i]; t < aOff[i + 1]; t++) bAdj[bOff[aAdj[t]]++] = i;
   for (let j = n; j > 0; j--) bOff[j] = bOff[j - 1]; // 放完 bOff[j] 停在第 j 行末尾（= 第 j + 1 行开头），挪回一位
   bOff[0] = 0;
-  // 拓扑序：必须比别人低的先排；能排的里面长的先排（一样长的按编号）
+  // 拓扑序：必须比别人低的先排；能排的里面长的先排（一样长的按编号）。order[0..no) 按排的先后
   const indeg = (indegBuf = room(indegBuf, n));
   indeg.fill(0, 0, n);
   for (let i = 0; i < n; i++) if (!dead[i]) for (let t = aOff[i]; t < aOff[i + 1]; t++) if (!dead[aAdj[t]]) indeg[i]++;
   const done = (doneBuf = room(doneBuf, n));
   done.fill(0, 0, n);
-  const order = [];
+  const order = (orderBuf = room(orderBuf, n));
+  let no = 0;
   let left = 0;
   for (let i = 0; i < n; i++) if (!dead[i]) left++;
   while (left > 0) {
@@ -142,7 +154,7 @@ export function solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel, top, o
       continue;
     }
     done[pick] = 1;
-    order.push(pick);
+    order[no++] = pick;
     left--;
     for (let t = bOff[pick]; t < bOff[pick + 1]; t++) { const k = bAdj[t]; if (!dead[k] && !done[k]) indeg[k]--; }
   }
@@ -155,28 +167,28 @@ export function solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel, top, o
     return c;
   };
   /**
-   * 贪心排出来超过 maxLevel 时：在 1..maxLevel 层里找没有冲突的分配（最小冲突局部搜索：挑一段有冲突的，挪到冲突最少的那层，
-   * 刚离开的那层几步之内不回去）；找不到就取冲突最少的那次，冲突的段先拿掉（短的先拿），再从低往高找空层放回去。
+   * 贪心排出来超过 maxLevel 时：在 1..maxLevel 层里找没有冲突的分配（最小冲突局部搜索 fitSearch：挑一段有冲突的，挪到冲突最少的那层，
+   * 刚离开的那层几步之内不回去）；找不到就取冲突最少的那次，冲突的段先拿掉（短的先拿），再从低往高找空层放回去。ids[0..nids) 按 order 的先后
    */
-  const fit = (ids) => {
+  const fit = (ids, nids) => {
     // 每段能挪的层：1..maxLevel 里 fixedOk 的，按 ids 的顺序依次排在 domBuf 里，段 i 的是 domBuf[domOff[i] .. + domLen[i])，层从低到高
     domOff = room(domOff, n);
     domLen = room(domLen, n);
-    domBuf = room(domBuf, ids.length * maxLevel);
+    domBuf = room(domBuf, nids * maxLevel);
     const dOff = domOff;
     const dLen = domLen;
     const dBuf = domBuf;
     let dTop = 0;
-    for (let q = 0; q < ids.length; q++) {
+    for (let q = 0; q < nids; q++) {
       const i = ids[q];
       dOff[i] = dTop;
       for (let L = 1; L <= maxLevel; L++) if (fixedOk(i, L)) dBuf[dTop++] = L;
       dLen[i] = dTop - dOff[i];
     }
     // 1..maxLevel 层都被固定的东西挡住的段只能升上去，不动它。free[0..nf) 按 ids 的顺序
-    const free = (freeBuf = room(freeBuf, ids.length));
+    const free = (freeBuf = room(freeBuf, nids));
     let nf = 0;
-    for (let q = 0; q < ids.length; q++) if (dLen[ids[q]]) free[nf++] = ids[q];
+    for (let q = 0; q < nids; q++) if (dLen[ids[q]]) free[nf++] = ids[q];
     for (let p = 0; p < nf; p++) {
       const i = free[p];
       if (level[i] <= maxLevel) continue;
@@ -184,109 +196,84 @@ export function solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel, top, o
       for (let t = dOff[i], e = t + dLen[i]; t < e; t++) { const L = dBuf[t]; if (!b || clash(i, L) < clash(i, b)) b = L; }
       level[i] = b;
     }
-    let seed = (n * 2654435761) >>> 0;
-    const rand = () => {
-      seed = (seed + 0x6d2b79f5) >>> 0;
-      let t = Math.imul(seed ^ (seed >>> 15), seed | 1);
-      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
-    // 每段当前的冲突数 cl[i] 和总数 tot 增量维护：挪一段只重算它和它的邻居
-    // （冲突是两两对称的：above / below 互为反向，neq 两边都加，段 m 的冲突只和邻居的层有关）
+    // 每段当前的冲突数 cl[i] 和总数 tot 由 fitSearch 增量维护；有冲突的段按它在 free 里的位置 pos 记在位表里
     const isFree = (isFreeBuf = room(isFreeBuf, n));
     isFree.fill(0, 0, n);
     for (let p = 0; p < nf; p++) isFree[free[p]] = 1;
-    // 段 -> 它在 free 里的 1 起位置（只给 free 里的段写）。set 只会碰 free 里的段（见 set 处的核实），别的位置是上一次留下的也不会读到
-    const posInFree = (posBuf = room(posBuf, n));
-    for (let j = 0; j < nf; j++) posInFree[free[j]] = j + 1;
+    // 段 -> 它在 free 里的位置（只给 free 里的段写；fitSearch 只按 free 里的段读）
+    const pos = (posBuf = room(posBuf, n));
+    for (let p = 0; p < nf; p++) pos[free[p]] = p;
     const cl = (clBuf = room(clBuf, n));
     cl.fill(0, 0, n);
+    const nw = (nf + 31) >> 5;
+    const words = (wordBuf = room(wordBuf, nw));
+    const wcnt = (wcntBuf = room(wcntBuf, nw));
+    words.fill(0, 0, nw);
+    wcnt.fill(0, 0, nw);
     let tot = 0;
     let nBad = 0; // 有冲突（cl > 0）的段数
     for (let p = 0; p < nf; p++) {
       const i = free[p];
-      tot += cl[i] = clash(i, level[i]);
-      if (cl[i] > 0) nBad++;
+      const c = clash(i, level[i]);
+      cl[i] = c;
+      tot += c;
+      if (c > 0) {
+        nBad++;
+        words[p >> 5] |= 1 << (p & 31);
+        wcnt[p >> 5]++;
+      }
     }
-    // 树状数组（Fenwick）按 free 顺序记每一位 cl>0 ? 1 : 0，用来 O(log n) 取「按 free 顺序第 k 个有冲突的段」，不用每次线性扫。
-    // 1..nf 都先写一遍，不用清零
-    const fen = (fenBuf = room(fenBuf, nf + 1)); // 1 起下标
-    for (let p = 1; p <= nf; p++) fen[p] = cl[free[p - 1]] > 0 ? 1 : 0;
-    for (let p = 1; p <= nf; p++) { const up = p + (p & -p); if (up <= nf) fen[up] += fen[p]; } // O(n) 线性建树
-    const fenAdd = (p, d) => { for (; p <= nf; p += p & -p) fen[p] += d; };
-    let fenHi = 1; // ≤ nf 的最大 2 的幂，二分下降的起点
-    while (fenHi << 1 <= nf) fenHi <<= 1;
-    const set = (m, v) => {
-      if (cl[m] > 0 !== v > 0) { nBad += v > 0 ? 1 : -1; fenAdd(posInFree[m], v > 0 ? 1 : -1); } // m 必来自 free（move 对邻居有 isFree 守卫，i 自己来自 free），posInFree[m] ≥ 1
-      tot += v - cl[m];
-      cl[m] = v;
-    };
-    /** 段 i 从 a 层挪到 b 层（它这次的冲突数已经算好是 ci）：自己的换掉，每个邻居只改和 i 那一条关系 */
-    const move = (i, a, b, ci) => {
-      set(i, ci);
-      for (let t = aOff[i], e = aOff[i + 1]; t < e; t++) { const j = aAdj[t]; if (isFree[j]) { const was = level[j] >= a, now = level[j] >= b; if (was !== now) set(j, cl[j] + (now ? 1 : -1)); } } // j 必须比 i 低：j 的冲突里数的是 level[j] >= level[i]
-      for (let t = bOff[i], e = bOff[i + 1]; t < e; t++) { const k = bAdj[t]; if (isFree[k]) { const was = level[k] <= a, now = level[k] <= b; if (was !== now) set(k, cl[k] + (now ? 1 : -1)); } } // k 必须比 i 高：k 的冲突里数的是 level[k] <= level[i]
-      for (let t = nOff[i], e = nOff[i + 1]; t < e; t++) { const m = nAdj[t]; if (isFree[m]) { const was = level[m] === a, now = level[m] === b; if (was !== now) set(m, cl[m] + (now ? 1 : -1)); } }
-    };
-    // 段 i 在 1..maxLevel 每一层的冲突数一次算出（差分数组），和对每层各调一次 clash 一样
-    const per = (perBuf = room(perBuf, maxLevel + 2));
-    const clashAll = (i) => {
-      per.fill(0, 0, maxLevel + 2);
-      for (let t = aOff[i], e = aOff[i + 1]; t < e; t++) { const j = aAdj[t]; if (!dead[j]) { const u = Math.min(level[j], maxLevel); if (u >= 1) { per[1]++; per[u + 1]--; } } } // L <= level[j]
-      for (let t = bOff[i], e = bOff[i + 1]; t < e; t++) { const k = bAdj[t]; if (!dead[k]) { const lo = Math.max(level[k], 1); if (lo <= maxLevel) { per[lo]++; per[maxLevel + 1]--; } } } // L >= level[k]
-      for (let t = nOff[i], e = nOff[i + 1]; t < e; t++) { const m = nAdj[t]; if (!dead[m]) { const L = level[m]; if (L >= 1 && L <= maxLevel) { per[L]++; per[L + 1]--; } } }
-      for (let L = 1; L <= maxLevel; L++) per[L] += per[L - 1];
-    };
     const stride = maxLevel + 1;
     const tabu = (tabuBuf = room(tabuBuf, n * stride)); // 段 i 离开第 L 层后，第几步之前不回去（0 = 没禁）
     tabu.fill(0, 0, n * stride);
-    const pick = (pickBuf = room(pickBuf, maxLevel));
     // 冲突最少的那次分配（每次改进抄进同一张表）
     const best = (bestBuf = room(bestBuf, n));
     for (let i = 0; i < n; i++) best[i] = level[i];
-    let bestC = tot;
-    for (let it = 0; bestC > 0 && it < 100 + 30 * ids.length; it++) {
-      if (!nBad) break;
-      // 有冲突的段里按 free 的顺序挑第 k 个
-      const k = Math.floor(rand() * nBad);
-      // 树上二分：找最小的 pos 使 free[0..pos] 里 cl>0 的个数 = k+1，就是按 free 顺序第 k 个（0 起）有冲突的段
-      let pos = 0;
-      let rem = k + 1;
-      for (let pw = fenHi; pw > 0; pw >>= 1) { const nx = pos + pw; if (nx <= nf && fen[nx] < rem) { pos = nx; rem -= fen[nx]; } }
-      const i = free[pos]; // 二分返回的 1 起位置是 pos+1，对应 free 的 0 起下标 pos
-      const cur = level[i];
-      clashAll(i);
-      let np = 0;
-      let pc = Infinity;
-      for (let t = dOff[i], e = t + dLen[i]; t < e; t++) {
-        const L = dBuf[t];
-        if (L === cur || tabu[i * stride + L] > it) continue;
-        const c = per[L];
-        if (c < pc) {
-          pc = c;
-          pick[0] = L;
-          np = 1;
-        } else if (c === pc) pick[np++] = L;
+    perBuf = room(perBuf, maxLevel + 2);
+    pickBuf = room(pickBuf, maxLevel);
+    // 段数不超过 32 时邻居按位记（fitSearch 挪段时按位找冲突数会变的邻居）：每段 above / below / neq 里没断开的邻居各一个字（第 j 位是段 j），
+    // free 里的段一个字，lvl[L] 是现在在第 L 层（1..maxLevel）的段（没断开的）
+    let fm = 0;
+    if (n <= 32) {
+      maskA = room(maskA, n);
+      maskB = room(maskB, n);
+      maskN = room(maskN, n);
+      lvlBuf = room(lvlBuf, maxLevel + 1);
+      for (let i = 0; i < n; i++) {
+        let a = 0;
+        let b = 0;
+        let q = 0;
+        if (!dead[i]) {
+          for (let t = aOff[i]; t < aOff[i + 1]; t++) { const j = aAdj[t]; if (!dead[j]) a |= 1 << j; }
+          for (let t = bOff[i]; t < bOff[i + 1]; t++) { const j = bAdj[t]; if (!dead[j]) b |= 1 << j; }
+          for (let t = nOff[i]; t < nOff[i + 1]; t++) { const j = nAdj[t]; if (!dead[j]) q |= 1 << j; }
+        }
+        maskA[i] = a;
+        maskB[i] = b;
+        maskN[i] = q;
       }
-      if (!np) continue;
-      tabu[i * stride + cur] = it + 3;
-      const to = pick[Math.floor(rand() * np)];
-      move(i, cur, to, pc); // 挑中的几层冲突数都是 pc
-      level[i] = to;
-      if (tot < bestC) {
-        for (let j = 0; j < n; j++) best[j] = level[j];
-        bestC = tot;
-      }
+      for (let p = 0; p < nf; p++) fm |= 1 << free[p];
+      lvlBuf.fill(0, 0, maxLevel + 1);
+      for (let i = 0; i < n; i++) if (!dead[i] && level[i] >= 1 && level[i] <= maxLevel) lvlBuf[level[i]] |= 1 << i;
     }
-    for (let i = 0; i < n; i++) level[i] = best[i];
+    const bestC = fitSearch(n, 100 + 30 * nids, (n * 2654435761) >>> 0, tot, nBad, free, dOff, dLen, dBuf, level, dead, isFree, pos, cl, words, wcnt, aOff, aAdj, bOff, bAdj, nOff, nAdj, maxLevel, perBuf, tabu, pickBuf, best, n <= 32, maskA, maskB, maskN, fm, lvlBuf);
     if (!bestC) return;
     // 拿掉的段连同必须比它高的段（一路往上）一起拿掉，再按拓扑序放回去：放回去时上面没有压着的段，总能往上找到层。
-    // out 是标记，stack 按拿掉的先后排：free 按长短排好的那份先放在 stack 里，从前往后扫、拿掉的依次写到前面（写的位置不超过读的位置）
+    // out 是标记，stack 按拿掉的先后排：free 按长短排好（插入排序：短的先、一样长按编号）先放在 stack 里，从前往后扫、拿掉的依次写到前面（写的位置不超过读的位置）
     const out = (outBuf = room(outBuf, n));
     out.fill(0, 0, n);
     const stack = (stackBuf = room(stackBuf, n));
-    for (let p = 0; p < nf; p++) stack[p] = free[p];
-    stack.subarray(0, nf).sort((a, b) => len[a] - len[b] || a - b); // 短的先、一样长按编号
+    for (let p = 0; p < nf; p++) {
+      const i = free[p];
+      let q = p;
+      while (q > 0) {
+        const h = stack[q - 1];
+        if (len[h] < len[i] || (len[h] === len[i] && h < i)) break;
+        stack[q] = h;
+        q--;
+      }
+      stack[q] = i;
+    }
     let sp = 0;
     for (let p = 0; p < nf; p++) {
       const i = stack[p];
@@ -307,7 +294,8 @@ export function solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel, top, o
         }
       }
     }
-    for (const i of order) {
+    for (let q = 0; q < no; q++) {
+      const i = order[q];
       if (!out[i]) continue;
       let L = 1;
       for (let t = aOff[i]; t < aOff[i + 1]; t++) { const j = aAdj[t]; if (!dead[j] && level[j] >= L) L = level[j] + 1; }
@@ -323,7 +311,8 @@ export function solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel, top, o
     for (let t = nOff[i], e = nOff[i + 1]; t < e; t++) { const m = nAdj[t]; if (!dead[m] && level[m] === L) return false; }
     return fixedOk(i, L);
   };
-  for (const i of order) {
+  for (let q = 0; q < no; q++) {
+    const i = order[q];
     let L = 1;
     for (let t = aOff[i]; t < aOff[i + 1]; t++) { const j = aAdj[t]; if (!dead[j] && level[j] >= L) L = level[j] + 1; }
     while (L <= top && !ok(i, L)) L++;
@@ -338,12 +327,39 @@ export function solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel, top, o
     for (let i = 0; i < n; i++) if (dead[i]) nd++;
     if (onGreedy(hookCtx, nd)) return null;
   }
-  if (order.some((i) => level[i] > maxLevel)) fit(order.filter((i) => !dead[i]));
-  // 改进：落低、长短换层。每次改动都让「格子数 × 层」的某种凸代价下降，不会循环；轮数也设了上限
-  const live = order.filter((i) => !dead[i]).sort((a, b) => len[b] - len[a] || a - b);
+  let over = false;
+  for (let q = 0; q < no; q++) {
+    if (level[order[q]] > maxLevel) {
+      over = true;
+      break;
+    }
+  }
+  if (over) {
+    const ids = (idsBuf = room(idsBuf, no));
+    let nids = 0;
+    for (let q = 0; q < no; q++) if (!dead[order[q]]) ids[nids++] = order[q];
+    fit(ids, nids);
+  }
+  // 改进：落低、长短换层。每次改动都让「格子数 × 层」的某种凸代价下降，不会循环；轮数也设了上限。
+  // live[0..nl)：没断开的段，长的先、一样长按编号（插入排序）
+  const live = (liveBuf = room(liveBuf, no));
+  let nl = 0;
+  for (let q = 0; q < no; q++) {
+    const i = order[q];
+    if (dead[i]) continue;
+    let p = nl++;
+    while (p > 0) {
+      const h = live[p - 1];
+      if (len[h] > len[i] || (len[h] === len[i] && h < i)) break;
+      live[p] = h;
+      p--;
+    }
+    live[p] = i;
+  }
   for (let round = 0; round < 8; round++) {
     let changed = false;
-    for (const i of live) {
+    for (let q = 0; q < nl; q++) {
+      const i = live[q];
       const cur = level[i];
       level[i] = 0;
       let L = 1;
@@ -351,7 +367,8 @@ export function solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel, top, o
       level[i] = L;
       if (L < cur) changed = true;
     }
-    for (const i of live) {
+    for (let q = 0; q < nl; q++) {
+      const i = live[q];
       const a = level[i];
       // 碰到第一个能换的就停（neq 的行按加的先后走）
       for (let t = nOff[i], e = nOff[i + 1]; t < e; t++) {
@@ -361,14 +378,14 @@ export function solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel, top, o
         if (b >= a || len[m] >= len[i]) continue;
         level[i] = 0;
         level[m] = 0;
-        let fit = false;
+        let swap = false;
         if (ok(m, a)) {
           level[m] = a;
-          if (ok(i, b)) fit = true;
+          if (ok(i, b)) swap = true;
         }
-        level[i] = fit ? b : a;
-        level[m] = fit ? a : b;
-        if (fit) {
+        level[i] = swap ? b : a;
+        level[m] = swap ? a : b;
+        if (swap) {
           changed = true;
           break;
         }
@@ -376,6 +393,201 @@ export function solveLevels(n, { len, neq, above, bad, fixedOk, maxLevel, top, o
     }
     if (!changed) break;
   }
-  for (let i = 0; i < n; i++) if (dead[i]) level[i] = 0;
-  return level;
+  const res = [];
+  for (let i = 0; i < n; i++) res.push(dead[i] ? 0 : level[i]);
+  return res;
+}
+
+/** fit 的随机数（mulberry32）：seed 已经加过这一步的增量，返回 [0, 1) */
+function unitOf(s) {
+  let t = Math.imul(s ^ (s >>> 15), s | 1);
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+
+/**
+ * fit 的最小冲突局部搜索：最多 maxIt 步，每步在有冲突的段里按 free 的顺序随机挑第 k 个（位表 words：free 里第 p 位的段有冲突，
+ * wcnt 是每个字里的位数），挪到 1..maxLevel 里冲突最少的层（离开的那层 3 步之内不回去，一样少的随机挑）。
+ * 每段的冲突数 cl 和总数 tot 增量维护：挪一段只改它自己和它的邻居（冲突是两两对称的：above / below 互为反向，neq 两边都加，
+ * 段 m 的冲突只和邻居的层有关）。冲突最少的那次分配抄在 best 里，最后抄回 level；返回它的冲突数。
+ * 写成模块级函数、不建闭包：tot、nBad、seed 都是局部变量，循环里不用读写闭包的上下文。
+ * bits 为真（段数不超过 32）时挪段只碰冲突数真的变了的邻居：按位从 mA / mB / mN（每段 above / below / neq 里没断开的邻居）、
+ * fm（free 里的段）、lvl（每层有哪些段）里找出来；一个邻居在几张表里时每张表各改一次，和逐张表走一样
+ */
+function fitSearch(n, maxIt, seed, tot, nBad, free, dOff, dLen, dBuf, level, dead, isFree, pos, cl, words, wcnt, aOff, aAdj, bOff, bAdj, nOff, nAdj, maxLevel, per, tabu, pick, best, bits, mA, mB, mN, fm, lvl) {
+  const stride = maxLevel + 1;
+  per[0] = 0;
+  let bestC = tot;
+  for (let it = 0; bestC > 0 && it < maxIt; it++) {
+    if (!nBad) break;
+    // 有冲突的段里按 free 的顺序挑第 k 个（0 起）：先数到它在哪个字，再在字里去掉低的 k 位
+    seed = (seed + 0x6d2b79f5) >>> 0;
+    let k = Math.floor(unitOf(seed) * nBad);
+    let w = 0;
+    while (k >= wcnt[w]) {
+      k -= wcnt[w];
+      w++;
+    }
+    let x = words[w];
+    for (; k > 0; k--) x &= x - 1;
+    const i = free[(w << 5) + (31 - Math.clz32(x & -x))];
+    const cur = level[i];
+    // 段 i 在 1..maxLevel 每一层的冲突数（差分数组，per[0] 一直是 0），和对每层各调一次 clash 一样
+    for (let L = 1; L <= stride; L++) per[L] = 0;
+    for (let t = aOff[i], e = aOff[i + 1]; t < e; t++) {
+      const j = aAdj[t];
+      if (dead[j]) continue;
+      const u = Math.min(level[j], maxLevel);
+      if (u >= 1) {
+        per[1]++;
+        per[u + 1]--;
+      }
+    } // L <= level[j]
+    for (let t = bOff[i], e = bOff[i + 1]; t < e; t++) {
+      const k2 = bAdj[t];
+      if (dead[k2]) continue;
+      const lo = Math.max(level[k2], 1);
+      if (lo <= maxLevel) {
+        per[lo]++;
+        per[stride]--;
+      }
+    } // L >= level[k]
+    for (let t = nOff[i], e = nOff[i + 1]; t < e; t++) {
+      const m = nAdj[t];
+      if (dead[m]) continue;
+      const L = level[m];
+      if (L >= 1 && L <= maxLevel) {
+        per[L]++;
+        per[L + 1]--;
+      }
+    }
+    for (let L = 1; L <= maxLevel; L++) per[L] += per[L - 1];
+    const ti = i * stride;
+    let np = 0;
+    let pc = 0x7fffffff;
+    for (let t = dOff[i], e = t + dLen[i]; t < e; t++) {
+      const L = dBuf[t];
+      if (L === cur || tabu[ti + L] > it) continue;
+      const c = per[L];
+      if (c < pc) {
+        pc = c;
+        pick[0] = L;
+        np = 1;
+      } else if (c === pc) pick[np++] = L;
+    }
+    if (!np) continue;
+    tabu[ti + cur] = it + 3;
+    seed = (seed + 0x6d2b79f5) >>> 0;
+    const to = pick[Math.floor(unitOf(seed) * np)];
+    // 段 i 从 cur 层挪到 to 层（挑中的几层冲突数都是 pc）：自己的换掉，每个邻居只改和 i 那一条关系；cl 由正变 0 或由 0 变正时翻位
+    {
+      const o = cl[i];
+      if (o > 0 !== pc > 0) {
+        const p = pos[i];
+        words[p >> 5] ^= 1 << (p & 31);
+        const d = pc > 0 ? 1 : -1;
+        wcnt[p >> 5] += d;
+        nBad += d;
+      }
+      tot += pc - o;
+      cl[i] = pc;
+    }
+    if (bits) {
+      // 会变的：neq 里在 to 层的 +1、在 cur 层的 −1；above 里层在 [cur, to) 的 −1（往上挪）或 [to, cur) 的 +1（往下挪）；
+      // below 里层在 (cur, to] 的 +1 或 (to, cur] 的 −1
+      let rA = 0;
+      let rB = 0;
+      const lo = cur < to ? cur : to;
+      const hi = cur < to ? to : cur;
+      for (let v = lo; v < hi; v++) rA |= lvl[v];
+      for (let v = lo + 1; v <= hi; v++) rB |= lvl[v];
+      const nm = mN[i] & fm;
+      const dA = to > cur ? -1 : 1;
+      for (let g = 0; g < 4; g++) {
+        let m = g === 0 ? nm & lvl[to] : g === 1 ? nm & lvl[cur] : g === 2 ? mA[i] & fm & rA : mB[i] & fm & rB;
+        const d = g === 0 ? 1 : g === 1 ? -1 : g === 2 ? dA : -dA;
+        while (m !== 0) {
+          const b = m & -m;
+          m ^= b;
+          const j = 31 - Math.clz32(b);
+          const o = cl[j];
+          const v = o + d;
+          cl[j] = v;
+          tot += d;
+          if (o > 0 !== v > 0) {
+            const p = pos[j];
+            words[p >> 5] ^= 1 << (p & 31);
+            wcnt[p >> 5] += d;
+            nBad += d;
+          }
+        }
+      }
+      lvl[cur] &= ~(1 << i);
+      lvl[to] |= 1 << i;
+      level[i] = to;
+      if (tot < bestC) {
+        for (let j = 0; j < n; j++) best[j] = level[j];
+        bestC = tot;
+      }
+      continue;
+    }
+    for (let t = aOff[i], e = aOff[i + 1]; t < e; t++) {
+      const j = aAdj[t];
+      if (!isFree[j]) continue;
+      const lj = level[j];
+      const now = lj >= to;
+      if (lj >= cur === now) continue; // j 必须比 i 低：j 的冲突里数的是 level[j] >= level[i]
+      const d = now ? 1 : -1;
+      const o = cl[j];
+      cl[j] = o + d;
+      tot += d;
+      if (o > 0 !== o + d > 0) {
+        const p = pos[j];
+        words[p >> 5] ^= 1 << (p & 31);
+        wcnt[p >> 5] += d;
+        nBad += d;
+      }
+    }
+    for (let t = bOff[i], e = bOff[i + 1]; t < e; t++) {
+      const k2 = bAdj[t];
+      if (!isFree[k2]) continue;
+      const lk = level[k2];
+      const now = lk <= to;
+      if (lk <= cur === now) continue; // k 必须比 i 高：k 的冲突里数的是 level[k] <= level[i]
+      const d = now ? 1 : -1;
+      const o = cl[k2];
+      cl[k2] = o + d;
+      tot += d;
+      if (o > 0 !== o + d > 0) {
+        const p = pos[k2];
+        words[p >> 5] ^= 1 << (p & 31);
+        wcnt[p >> 5] += d;
+        nBad += d;
+      }
+    }
+    for (let t = nOff[i], e = nOff[i + 1]; t < e; t++) {
+      const m = nAdj[t];
+      if (!isFree[m]) continue;
+      const lm = level[m];
+      const now = lm === to;
+      if (lm === cur === now) continue;
+      const d = now ? 1 : -1;
+      const o = cl[m];
+      cl[m] = o + d;
+      tot += d;
+      if (o > 0 !== o + d > 0) {
+        const p = pos[m];
+        words[p >> 5] ^= 1 << (p & 31);
+        wcnt[p >> 5] += d;
+        nBad += d;
+      }
+    }
+    level[i] = to;
+    if (tot < bestC) {
+      for (let j = 0; j < n; j++) best[j] = level[j];
+      bestC = tot;
+    }
+  }
+  for (let j = 0; j < n; j++) level[j] = best[j];
+  return bestC;
 }

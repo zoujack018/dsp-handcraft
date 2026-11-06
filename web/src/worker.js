@@ -575,8 +575,11 @@ function estimateSeconds(calc, effort, p, threads) {
  */
 function tracked(helpers, id, est, restarts, preview = null) {
   const n = { search: [0, 0], finish: [0, 0] };
+  // 搜到第几段：搜索的活带着 planLineAsync 编的段号（seg，整个线程连着数，换种子重排也不重复），段号一变就是新的一段
+  let gen = 0;
+  let lastSeg = null;
   const post = () => {
-    const phases = Math.max(1, Math.ceil(n.search[1] / Math.max(1, restarts)));
+    const phases = Math.max(1, gen || Math.ceil(n.search[1] / Math.max(1, restarts)));
     // 实测估时（previewer 跑约一秒后算出）比开搜前的公式准，有就用它；公式按期望段数估，实际搜的段数多了就按实际的
     const live = preview?.liveEst;
     self.postMessage({ type: 'progress', id, est: live ?? (est.search + est.finish) * Math.max(est.segs ?? 1, phases), live: live != null, maxMs: preview?.maxMs ?? null, search: n.search, finish: n.finish });
@@ -589,8 +592,18 @@ function tracked(helpers, id, est, restarts, preview = null) {
       const k = n[task.kind];
       if (!k) return helpers.run(task);
       k[1]++;
-      // 给搜索任务标上第几段（没达标接着搜时一段一段来），快照带着它回来，预览好不认上一段的旧账
-      if (task.kind === 'search') task.gen = Math.max(1, Math.ceil(k[1] / Math.max(1, restarts)));
+      // 给搜索任务标上第几段（没达标接着搜时一段一段来），快照带着它回来，预览好不认上一段的旧账。
+      // 按 seg 变没变数（每段少开几轮时，routeOptions.lanes，一段的活数不等于 restarts）；没带 seg 的照活数推
+      if (task.kind === 'search') {
+        if (task.seg == null) task.gen = Math.max(1, Math.ceil(k[1] / Math.max(1, restarts)));
+        else {
+          if (task.seg !== lastSeg) {
+            lastSeg = task.seg;
+            gen++;
+          }
+          task.gen = gen;
+        }
+      }
       post();
       return helpers.run(task).then((r) => {
         k[0]++;

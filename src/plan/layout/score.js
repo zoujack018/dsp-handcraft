@@ -3,7 +3,7 @@ import { assignSorters, sideCap, SORTER_SPEED } from '../sorters.js';
 import { powerBands } from '../power.js';
 import { stationHoles } from '../holes.js';
 import { STATION_COLS, TOL, gk } from './shared.js';
-import { sprayGapCells } from './elevation.js';
+import { sprayGapCells, roadStats } from './elevation.js';
 import { BELT_SPEED } from '../../gamedata.js';
 
 /**
@@ -276,7 +276,7 @@ export function preLegElevFloor(c, nDead) {
 // 退火里每一步都要打一次分：下面的循环都按下标走（不用 for…of、不解构、不拼临时数组），
 // 函数还没被优化编译时也不会每一步都造迭代结果和小数组
 export function scoreLayout(c) {
-  const { P, R, addPenalty, beltCap, blocks, blocksOf, chains, channels, corridor, graph, height, itemBids, labGaps, legs, opt, pads, penalties, pileCap, ports, pos, powerHoles, rawCap, roads, rowAbove, rowBelow, rowCy, rows, segments, side, sides, stations, streetX, xR } = c;
+  const { P, R, addPenalty, beltCap, blocks, blocksOf, chains, channels, corridor, graph, height, itemBids, labGaps, legs, opt, pads, penalties, pileCap, ports, pos, powerHoles, rawCap, rowAbove, rowBelow, rowCy, rows, segments, side, sides, stations, streetX, xR } = c;
   // ---------- F. 约束检查与计数 ----------
   // 每块上下两侧要接的物品种数不能超过分拣器位（Map.forEach：不造 [键, 值] 数组）
   sides.forEach((sd, bid) => {
@@ -653,6 +653,8 @@ export function scoreLayout(c) {
       break;
     }
   }
+  // 路网（layout/elevation.js 的 roadStats）：只进结果，提前拒绝的两问都过了才算
+  const roads = (c.roads = roadStats(c));
   let factories = 0;
   for (let i = 0; i < graph.groups.length; i++) {
     const g = graph.groups[i];

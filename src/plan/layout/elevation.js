@@ -422,8 +422,11 @@ let stackStamp = 0;
 // 一段高架竖直走过的列（去重，按出现的先后），按线程复用
 let vxBuf = new Float64Array(16);
 
-/** 路网（只用于显示和统计）：每段高架的竖直部分走在哪一类「路」上 */
-function roadStats(c) {
+/**
+ * 路网（只用于显示和统计）：每段高架的竖直部分走在哪一类「路」上，写各段的 road，返回合计。
+ * 打分用不到，layout/score.js 的 scoreLayout 在两问提前拒绝都过了以后才算（被拒的评估不算）
+ */
+export function roadStats(c) {
   const { corridor, height, legs, side, xL, xR } = c;
   // 主干 = 物流站旁的走廊；外环 = 左右边缘；辅路 = 生产区内部的空列；本通道 = 没有竖直部分（只在通道上空跨过去）
   const roads = { trunk: 0, ring: 0, street: 0, local: 0, maxStack: 0 };
@@ -942,7 +945,6 @@ export function liftLegs(c) {
     if (!l.cells?.length || l.broken || !(l.level > RAMP_MAX_DZ)) continue;
     realizeLeg(l, cellsAt(l, l.level));
   }
-  c.roads = roadStats(c);
 }
 
 /**
@@ -1014,10 +1016,7 @@ export function rampLegs(c) {
     if (t.r.rise) span(t.r.rise);
     if (t.r.drop) span(t.r.drop);
   }
-  if (x0 > x1) {
-    c.roads = roadStats(c);
-    return;
-  }
+  if (x0 > x1) return;
   x0--;
   y0--;
   x1++;
@@ -1330,7 +1329,6 @@ export function rampLegs(c) {
     const cap = opt.maxLevel;
     if (l.level > cap) addPenalty('level', P.level * (l.level - cap), `${name(l)} 的高架段和别的高架段撞在一起（${cap} 层都占满了，升到第 ${l.level} 层）`, itemBids(l.itemId));
   }
-  c.roads = roadStats(c);
 }
 
 /**
@@ -1432,5 +1430,4 @@ export function estimateLegs(c) {
     }
     if (over) addPenalty('level', P.level * over, `${graph.items.get(p.l.itemId).name} 的高架段和别的高架段撞在一起（${cap} 层都占满了，升到第 ${L} 层）`, itemBids(p.l.itemId));
   }
-  c.roads = roadStats(c);
 }

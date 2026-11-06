@@ -150,6 +150,22 @@ let nPlan = 0;
 const FACES = [];
 let nFace = 0;
 
+// 竖直列（routeItems 里的 column）记下的结果：按参数编的数字键直接映射到 COL_SLOTS 格里的一格（撞了就覆盖），按线程复用。
+// 每格记键、代际和结果；代际不是这一次的就当空着：每次 routeItems 开头、每次 addLoad 之后都换一个代际（不用清表）
+const COL_SLOTS = 1024;
+const colKey = new Float64Array(COL_SLOTS);
+const colGenOf = new Int32Array(COL_SLOTS);
+const colVal = new Array(COL_SLOTS).fill(null);
+let colStamp = 0;
+/** 换一个代际（之前记的都作废） */
+const colNewGen = () => {
+  if (colStamp >= 0x7ffffff0) {
+    colGenOf.fill(0);
+    colStamp = 0;
+  }
+  return ++colStamp;
+};
+
 /** route() 的一步：读写共享的布局上下文 c */
 export function routeItems(c) {
   const { P, R, addLoad, addPenalty, atPort, bestColumn, blocksOf, entryCol, exitCol, graph, itemBids, opt, pos, rows, side, xL, xR } = c;
@@ -190,14 +206,33 @@ export function routeItems(c) {
   const chSegs = list(0);
   const chSegN = scratch(13, Int32Array, R + 1);
   chSegN.fill(0, 0, R + 1);
+  // 各行的块（rows 的先后）和它们下侧、上侧的 sides 表，按行连成一串（第 r 行是 RPOS[ROFF[r] .. ROFF[r + 1])），
+  // near 扫对面一行时不用再逐块按块 ID 查表（各次调用共用这几个数组，只读这一次写过的前几项）
+  const RPOS = list(29);
+  const RBOT = list(30);
+  const RTOP = list(31);
+  const ROFF = scratch(19, Int32Array, R + 1);
+  let nRow = 0;
+  for (let r = 0; r < R; r++) {
+    ROFF[r] = nRow;
+    const row = rows[r];
+    for (let i = 0; i < row.length; i++) {
+      const q = pos.get(row[i]);
+      const sd = sides.get(q.bid);
+      RPOS[nRow] = q;
+      RBOT[nRow] = sd.bottom;
+      RTOP[nRow++] = sd.top;
+    }
+  }
+  ROFF[R] = nRow;
   /** 第 fr 行里和块 p 横向重叠的块，朝着 p 那一侧（fside）的 sides 表：依次写进 out，返回几个 */
   const near = (p, fr, fside, out) => {
     let n = 0;
     if (fr >= 0 && fr < R) {
-      const row = rows[fr];
-      for (let i = 0; i < row.length; i++) {
-        const q = pos.get(row[i]);
-        if (q.x0 <= p.x1 && q.x1 >= p.x0) out[n++] = sides.get(q.bid)[fside];
+      const maps = fside === 'top' ? RTOP : RBOT;
+      for (let j = ROFF[fr], e = ROFF[fr + 1]; j < e; j++) {
+        const q = RPOS[j];
+        if (q.x0 <= p.x1 && q.x1 >= p.x0) out[n++] = maps[j];
       }
     }
     return n;
@@ -229,12 +264,12 @@ export function routeItems(c) {
     // 上下两侧可以共用一列（只要轨道错开，game-rules 第 1 条），列数主要受多的那一侧限制：取大的，比两侧相加省地
     return Math.max(own, face);
   };
-  // 两段之间的竖直列（c.bestColumn）：本步里同样的参数大量重复，用数字键记下来，addLoad 一调就清空。
+  // 两段之间的竖直列（c.bestColumn）：本步里同样的参数大量重复，用数字键记下来（COL_SLOTS），addLoad 一调就作废。
   // bestColumn 只在 xL..xR+1 里找两头各隔至少 1 格的列：出段、进段的方向把这个范围夹空了时，不用扫列也知道是 null
   const XO = 16;
   const XW = xR + 2 * XO + 2;
   const CHN = R + 1;
-  const colMemo = new Map();
+  let colGen = colNewGen(); // 这一次 routeItems、最近一次 addLoad 之后记的竖直列才算数（见 COL_SLOTS）
   let loadVer = 0; // addLoad 调过几次：试算过的方案在这之后没再调过就还能直接用
   const column = (xs, d0, xd, d1, c1, c2, g0min = 1) => {
     let lo = xL;
@@ -248,13 +283,19 @@ export function routeItems(c) {
     if (lo > hi) return null;
     if (!(xs + XO >= 0 && xs + XO < XW && xd + XO >= 0 && xd + XO < XW && c1 >= 0 && c1 < CHN && c2 >= 0 && c2 < CHN)) return bestColumn(xs, d0, xd, d1, c1, c2, g0min);
     const key = ((((((xs + XO) * XW + xd + XO) * 3 + d0 + 1) * 3 + d1 + 1) * CHN * CHN + c1 * CHN + c2) * 2 + (g0min > 1 ? 1 : 0));
-    let r = colMemo.get(key);
-    if (r === undefined) colMemo.set(key, (r = bestColumn(xs, d0, xd, d1, c1, c2, g0min)));
+    // 键是不超过 2^53 的非负整数：低 32 位和高位混一下取格
+    const h = (key | 0) ^ ((key / 1048576) | 0);
+    const slot = (h ^ (h >>> 10)) & (COL_SLOTS - 1);
+    if (colGenOf[slot] === colGen && colKey[slot] === key) return colVal[slot];
+    const r = bestColumn(xs, d0, xd, d1, c1, c2, g0min);
+    colGenOf[slot] = colGen;
+    colKey[slot] = key;
+    colVal[slot] = r;
     return r;
   };
   const addLoadM = (x, c1, c2) => {
     addLoad(x, c1, c2);
-    colMemo.clear();
+    colGen = colNewGen();
     loadVer++;
   };
   // 竖直列的代价（positions.js 的 bestColumn）是两头的横向距离（各至少 1 格）、离得太近的 +3，加上 crowd × crowdWeight：
@@ -561,17 +602,20 @@ export function routeItems(c) {
     let bHi = -Infinity;
     let aLo = Infinity;
     let aHi = -Infinity;
-    const add = (p) => {
-      if (p.row !== v.ch) {
+    // 生产者、消费者依次看（下标循环，不建闭包）
+    const ch = v.ch;
+    const P = v.P;
+    const C = v.C;
+    for (let i = 0; i < P.length + C.length; i++) {
+      const p = i < P.length ? P[i] : C[i - P.length].p;
+      if (p.row !== ch) {
         bLo = Math.min(bLo, p.tmin);
         bHi = Math.max(bHi, p.tmax);
       } else {
         aLo = Math.min(aLo, p.tmin);
         aHi = Math.max(aHi, p.tmax);
       }
-    };
-    for (const p of v.P) add(p);
-    for (const c of v.C) add(c.p);
+    }
     if (bLo === Infinity || aLo === Infinity) return false;
     return Math.max(aHi, bHi) - Math.min(aLo, bLo) - Math.min(aHi - aLo, bHi - bLo) >= SIDE_SPLIT;
   };
@@ -645,10 +689,20 @@ export function routeItems(c) {
     }
     let nl = n;
     for (let i = 0; i < n; i++) left[i] = i;
+    // 这条带的块能挂的通道都在 kLo..kHi 里（各块的行和行 + 1，上侧没口的只到本行）：下面每一轮只清、只扫这一段
+    // （段外的通道没有块，原来扫到也是跳过）
+    let kLo = R;
+    let kHi = 0;
+    for (let i = 0; i < n; i++) {
+      const p = EB[i];
+      if (p.row < kLo) kLo = p.row;
+      const top = p.g.noTop ? p.row : p.row + 1;
+      if (top > kHi) kHi = top;
+    }
     let nv = 0; // 访问先放在 TV 里
     while (nl) {
       // 每个通道（按通道号）：能覆盖几个块、其中几个生产者、横向范围，以及挂过来会挤爆几处分拣器列
-      for (let k = 0; k <= R; k++) {
+      for (let k = kLo; k <= kHi; k++) {
         sN[k] = 0;
         sProd[k] = 0;
         sLo[k] = Infinity;
@@ -680,7 +734,7 @@ export function routeItems(c) {
       let pc = 0;
       let pl = -1;
       let pp = 0;
-      for (let k = 0; k <= R; k++) {
+      for (let k = kLo; k <= kHi; k++) {
         if (!sN[k]) continue;
         const cols = sCols[k];
         // 会挤爆分拣器列的挂法，宁可多经过一个通道：每挤爆一处按少覆盖两个块算

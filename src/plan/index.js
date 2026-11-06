@@ -8,7 +8,7 @@
 //   planLineAsync  多线程驱动：搜索的各轮退火、各个候选的后处理分给线程池并行（网页、命令行 --threads）。
 // 没有时间上限时，两种驱动的结果完全一致。
 import { buildGraph } from './graph.js';
-import { optimize, mergeRounds, precompute } from './place.js';
+import { optimize, mergeRounds, precompute, cachedRank, rankCands, adoptCands } from './place.js';
 import { addPower, placePower, fitPlacement } from './power.js';
 import { spaceStats } from '../metrics/space.js';
 import { attachStations, linkWarpers, cropToContent } from './stations.js';
@@ -336,6 +336,10 @@ function* planFrame(calc, options) {
     delete o.untilTarget; // 下面几个只在这里用；回调也传不进帮手线程
     delete o.onRound;
     delete o.giveUpAfter;
+    // 每段少开几轮（routeOptions.lanes，默认不限）：1 以上是最多几轮，0~1 是档位轮数的几成（往上取整）。轮少了同时跑的线程少，
+    // 都落在快的核上、互相抢得少，一轮走完同样的步数快得多；轮数多少对结果影响小
+    const lanes = Number(ro.lanes);
+    if (lanes > 0) o.restarts = Math.max(1, Math.min(o.restarts ?? 4, lanes < 1 ? Math.ceil((o.restarts ?? 4) * lanes - 1e-9) : Math.floor(lanes)));
     // onSnapshot（实时预览的快照钩子）留着：单线程驱动就地执行用得上；多线程驱动发活前自己删（见 planLineAsync），
     // 帮手线程按 snapshotMs 开关自己装钩子（web/src/worker.js 的 task 分支）
     return o;
@@ -573,6 +577,9 @@ export function planLine(calc, options = {}) {
   return r.value;
 }
 
+// 搜索段的编号（planLineAsync 每段加一，整个线程连着数）：同一次生成里检查没过、换种子重排时再调一次 planLineAsync，编号也不重复，预览照样认出是新的一段
+let segSerial = 0;
+
 /**
  * 多线程规划。pool：{ size, run(task) => Promise }，task 见 tasks.js（search / finish）。
  * 搜索的 restarts 轮退火每轮一份活交给线程池（各轮互不相干，种子由轮号决定），合并时和单线程一样按轮号取 best；
@@ -582,21 +589,37 @@ export async function planLineAsync(calc, options = {}, pool = null) {
   if (!pool || pool.size <= 1) return planLine(calc, options);
   const gen = planSteps(calc, options);
   let r = gen.next();
+  let seg = 0; // 这一段搜索的编号：各份搜索的活带上（seg），网页的实时预览按它变没变认段（web/src/worker.js 的 tracked）
   while (!r.done) {
     const req = r.value;
     let res;
     if (req.kind === 'search') {
+      seg = ++segSerial;
       // 每轮一份活，线程池按先来先做分派：各轮用时差得不少（同样步数，布局大小不同），这样比按轮号预先分组更均匀。
       // 有时间上限而轮数多于线程时，每轮只给自己那份时间，排在后面的轮次也有时间跑。
       const n = req.options.restarts ?? 4;
-      const opts = { ...req.options };
+      let opts = { ...req.options };
       delete opts.onSnapshot; // 函数不能结构化克隆；帮手线程按 opts.snapshotMs 自己装快照钩子
       if (opts.timeLimit && n > pool.size) opts.timeLimit = Math.max(500, (opts.timeLimit * pool.size) / n);
+      // 分开评估初始解（routeOptions.splitCands，默认开，写 false / 0 关）：不然每个线程开轮前都把全部初始解评估一遍（排版内核两百来个，和一轮退火差不多久）。
+      // 先切成线程数那么多片、各线程评估一片（place.js 的 evalCands），排好名次（rankCands）交给各轮，各轮只评估名次第一的那个；
+      // 同样的参数再搜一段时直接用记下的名次（cachedRank）。结果和不分开一样
+      let rank = null;
+      if ((req.options.routeOptions?.splitCands ?? true) && !req.options.initial) {
+        rank = cachedRank(req.graph, req.options);
+        if (!rank) {
+          const co = { routeOptions: opts.routeOptions };
+          const parts = await Promise.all(Array.from({ length: pool.size }, (_, k) => pool.run({ kind: 'cands', calc, options: co, part: k, parts: pool.size, seg })));
+          rank = rankCands(req.graph, req.options, parts);
+        }
+        opts = { ...opts, candRank: rank };
+      }
       // pool.run 是同步往线程 postMessage 的，先把各轮的 Promise 建出来（工作线程随即开跑）、不 await，
-      // 主线程趁各轮在跑把初始解算好（place.js 的 precompute）
-      const pending = Promise.all(Array.from({ length: n }, (_, s) => pool.run({ kind: 'search', calc, options: opts, rounds: [s] })));
+      // 主线程趁各轮在跑把初始解算好（place.js 的 precompute；分开评估时按名次补上主线程要的布局，adoptCands）
+      const pending = Promise.all(Array.from({ length: n }, (_, s) => pool.run({ kind: 'search', calc, options: opts, rounds: [s], seg })));
       pending.catch(() => {}); // precompute 若抛错，pending 还在飞——先挂个 catch 免得变成 unhandledRejection（下面的 await 仍会把真正的错抛出来）
-      precompute(req.graph, req.options); // 和 mergeRounds 用同一个 req.options：键一样，命中 memo
+      if (rank) adoptCands(req.graph, req.options, rank);
+      else precompute(req.graph, req.options); // 和 mergeRounds 用同一个 req.options：键一样，命中 memo
       const parts = (await pending).flat();
       res = mergeRounds(req.graph, req.options, parts);
     } else {
