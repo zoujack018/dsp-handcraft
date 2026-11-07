@@ -145,6 +145,10 @@ function importBuilding(r) {
         b.localOffset = [readXYZ(), readXYZ()];
         b.yaw = [fix(r.getFloat32()), fix(r.getFloat32())];
         b.tilt = r.getFloat32();
+        // 同游戏（BlueprintBuilding.Import）：老格式没有俯仰角和第二头的倾斜，记 0；不记的话 toStr 按新格式写分拣器时写成 NaN
+        b.tilt2 = 0;
+        b.pitch = 0;
+        b.pitch2 = 0;
         b.itemId = r.getInt16();
         b.modelIndex = r.getInt16();
         b.outputObjIdx = r.getInt32();
@@ -163,6 +167,9 @@ function importBuilding(r) {
         b.localOffset = [readXYZ(), readXYZ()];
         b.yaw = [fix(r.getFloat32()), fix(r.getFloat32())];
         b.tilt = 0;
+        b.tilt2 = 0;
+        b.pitch = 0;
+        b.pitch2 = 0;
         b.itemId = r.getInt16();
         b.modelIndex = r.getInt16();
         b.outputObjIdx = r.getInt32();

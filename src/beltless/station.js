@@ -20,6 +20,9 @@ const FWD = { 0: [0, 1], 90: [1, 0], 180: [0, -1], 270: [-1, 0] }; // 朝向 →
 const MAXL = 2; // 接带子最高到第几层
 const yawOf = (b) => ((Math.round(b.yaw?.[0] ?? 0) % 360) + 360) % 360;
 const LIFT_SHIFT = 0.0016;
+// 站口那头先接几节空带子（不挂分拣器）：站立着的时候，拆了带子原地再贴，落在站身碰撞体里的带子放不下（站口那节和往外一节），
+// 留着站和这几节不拆，挂分拣器的带子都在站身外面
+const PORT_BUFFER = 4;
 export const STATION = 2104;
 const MAX_ITEMS = 5;
 // 站心至少隔几格：贴到哪条纬度带、东西隔还是南北隔都够 29 m（蓝图多高、带子区转到哪边都不知道，按最坏的算，同独立检查）
@@ -69,7 +72,7 @@ function groupsOf(chains) {
 
 /**
  * 带子区（zone：DSQ 排的带子、喷涂机）接到物流站：带子挪到新位置（同一批对象，编号、上下游照旧），站接在 B 后面。opt.pile：站往带上出货叠几层；
- * opt.warper：要不要留一格翘曲器（留在有空格的第一座站；都满了就把最后一种挪出去单开一座）。
+ * opt.warper：要不要留一格翘曲器（留在有空格的第一座站；都满了就把最后一种挪出去单开一座）；opt.buffer：站口先接几节空带子（默认 PORT_BUFFER）。
  * 喷了增产剂的：喷涂机跟着它骑的那条链挪（还骑在同一节上，朝向顺着带子）；离站太近会撞站身的，在站口那头补几节带子把它推出去。
  * DSQ 的增产剂带和那条空的增产剂原料链（一根分拣器都不挂）不要了（dropped），增产剂当一种原料分站口，位置都定下来以后从那个口拉（linkSpray）。
  * 返回 { added 新加的站和带子, stations: [{ items: [{ itemId, kind }], warper 存不存翘曲器 }], parts: [{ kind: 'station' | 'mid', members 这一块的建筑 }],
@@ -98,13 +101,15 @@ export function attachStations(B, zone, opt = {}) {
   }
   if (coaters.length && !feeds.length) return { skip: 'spray' };
   const added = [];
-  // 喷涂机压着的 3 节要在站身外面（离站口 2 节起，game-rules 第 24 条）：原料链在头上、产物链在尾上补几节
+  // 喷涂机压着的 3 节要在站身外面（离站口 2 节起，game-rules 第 24 条）；站口那头另外先接 PORT_BUFFER 节空带子（opt.buffer 可改）。
+  // 原料链补在头上、产物链补在尾上
   const tpl = chains.find((c) => c.nodes.length)?.nodes[0] ?? belts[0];
+  const buffer = Math.max(0, Math.round(opt.buffer ?? PORT_BUFFER));
   for (const c of chains) {
-    if (!c.coaters || c.kind === 'mid') continue;
+    if (c.kind === 'mid' || (!c.coaters && !buffer)) continue;
     const n = c.nodes.length;
-    const near = c.kind === 'in' ? Math.min(...c.coaters.map((t) => t.j)) - 1 : n - 2 - Math.max(...c.coaters.map((t) => t.j));
-    const more = Array.from({ length: Math.max(0, 2 - near) }, () => {
+    const near = !c.coaters ? Infinity : c.kind === 'in' ? Math.min(...c.coaters.map((t) => t.j)) - 1 : n - 2 - Math.max(...c.coaters.map((t) => t.j));
+    const more = Array.from({ length: Math.max(0, 2 - near, buffer) }, () => {
       const b = structuredClone(tpl);
       Object.assign(b, { index: B.length, inputObjIdx: -1, outputObjIdx: -1, inputFromSlot: 0, outputToSlot: 0, parameters: null });
       B.push(b);
@@ -112,9 +117,12 @@ export function attachStations(B, zone, opt = {}) {
       return b;
     });
     if (!more.length) continue;
+    // 原料头一节、产物最后一节的标签跟着挪到新的接站那一节
+    const [oldEnd, newEnd] = c.kind === 'in' ? [c.nodes[0], more[0]] : [c.nodes[n - 1], more[more.length - 1]];
+    if (oldEnd?.parameters?.iconId) [newEnd.parameters, oldEnd.parameters] = [oldEnd.parameters, null];
     const line = c.kind === 'in' ? [...more, ...c.nodes] : [...c.nodes, ...more];
     line.forEach((b, i) => i + 1 < line.length && Object.assign(b, { outputObjIdx: line[i + 1].index, outputToSlot: 1 }));
-    if (c.kind === 'in') for (const t of c.coaters) t.j += more.length;
+    if (c.kind === 'in') for (const t of c.coaters ?? []) t.j += more.length;
     c.nodes = line;
   }
   // 增产剂当一条原料链分站口（排在最前，进挨着中间产物带的第一座站）：这时还不铺
