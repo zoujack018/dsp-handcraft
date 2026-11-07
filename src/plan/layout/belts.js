@@ -17,6 +17,11 @@ const SPRAY_GAP = 4;
 const LEG_WINDOW = 5;
 /** 喷涂时放料段和取料段在地面接成一条（见 consider 里的 joinCost）：cols 里这一截不是竖直列，用这个标记 */
 const JOIN = 'join';
+/**
+ * 一条带的访问多于这么多个时，各段流向不再逐个枚举 2^k 种组合（consider 的前缀表有 2^(k+1) 项，k 到二十几时一次 route() 要几秒到几分钟、
+ * 几个 GB），改按段做动态规划（considerChain）：代价的式子一样、最小值一样，代价相等的几种里挑中的可能不同。不多于它的照旧逐个枚举
+ */
+const ENUM_K = 16;
 /** 劈开第一段时继续往下走的那一半：有下一段或成品出口时左右各试，否则只有一种（各次共用，只读） */
 const CONT_LR = ['L', 'R'];
 const CONT_NONE = [null];
@@ -1071,6 +1076,11 @@ export function routeItems(c) {
       // 下面按方向位查第 0 段出口的地方（rest 的初值）：劈开的段和流向无关，两格都是它
       TO[0] = TO[1] = mOut[0];
     }
+    // 访问多时按段做动态规划（considerChain），不建前缀表、不逐个枚举
+    if (k > ENUM_K) {
+      considerChain(ix, m, cont, i0, sA, sB, sDout, sExitX);
+      return;
+    }
     // 枚举流向时 mask 的低位变得最快，同一个前缀只算一次（每个量的加法先后和逐个方案从头算时一样）。
     // 第 i 段两个流向的 segOf 在这一层开头各调一次，结果记进 TA、TI、TO、mCh
     for (let i = i0; i < k; i++) {
@@ -1255,6 +1265,245 @@ export function routeItems(c) {
       }
     }
   };
+  /**
+   * consider 的另一种算法（访问多于 ENUM_K 个时用）：同一个代价，不逐个枚举流向。
+   * 代价 = 1000 × 供给缺口 + 5000 × (走不通 + 空当被截) + 带长。缺口是整条带最低的累计量取负，累计量到每段开头为止和流向无关，
+   * 所以缺口只看各段自己那一截在它的流向下最低的累计量（CW）；其余各项是每段自己的一项（UC：段长、空当被截，第 0 段加进口，
+   * 最后一段加成品出口）加相邻两段之间那一截（PC：竖直列，喷涂时能在地面接成一条的按接的算）。
+   * 逐个取 θ（起点的最低累计量和各个 CW），只许 CW ≥ θ 的流向，沿链做动态规划求 UC、PC 之和的最小值；
+   * 1000 × (−θ) 加上它最小的那个 θ 下的流向就是代价最小的方案。挑出来的流向照 consider 里逐个方案的式子、同样的加法先后再算一遍，
+   * 和目前最好的比、记下来
+   */
+  const considerChain = (ix, m, cont, i0, sA, sB, sDout, sExitX) => {
+    const k = vk;
+    const visits = vis;
+    const split = m !== null;
+    const acc0 = split ? sAcc[0] : isRaw ? Infinity : 0;
+    const worst0 = split ? sWorst[0] : 0;
+    const CW = scratch(28, Float64Array, 2 * k);
+    const UC = scratch(29, Float64Array, 2 * k);
+    const PC = scratch(30, Float64Array, 4 * k);
+    const TH = scratch(31, Float64Array, 2 * k + 1);
+    const BK = scratch(32, Uint8Array, 2 * k);
+    const MB = scratch(33, Uint8Array, k);
+    // 各段两个流向（下标 2i + back）：segOf 的下标、进口、出口（同 consider 记进 TA、TI、TO、mCh）、这一截最低的累计量
+    let acc = acc0;
+    for (let i = i0; i < k; i++) {
+      const j = ix[i];
+      const at0 = segOf(j, i, 0);
+      const at1 = segOf(j, i, 1);
+      TA[2 * i] = at0;
+      TA[2 * i + 1] = at1;
+      TI[2 * i] = GA[at0];
+      TO[2 * i] = GB[at0];
+      TI[2 * i + 1] = GB[at1];
+      TO[2 * i + 1] = GA[at1];
+      const v = visits[j];
+      mCh[i] = v.ch;
+      const n = v.e1 - v.e0;
+      const sv = SV; // segOf 排过这一段的事件，之后 SV 不会再换
+      let next = acc;
+      for (let back = 0; back < 2; back++) {
+        const es = back ? v.s + n : v.s;
+        let h = acc;
+        let w = Infinity;
+        if (!rawSkip) {
+          for (let t = es; t < es + n; t++) {
+            h += sv[t];
+            w = Math.min(w, h);
+          }
+        }
+        CW[2 * i + back] = w;
+        if (!back) next = h;
+      }
+      acc = next;
+    }
+    for (let i = 0; i < k - 1; i++) AP[i] = Math.abs(mCh[i] - mCh[i + 1]) * CH_PITCH;
+    // 第 0 段的流向：劈开的只有一种（流向位恒为 0），原料入口限定在一边（rawSide）时也只有一种
+    const dirOk = (i, b) => i > 0 || (split ? b === 0 : rawSide === 0 || b === (rawSide > 0 ? 1 : 0));
+    for (let i = i0; i < k; i++) {
+      for (let b = 0; b < 2; b++) {
+        const at = TA[2 * i + b];
+        const d = b ? -1 : 1;
+        let u = GB[at] - GA[at] + 1 + (GH[at] & 1) * 5000;
+        if (i === 0) {
+          const c0 = entryCol(d);
+          if (isRaw && !opt.freeEnds && !atPort(TI[b], c0)) u += Math.abs(TI[b] - c0) + 2;
+          if (leftEnds && isRaw && d !== 1) u += 5000;
+        }
+        if (i === k - 1 && outRate > 0) {
+          const c1 = exitCol(d);
+          if (!opt.freeEnds && !atPort(TO[2 * i + b], c1)) u += Math.abs(c1 - TO[2 * i + b]) + 2;
+          if (leftEnds && d !== -1) u += 5000;
+        }
+        UC[2 * i + b] = u;
+      }
+    }
+    // 第 i、i + 1 段之间那一截，两段的流向位是 c & 1、c >> 1（下标 4i + c，和 lk 一一对应）
+    const vp = gapAt >= 0 && gapAt < k - 1 ? visits[ix[gapAt]] : null;
+    const vc = vp ? visits[ix[gapAt + 1]] : null;
+    const joins = (d0, d1) => vp.ch === vc.ch && d0 === d1 && (d0 > 0 ? vc.tmin - vp.tmax : vp.tmin - vc.tmax) >= (offMid ? 1 : 1 + SPRAY_GAP);
+    for (let i = 0; i < k - 1; i++) {
+      for (let c = 0; c < 4; c++) {
+        const b0 = c & 1;
+        const b1 = c >> 1;
+        const head = i === 0 && split; // 劈开的第 0 段：进口、出口、流向在 consider 里定好了
+        if (head && b0) {
+          PC[4 * i + c] = Infinity;
+          continue;
+        }
+        const at0 = head ? -1 : TA[2 * i + b0];
+        const at1 = TA[2 * i + 2 + b1];
+        const d0 = head ? 0 : b0 ? -1 : 1;
+        const d1 = b1 ? -1 : 1;
+        if (vp && i === gapAt && joins(d0, d1)) {
+          PC[4 * i + c] = Math.max(GB[at0], GB[at1]) - Math.min(GA[at0], GA[at1]) + 1 - (GB[at0] - GA[at0] + 1) - (GB[at1] - GA[at1] + 1);
+          continue;
+        }
+        const li = i * 4 + c;
+        let bc = lk[li];
+        if (bc === undefined) bc = lk[li] = column(head ? mOut[0] : TO[2 * i + b0], head ? mDout[0] : d0, TI[2 * i + 2 + b1], d1, mCh[i], mCh[i + 1], legSpray && i === gapAt ? LEG_WINDOW : 1);
+        PC[4 * i + c] = (bc?.x ?? null) === null ? 5000 : bc.cost + AP[i] + 2;
+      }
+    }
+    // 只许 CW ≥ θ 的流向时 UC、PC 之和的最小值；keep 时记下每段的流向（MB）
+    const best = (theta, keep) => {
+      let f0 = Infinity;
+      let f1 = Infinity;
+      for (let b = 0; b < 2; b++) {
+        if (!dirOk(i0, b) || CW[2 * i0 + b] < theta) continue;
+        const f = UC[2 * i0 + b] + (split ? PC[b << 1] : 0);
+        if (b) f1 = f;
+        else f0 = f;
+      }
+      for (let i = i0 + 1; i < k; i++) {
+        const p = 4 * (i - 1);
+        let n0 = Infinity;
+        let n1 = Infinity;
+        if (CW[2 * i] >= theta) {
+          const x = f0 + PC[p];
+          const y = f1 + PC[p + 1];
+          n0 = (x <= y ? x : y) + UC[2 * i];
+          if (keep) BK[2 * i] = x <= y ? 0 : 1;
+        }
+        if (CW[2 * i + 1] >= theta) {
+          const x = f0 + PC[p + 2];
+          const y = f1 + PC[p + 3];
+          n1 = (x <= y ? x : y) + UC[2 * i + 1];
+          if (keep) BK[2 * i + 1] = x <= y ? 0 : 1;
+        }
+        f0 = n0;
+        f1 = n1;
+      }
+      if (keep) {
+        let b = f0 <= f1 ? 0 : 1;
+        for (let i = k - 1; i > i0; i--) {
+          MB[i] = b;
+          b = BK[2 * i + b];
+        }
+        MB[i0] = b;
+        if (split) MB[0] = 0;
+      }
+      return f0 <= f1 ? f0 : f1;
+    };
+    let nt = 0;
+    TH[nt++] = worst0;
+    for (let i = i0; i < k; i++) for (let b = 0; b < 2; b++) if (dirOk(i, b) && CW[2 * i + b] < worst0) TH[nt++] = CW[2 * i + b];
+    const ths = TH.subarray(0, nt).sort();
+    let bestTheta = worst0;
+    let bestVal = Infinity;
+    for (let q = nt - 1; q >= 0; q--) {
+      if (q < nt - 1 && ths[q] === ths[q + 1]) continue;
+      const val = -ths[q] * 1000 + best(ths[q], false);
+      if (val < bestVal) {
+        bestVal = val;
+        bestTheta = ths[q];
+      }
+    }
+    best(bestTheta, true);
+    // 照 consider 里 mask 那一圈的式子算这个方案
+    let worst = worst0;
+    let len = split ? sLen[0] : 0;
+    let sprayShort = split ? sShort[0] : 0;
+    acc = acc0;
+    for (let i = i0; i < k; i++) {
+      const b = MB[i];
+      const at = TA[2 * i + b];
+      const v = visits[ix[i]];
+      const n = v.e1 - v.e0;
+      const es = b ? v.s + n : v.s;
+      if (!rawSkip) {
+        for (let t = es; t < es + n; t++) {
+          acc += SV[t];
+          worst = Math.min(worst, acc);
+        }
+      }
+      sprayShort += GH[at] & 1;
+      len += GB[at] - GA[at] + 1;
+      mAt[i] = at;
+      mIn[i] = TI[2 * i + b];
+      mOut[i] = TO[2 * i + b];
+      mD[i] = b ? -1 : 1;
+      mDout[i] = b ? -1 : 1;
+    }
+    let bad = 0;
+    const c0 = entryCol(mD[0]);
+    if (isRaw && !opt.freeEnds && !atPort(mIn[0], c0)) len += Math.abs(mIn[0] - c0) + 2;
+    if (leftEnds && isRaw && mD[0] !== 1) bad++;
+    let shortfall = -worst;
+    if (!isRaw && outRate > 0) shortfall += Math.max(0, outRate - acc);
+    let outBad = 0;
+    let outLen = -1;
+    if (outRate > 0) {
+      const dl = mDout[k - 1];
+      if (!dl) outBad++;
+      else {
+        const c1 = exitCol(dl);
+        if (!opt.freeEnds && !atPort(mOut[k - 1], c1)) outLen = Math.abs(c1 - mOut[k - 1]) + 2;
+        if (leftEnds && dl !== -1) outBad++;
+      }
+    }
+    const canJoin = !!vp && joins(mD[gapAt], mD[gapAt + 1]);
+    for (let i = 0; i < k - 1; i++) {
+      if (canJoin && i === gapAt) {
+        const ap = mAt[gapAt];
+        const ac = mAt[gapAt + 1];
+        cols[i] = JOIN;
+        len += Math.max(GB[ap], GB[ac]) - Math.min(GA[ap], GA[ac]) + 1 - (GB[ap] - GA[ap] + 1) - (GB[ac] - GA[ac] + 1);
+        continue;
+      }
+      const li = i * 4 + (MB[i] | (MB[i + 1] << 1));
+      let bc = lk[li];
+      if (bc === undefined) bc = lk[li] = column(mOut[i], mDout[i], mIn[i + 1], mD[i + 1], mCh[i], mCh[i + 1], legSpray && i === gapAt ? LEG_WINDOW : 1);
+      const x = bc?.x ?? null;
+      cols[i] = x;
+      if (x === null) bad++;
+      else len += bc.cost + AP[i] + 2;
+    }
+    if (outLen >= 0) len += outLen;
+    bad += outBad;
+    const cost = shortfall * 1000 + bad * 5000 + sprayShort * 5000 + len;
+    if (!has || cost < bCost - TOL) {
+      has = true;
+      bCost = cost;
+      bShortfall = shortfall;
+      bBad = bad;
+      bSpray = sprayShort;
+      if (split) {
+        bSA = sA;
+        bSB = sB;
+        bSM = m;
+        bSCont = cont;
+        bSDout = sDout;
+        bSExitX = sExitX;
+      }
+      for (let i = 0; i < k; i++) {
+        bAt[i] = mAt[i];
+        bJ[i] = ix[i];
+      }
+      for (let i = 0; i < k - 1; i++) bCols[i] = cols[i];
+    }
+  };
   /** 劈开第一段的位置：生产者分拣器所在的各列（去重、从小到大），去掉最左一列；每个访问只算一次 */
   const cutsOf = (v) => {
     if (v.cuts) return v.cuts;
@@ -1324,7 +1573,7 @@ export function routeItems(c) {
       }
       GH = scratch(15, Int32Array, 2 * k * k);
       GD = scratch(16, Uint8Array, 2 * k * k);
-      const NS = (2 << k) - 2;
+      const NS = (2 << Math.min(k, ENUM_K)) - 2; // 前缀表只在逐个枚举时用（k 不超过 ENUM_K）
       sAcc = scratch(7, Float64Array, NS);
       sWorst = scratch(8, Float64Array, NS);
       sLen = scratch(9, Float64Array, NS);

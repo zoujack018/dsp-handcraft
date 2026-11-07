@@ -486,17 +486,31 @@ async function runBench() {
 }
 
 /**
- * 开搜前的预计用时（秒），页面「预计约 X 秒」就是它（跑约一秒后进度条改用 previewer 的实测 liveEst，预计那个数不改）。
- * 系数是在参照机（Mac mini M6，8 线程）上按「打开页面先测速、再点生成」实跑三档量出来的：
- *   每段（一遍搜索 + 后处理）秒数 = 乘幂模型（组数、台数、物品种类，再加选项的倍数），乘每线程要跑几波；
- *   段数按开搜前的瓶颈规则（bottleneck：分拣器或带子运力不够、组数多）取每类的中位（有瓶颈的多半要搜十几段，偶尔一段就完，会估长）；
+ * 开搜前的预计用时（秒），页面「预计约 X 秒」就是它（开搜前报一次，之后不改）。
+ * 系数是在参照机（Mac mini M6，8 线程）上按「打开页面先测速、再点生成」实跑随机目标、随机配置，对 log 秒数做最小二乘拟合的（tools/time-survey）：
+ *   整次（各段搜索 + 后处理）秒数 = 乘幂模型（组数、台数、物品种类，再乘 TIME_TERMS 里成立的那几项的倍数），乘每线程要跑几波；
  *   别的机器按页面打开时的测速（runBench）和参照机同一段测速的比折算。
+ * 直接估整次、不按段数乘：用时差得最多的是达没达标，达标的多半一段就完，没达标的换种子再搜 6~19 段，开搜前看不出是哪种，
+ * 估的是两者中间，一段就完的估长、搜很多段的估短。
  */
 const TIME_MODEL = {
-  ref: { benchMs: 294, threads: 8 }, // 参照机（Mac mini M6，8 线程）上同一段测速的中位毫秒
-  seg: [-4.209, 0.318, 0.454, 0.471], // log 每段秒数 = c0 + a·log 组数 + b·log 台数 + d·log 物品种类（参照机 8 线程、1 波）
-  opt: { edge: 0.312, side: 0.814, spray: 0.24, normal: -0.034, fine: 0.689, belt1: 0.077, sorter2011: 0.062 }, // 选项的 log 倍数
-  segs: { quick: { ok: 1, flag: 14 }, normal: { ok: 1, flag: 18 }, fine: { ok: 1, flag: 19 } }, // 段数（没瓶颈 / 有瓶颈），每类的中位
+  ref: { benchMs: 262, threads: 8 }, // 参照机（Mac mini M6，8 线程）上同一段测速的中位毫秒
+  base: [-5.182, -0.507, 0.607, 1.454], // log 整次秒数 = c0 + a·log 组数 + b·log 台数 + d·log 物品种类 + 下面成立的各项（参照机 8 线程、1 波）
+  opt: { fine: 1.273, box: 0.246, spray: 0.368, belt1: 0.329, belt2: 0.233, sorter2011: 0.393, nopower: -0.279, limit: 0.304, chemwide: 0.159, flag: 0.585 }, // TIME_TERMS 成立时加的 log 倍数
+  segs: { normal: { ok: 1, flag: 6 }, fine: { ok: 8, flag: 9 } }, // 段数（没瓶颈 / 有瓶颈）每类的中位：只用来把整次摊成每段（进度消息里用），不改总数；快档按标准档
+};
+/** TIME_MODEL.opt 各项什么时候算：name 档位，p 页面参数，flag 开搜前的瓶颈规则（bottleneck） */
+const TIME_TERMS = {
+  fine: ({ name }) => name === 'fine',
+  box: ({ p }) => !p.station && !!p.supply, // 不接物流站、两侧放储物仓
+  spray: ({ p }) => Number(p.spray || 0) > 0,
+  belt1: ({ p }) => String(p.belt) === '1',
+  belt2: ({ p }) => String(p.belt) === '2',
+  sorter2011: ({ p }) => String(p.sorter) === '2011',
+  nopower: ({ p }) => !p.power, // 不放供电
+  limit: ({ p }) => !!(Number(p.maxwidth) || Number(p.maxheight)), // 设了宽或长的上限
+  chemwide: ({ p }) => p.chemwide === '1',
+  flag: ({ flag }) => flag,
 };
 const BELT_CAP = { 1: 360, 2: 720, 3: 1800 }; // 每条带每分钟运多少（不叠）
 /** 页面「集装分拣器改良」科技等级（pilertech，0~6，没选过是 0）：只在选了集装分拣器时算，别的分拣器是 0 */
@@ -534,7 +548,7 @@ function bottleneck(graph, p) {
   return sorterLoad > 0.8 || beltLoad > 1.5 || graph.groups.length >= 36;
 }
 
-/** 返回每段的搜索、后处理秒数和期望段数 segs；总数 =（search + finish）× segs */
+/** 返回每段的搜索、后处理秒数和段数 segs；整次 =（search + finish）× segs */
 function estimateSeconds(calc, effort, p, threads) {
   const name = Object.keys(EFFORT).find((k) => EFFORT[k] === effort) ?? 'normal';
   let graph = null;
@@ -546,28 +560,16 @@ function estimateSeconds(calc, effort, p, threads) {
   const groups = calc.units.length;
   const machines = calc.units.reduce((n, u) => n + u.count, 0); // 研究站一叠算一台
   const items = graph ? graph.items.size : new Set(calc.flows.map((f) => `${f.itemId}:${!!f.byproduct}`)).size;
-  const [c0, a, b, d] = TIME_MODEL.seg;
-  const o = TIME_MODEL.opt;
-  const station = p.station ? (p.station === 'ils-side' ? 'side' : 'edge') : null; // 'ils' 放进空地，'ils-side' 靠左侧站列
-  const opt =
-    (station === 'edge' ? o.edge : 0) +
-    (station === 'side' ? o.side : 0) +
-    (Number(p.spray || 0) > 0 ? o.spray : 0) +
-    (name === 'normal' ? o.normal : 0) +
-    (name === 'fine' ? o.fine : 0) +
-    (Number(p.belt) === 1 ? o.belt1 : 0) +
-    (Number(p.sorter) === 2011 ? o.sorter2011 : 0);
+  const flag = graph ? bottleneck(graph, p) : groups >= 36;
+  const [c0, a, b, d] = TIME_MODEL.base;
+  const opt = Object.entries(TIME_MODEL.opt).reduce((s, [k, v]) => s + (TIME_TERMS[k]({ name, p, flag }) ? v : 0), 0);
   const devFactor = bench ? bench.ms / TIME_MODEL.ref.benchMs : 1;
   const waves = Math.ceil(effort.restarts / Math.max(1, threads)); // 单线程（threads 1）时各轮一轮接一轮跑
-  const segSec = Math.exp(c0 + a * Math.log(groups) + b * Math.log(machines) + d * Math.log(items) + opt) * devFactor * waves;
-  let search = segSec * (1 - FINISH_SHARE);
-  let finish = segSec * FINISH_SHARE;
-  if (effort.timeLimit) search = Math.min(search, effort.timeLimit / 1000);
-  const segs = TIME_MODEL.segs[name][(graph ? bottleneck(graph, p) : groups >= 36) ? 'flag' : 'ok'];
-  // 总数不超过没达标接着搜的总时限
+  // 整次不超过没达标接着搜的总时限
   const maxSec = effort.untilTarget?.maxMs ? effort.untilTarget.maxMs / 1000 : Infinity;
-  const k = Math.min(1, maxSec / ((search + finish) * segs));
-  return { search: search * k, finish: finish * k, segs };
+  const total = Math.min(maxSec, Math.exp(c0 + a * Math.log(groups) + b * Math.log(machines) + d * Math.log(items) + opt) * devFactor * waves);
+  const segs = (TIME_MODEL.segs[name] ?? TIME_MODEL.segs.normal)[flag ? 'flag' : 'ok'];
+  return { search: (total * (1 - FINISH_SHARE)) / segs, finish: (total * FINISH_SHARE) / segs, segs };
 }
 /**
  * 给帮手线程池包一层，数搜索的轮数和后处理的候选数，报给页面（type: 'progress'）。

@@ -23,14 +23,28 @@ const turn = (yaw, [dx, dy]) => (yaw === 90 ? [dy, -dx] : yaw === 180 ? [-dx, -d
  * 游戏的建造盒比独立检查的框大出来的（朝北时相对建筑位置，格；out/colliders，game-rules 第 35 条）：
  * 原油精炼厂北边到 +2.63（检查的框到 +2.4，横着放时北边朝东，挨着的制造台按检查不撞、游戏里撞），化工厂东边到 +3.42
  */
+const SMELTER_FOOT = { x0: -1.154, x1: 1.154, y0: -1.154, y1: 1.154 };
+const ASSEMBLER_FOOT = { x0: -1.52, x1: 1.52, y0: -1.52, y1: 1.52 };
+const LAB_FOOT = { x0: -2.228, x1: 2.228, y0: -2.228, y1: 2.228 };
 const GAME_FOOT = {
   2308: { x0: -1.39, x1: 1.41, y0: -3.11, y1: 2.63 },
   2309: { x0: -3.19, x1: 3.43, y0: -1.28, y1: 2.23 },
   2317: { x0: -3.19, x1: 3.43, y0: -1.28, y1: 2.23 },
+  // 下面这些游戏的建造盒比检查的框小，只拿来算排机器时东西向放宽（LAT_MIN）
+  ...Object.fromEntries([2302, 2315, 2319].map((id) => [id, SMELTER_FOOT])),
+  ...Object.fromEntries([2303, 2304, 2305, 2318].map((id) => [id, ASSEMBLER_FOOT])),
+  ...Object.fromEntries([2901, 2902].map((id) => [id, LAB_FOOT])),
+  2310: { x0: -4.655, x1: 3.541, y0: -2.4, y1: 2.311 },
 };
 const HIGH_LAT = new Set([2309, 2317, 2308]); // 高纬度间距展开时东西向两边各多让 1 格的（化工厂、量子化工厂、原油精炼厂，gamedata.js 的 GEOMETRY_HIGH_LATITUDE）
-/** 工厂的框：独立检查的框（check.js 的 box）和游戏的建造盒取大的；wide：高纬度间距展开（HIGH_LAT 东西向两边各宽 1 格）。中心、宽高 */
-function bodyOf(b, wide = false) {
+// 东西向的格子离开赤道会变窄（纬度带里最窄 0.829，到 75.6°），建筑大小不变：排机器时 HIGH_LAT 以外的工厂东西向按游戏的建造盒除以 LAT_MIN 占地，
+// 两台东西挨着的贴到哪个纬度都不撞。HIGH_LAT 照旧由 wide 管（左栏的高纬度间距）
+const LAT_MIN = 0.82;
+/**
+ * 工厂的框：独立检查的框（check.js 的 box）和游戏的建造盒取大的；wide：高纬度间距展开（HIGH_LAT 东西向两边各宽 1 格）；
+ * lat：游戏的建造盒东西向按 LAT_MIN 放宽（排机器用；供电选址、外框照原来的框）。中心、宽高
+ */
+function bodyOf(b, wide = false, lat = false) {
   const f = factory(b.itemId);
   const yaw = yawOf(b);
   const [sx, sy] = turn(yaw, f.colliderShift ?? [0, 0]);
@@ -40,8 +54,9 @@ function bodyOf(b, wide = false) {
   const g = GAME_FOOT[b.itemId];
   if (g) {
     const [a, c] = [turn(yaw, [g.x0, g.y0]), turn(yaw, [g.x1, g.y1])];
-    x0 = Math.min(x0, p.x + Math.min(a[0], c[0]));
-    x1 = Math.max(x1, p.x + Math.max(a[0], c[0]));
+    const k = lat && !HIGH_LAT.has(b.itemId) ? 1 / LAT_MIN : 1;
+    x0 = Math.min(x0, p.x + Math.min(a[0], c[0]) * k);
+    x1 = Math.max(x1, p.x + Math.max(a[0], c[0]) * k);
     y0 = Math.min(y0, p.y + Math.min(a[1], c[1]));
     y1 = Math.max(y1, p.y + Math.max(a[1], c[1]));
   }
@@ -375,6 +390,18 @@ export function repack(buildings, opt = {}) {
   };
   // 带子区折了，上面那块空地就没了（原来供电常放那儿）：机器不多的也试不折的，放好供电再比
   if (all) consider({ kind: 'nofold', fold: false }, probe({ fold: false }));
+  // 挑宽度时的分是放供电之前估的（机器那几行加带子区），几种宽度常差不多、放好供电以后谁好不一定：机器不多的再拿估分排前面、
+  // 宽度和已经排过的差 ALT_APART 格以上的 ALT_WIDTHS 种，照各自的顺序和宽度排一遍，按放好供电以后的分挑
+  if (all && plainOut.alts) {
+    const done = [plainOut.fixed.W];
+    for (const a of plainOut.alts) {
+      if (done.length > ALT_WIDTHS) break;
+      if (a.fit !== plainOut.alts[0].fit || done.some((W) => Math.abs(W - a.W) < ALT_APART)) continue;
+      done.push(a.W);
+      const t = { kind: 'width', fixed: { order: a.oi, W: [a.W] } };
+      consider(t, probe(t));
+    }
+  }
   // 照默认那张的顺序，宽度在它的往上 k 格里挑（只重排这几种，比整张换排法便宜得多）
   const around = (k, from = out) => ({ order: from.fixed.order, W: Array.from({ length: k + 1 }, (_, i) => from.fixed.W + i) });
   // 定点留空位（机器不多的）：默认那张框里够不着的机器、分拣器扎堆的地方，挑一块在它前面留空位，再排再看，还有够不着的再补，最多几轮
@@ -445,6 +472,9 @@ export function repack(buildings, opt = {}) {
   if (final) final.picked = pick.kind ?? 'plain'; // 挑中了哪一路（只给量的脚本看）
   return final;
 }
+/** 挑宽度：放好供电再比的另外几种（ALT_WIDTHS 种，彼此、和默认那张的宽度差 ALT_APART 格以上） */
+const ALT_WIDTHS = 2;
+const ALT_APART = 3;
 /** 定点补空位：空位离要够着的点让出的格数（插空位会把后面的机器往右挤，空位也不正好落在要的地方）；宽度在原来的往上几格里挑；最多补几轮 */
 const AIM_SLACK = { substation: 4, tesla: 2 };
 const AIM_WIDEN = { substation: 6, tesla: 2 };
@@ -696,7 +726,7 @@ function repackOnce(buildings, opt) {
     }
     const u = units.get(r) ?? units.set(r, { key: r, members: [], bodies: [], spans: [], kind: `${B[r].itemId}:${yawOf(B[r])}` }).get(r);
     u.members.push(b);
-    if (isMachine(b) && b.localOffset[0].z <= 0.01) u.bodies.push(bodyOf(b, !!opt.wide));
+    if (isMachine(b) && b.localOffset[0].z <= 0.01) u.bodies.push(bodyOf(b, !!opt.wide, true));
     if (SORTERS.has(b.itemId)) u.spans.push(spanOf(b));
   }
   const list = [...units.values()];
@@ -752,6 +782,7 @@ function repackOnce(buildings, opt) {
   const fits = (w, h) => (!lim.maxWidth || w <= lim.maxWidth - 1 + EPS) && (!lim.maxHeight || h <= lim.maxHeight - 1 + EPS) && (!lim.maxAspect || Math.max(w / h, h / w) <= lim.maxAspect + EPS);
   // opt.fixed：{ order, W: [宽度…] } 照给的顺序、只在这几种宽度里挑（定点留空位、机器多的按网格快排时照默认那张的排法）
   let best = null;
+  const byW = new Map(); // 每种（顺序、宽度）估分最好的：repack 再挑几种放好供电比
   const widths = new Set();
   for (let k = limited ? 0.3 : 0.5; k <= (limited ? 4 : 2); k += 0.05) widths.add(Math.max(Math.ceil(widest), Math.round(base * k)));
   // opt.band：供电行（repack 的 planBands）：不用给卫星配电站让的块（熔炉、制造台、单层研究站）另排成供电行，到了规划的高度插进去
@@ -771,6 +802,9 @@ function repackOnce(buildings, opt) {
           const score = w * h * (1 + 0.4 * Math.abs(Math.log(w / h / aspect)));
           const fit = fits(w, h);
           if (!best || (fit && !best.fit) || (fit === best.fit && score < best.score - 1e-9)) best = { score, W, r, side, w, h, fit, oi, H };
+          const k = `${oi}:${W}`;
+          const was = byW.get(k);
+          if (!was || (fit && !was.fit) || (fit === was.fit && score < was.score - 1e-9)) byW.set(k, { oi, W, score, fit });
         }
     }
   });
@@ -901,7 +935,8 @@ function repackOnce(buildings, opt) {
     const [tx, ty] = r.at.get(u);
     return { key: u.key, x0: u.frame.x0 + tx, x1: u.frame.x1 + tx, y0: u.frame.y0 + ty, y1: u.frame.y1 + ty, pad: u.pad, bx: u.bodies[0].x + tx, by: u.bodies[0].y + ty, bh: u.bodies[0].h };
   });
-  return { buildings: kept, towers: towers.length, uncovered, missed, spots, fixed: { order: best.oi, W }, zone: zoneAt, keepOut };
+  const alts = [...byW.values()].sort((a, b) => b.fit - a.fit || a.score - b.score);
+  return { buildings: kept, towers: towers.length, uncovered, missed, spots, fixed: { order: best.oi, W }, alts, zone: zoneAt, keepOut };
 }
 
 const KIND = { 2302: 'smelter', 2315: 'smelter', 2319: 'smelter', 2303: 'assembler', 2304: 'assembler', 2305: 'assembler', 2318: 'assembler', 2309: 'chemical', 2317: 'chemical', 2308: 'refinery', 2310: 'collider', 2901: 'lab', 2902: 'lab' };
