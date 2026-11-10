@@ -866,13 +866,16 @@ html[lang="en"] .tile .nm { -webkit-line-clamp: 3; word-break: normal; overflow-
 </style>
 <script>
 /* 语言：记过的照记的（dsphc-lang），地址带 ?lang=en / zh 的这一次照它；都没有时，浏览器的语言里没有中文才出英文
-   （打包嵌进中文网站的那份 LANG 写死 'zh'，只有自己点了才换）。英文是页面搭好以后整页翻过去的（web/src/i18n），翻好之前先不显示 */
+   （打包嵌进中文网站的那份 LANG 写死 'zh'，网站的英文入口 en/ 写死 'en'，只有自己点了才换）。英文是页面搭好以后整页翻过去的（web/src/i18n），翻好之前先不显示。
+   网站的两个入口（web/site.js）打包时填上 ROOT（这页到网站根目录，图标从那儿找）和 ALT（另一种语言那页的相对地址，语言按钮跳过去） */
 (function () {
   var LANG = /*__LANG__*/'auto';
+  window.dsphcRoot = /*__ROOT__*/'';
+  window.dsphcAlt = /*__ALT__*/null;
   var l = null;
   try { l = new URLSearchParams(location.search).get('lang') || localStorage.getItem('dsphc-lang'); } catch (e) {}
   if (l !== 'zh' && l !== 'en') {
-    l = 'zh';
+    l = LANG === 'en' ? 'en' : 'zh';
     if (LANG === 'auto') {
       var ls = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || 'zh'];
       l = 'en';
@@ -880,6 +883,11 @@ html[lang="en"] .tile .nm { -webkit-line-clamp: 3; word-break: normal; overflow-
     }
   }
   window.dsphcLang = l;
+  var h = document.documentElement;
+  if (l === 'zh' && h.lang === 'en') { // 英文入口照记过的选择出中文
+    h.lang = 'zh-CN';
+    document.title = h.getAttribute('data-zh-title') || document.title;
+  }
   if (l === 'en') {
     document.documentElement.lang = 'en';
     document.documentElement.classList.add('i18n-wait');

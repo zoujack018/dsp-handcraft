@@ -47,6 +47,7 @@ let forecastTimer = null;
 let autoSuggest = false;
 let firstVisit = false; // 第一次打开（没存过设置）：默认目标也先按建议补外部供应，和选目标时一样
 let iconMode = false; // 页面旁边有 icons/ 目录时改用其中的图片
+const ICONS = `${window.dsphcRoot || ''}icons/`; // 网站的英文入口在 en/ 里，icons/ 在上一层
 let pickMode = { add: true }; // 物品面板这次是添加目标还是更换第 i 个目标
 let inspectId = 0;
 let flat = null; // 正在看的无带蓝图（量产计算器带过来的输入出的，handoff.js 的 beltless）：{ text, zone 蓝图里带子区放在哪, place / moves 图上拖到哪, dom, targets, svg, items, ends, stats, far, issues }；排了自己的一张就清掉
@@ -495,14 +496,14 @@ function pic(x) {
   // 图片缺失时删掉 img，后面紧跟的线条图形就会显示出来
   const src = window.DSPHC?.icon?.(c); // 嵌在别的网页里时由那边给图标（见下面的 dsphc-icons）
   if (src) return `<img class="gl pic" src="${esc(src)}" alt="" onerror="this.remove()">${glyphSvg(x)}`;
-  if (iconMode && c.icon) return `<img class="gl pic" src="icons/${esc(c.icon)}.png" alt="" onerror="this.remove()">${glyphSvg(x)}`;
+  if (iconMode && c.icon) return `<img class="gl pic" src="${ICONS}${esc(c.icon)}.png" alt="" onerror="this.remove()">${glyphSvg(x)}`;
   return glyphSvg(x);
 }
 /** 图纸上原料入口旁边的物品图标（drawing.js 的 icon）：图片和物品面板同一个来源，没有图片就用线条图形；以 (0, 0) 为中心、0.8 格见方 */
 function drawIcon(itemId) {
   const it = byId.get(Number(itemId));
   if (!it) return null;
-  const src = window.DSPHC?.icon?.(it) || (iconMode && it.icon ? `icons/${it.icon}.png` : '');
+  const src = window.DSPHC?.icon?.(it) || (iconMode && it.icon ? `${ICONS}${it.icon}.png` : '');
   if (src) return `<image href="${esc(src)}" x="-0.4" y="-0.4" width="0.8" height="0.8"/>`;
   const { id, fill } = glyphOf(it);
   return `<svg x="-0.4" y="-0.4" width="0.8" height="0.8" viewBox="0 0 24 24"><use href="#g-${id}" style="--fill:${fill}" stroke="${FINE}" stroke-width="1.5" fill="none" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
@@ -2711,11 +2712,12 @@ if (!window.DSPHC) {
     renderCatalog();
     renderExt();
   };
-  probe.src = 'icons/iron-ore.png';
+  probe.src = `${ICONS}iron-ore.png`;
 }
 document.querySelectorAll('[data-page]').forEach((x) => x.setAttribute('aria-pressed', String(Number(x.dataset.page) === state.page)));
 // 多线程：把打包好的脚本源码交给后台线程，由它再开帮手线程（线程数 = 逻辑核数）
-// 语言：英文时把搭好的页面整页翻过去、之后跟着翻；左栏最下面的按钮记下另一种语言、重新打开
+// 语言：英文时把搭好的页面整页翻过去、之后跟着翻；左栏最下面的按钮记下另一种语言、重新打开。
+// 网站上中文、英文各一个入口（/ 和 /en/，web/site.js）：要换的语言是另一个入口默认的就跳过去；嵌在别的网站里的照旧原地重开
 {
   const en = window.dsphcLang === 'en';
   const btn = $('lang-btn');
@@ -2723,7 +2725,13 @@ document.querySelectorAll('[data-page]').forEach((x) => x.setAttribute('aria-pre
   btn.lang = en ? 'zh-CN' : 'en';
   btn.addEventListener('click', () => {
     const to = en ? 'zh' : 'en';
-    const url = new URL(location.href);
+    const alt = window.dsphcAlt; // { lang: 那个入口默认的语言, href: 'en/' 或 '../' }，同名的文件
+    const url = new URL(alt?.lang === to ? alt.href + location.pathname.split('/').pop() : location.href, location.href);
+    if (alt?.lang === to) {
+      url.search = location.search;
+      url.hash = location.hash;
+      if (url.protocol !== 'file:') url.pathname = url.pathname.replace(/\/index\.html$/, '/'); // 网站上走 / 和 /en/，本地文件照文件名
+    }
     try {
       localStorage.setItem('dsphc-lang', to);
       url.searchParams.delete('lang');
