@@ -310,7 +310,7 @@ export default {
   '直上直下的垂直传送带': 'vertical belts',
   '一格升一层的陡坡': 'steep slopes rising one level per cell',
   '和': ' and ',
-  '用到{0}，前期没解锁「超级磁场发生器」时建不了。': 'Uses {0}, which can\'t be built before "Super-magnetic Field Generator" is unlocked.',
+  '用到{0}，前期没解锁「超级磁场发生器」时建不了。': 'Uses {0}, which can\'t be built before "Super Magnetic Field Generator" is unlocked.',
   '竖排：整张已经转好 90°，贴的时候不用再转。': 'Vertical: the whole blueprint is already rotated 90°, no need to rotate when pasting.',
   '没放供电，贴好后自己补。': 'No power placed; add it yourself after pasting.',
   '{0}按赤道的紧凑间距排，只能贴在赤道附近。要贴到高纬度，打开「化工厂、精炼厂高纬度间距展开」。': '{0} use the compact equator spacing and can only be pasted near the equator. To paste at high latitudes, turn on the high-latitude spacing option for Chemical Plants and refineries.',
@@ -342,7 +342,7 @@ export default {
 
   // 从量产计算器带过来
   '带过来的目标里有 {0} 个这里不认识（物品 ID {1}），请在左上角重新选。': '{0} of the targets sent over aren\'t recognized here (item ID {1}); please pick them again at the top left.',
-  '已按{0}带过来的无带蓝图填好目标，点「生成蓝图」生成无带蓝图（物流方式选物流站时接站）': 'Targets filled in from the beltless blueprint sent over {0}. Click "Generate blueprint" to make the beltless blueprint (it connects to stations when logistics is set to logistics stations)',
+  '已按{0}带过来的无带蓝图填好目标，点「生成蓝图」生成无带蓝图（物流方式选物流站时接站）': 'Targets filled in from the beltless blueprint sent from {0}. Click "Generate blueprint" to make the beltless blueprint (it connects to stations when logistics is set to logistics stations)',
   '数量可以再改，好了点「生成蓝图」': 'adjust the amounts if you like, then click "Generate blueprint"',
-  '已按{0}带过来的方案填好目标、配方和设备，{1}': 'Targets, recipes and buildings filled in from the plan sent over {0}; {1}',
+  '已按{0}带过来的方案填好目标、配方和设备，{1}': 'Targets, recipes and buildings filled in from the plan sent from {0}; {1}',
 };

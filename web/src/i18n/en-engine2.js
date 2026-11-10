@@ -46,7 +46,7 @@ export default {
   '分拣器MK.Ⅳ': 'Pile Sorter',
   '传送带MK.I': 'Conveyor Belt Mk.I',
   '传送带MK.Ⅲ': 'Conveyor Belt Mk.III',
-  'X射线裂解(制氢)与重整精炼(制精炼油)可能需手动提供初始启动的精炼油/氢': 'X-Ray Cracking (hydrogen) and Reformed Refinement (refined oil) may need some refined oil/hydrogen supplied by hand to get started',
+  'X射线裂解(制氢)与重整精炼(制精炼油)可能需手动提供初始启动的精炼油/氢': 'X-ray Cracking (hydrogen) and Reformed Refinement (refined oil) may need some refined oil/hydrogen supplied by hand to get started',
   '未知的建筑类型': 'Unknown building type',
   '喷涂剂排线错误': 'Proliferator routing error',
   '参数解析错误：数据段太短': 'Parameter parse error: data section too short',

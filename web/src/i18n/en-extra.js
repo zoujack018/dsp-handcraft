@@ -40,6 +40,8 @@ export default {
   '副产物 {0} 单独一条带送出进储物仓 / 储液罐，满了要取走。': 'Byproduct {0} leaves on its own belt into storage / a tank; empty it when full.',
   '副产物 {0} 单独一条带送出进物流站': 'Byproduct {0} leaves on its own belt into the logistics station',
   '副产物 {0} 单独一条带送出，要接走，不然会堵。': 'Byproduct {0} leaves on its own belt; take it away or the line will jam.',
+  // 从量产计算器带过来的方案写着来源（「从「量产量化计算器」带过来的…」）
+  '量产量化计算器': 'Production Calculator',
   // 后台出错时可能带出来的
   '未知物品 ID {0}': 'Unknown item ID {0}',
   '未知物品「{0}」': 'Unknown item "{0}"',
