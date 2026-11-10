@@ -8,7 +8,8 @@ Pick a product and a rate per minute, and get a complete production-line bluepri
 
 [![The generator with a Gravity Matrix 60/min line](img/screenshot-en.webp)](https://dspbp.com/en/)
 
-- Runs entirely in your browser: one HTML file, no install, no account, works offline. To keep a copy, download the ZIP and open `index.html`.
+- Comes with a production calculator: **https://dspbp.com/en/calc/**. Pick targets and rates, see how many of each building and how much raw material you need, then click Generate blueprint to send the line to the generator (or make a beltless blueprint). Its recipe data comes from [DSQ](https://github.com/122474363/DSQ).
+- Runs entirely in your browser: no install, no account, works offline. To keep a copy, download the ZIP and open `index.html` (the calculator is `calc/index.html`).
 - Choose belts, sorters, smelters, assemblers, labs, proliferator, power (Tesla Towers or Satellite Substations) and logistics (belts in and out, storage, or Interstellar Logistics Stations).
 - Every blueprint is checked independently before you copy it: collisions, belt connections, sorter reach, power coverage.
 - Also generates fractionator arrays for deuterium.
@@ -20,6 +21,8 @@ English is new in 3.3. If a name or sentence reads wrong, or a blueprint does no
 选好目标产物和每分钟产量，自动排出产线蓝图，复制后贴进游戏。按玩家手搓的风格排：每种物品走自己的带，工厂分行、行间夹传送带通道，分拣器都紧挨着。当前版本 3.3.1（2026/11/11）。
 
 **直接用：https://dspbp.com/** 打不开时点右上角绿色的 Code → Download ZIP，解压后双击 `index.html`，不用联网、不用安装。
+
+**量产计算器：https://dspbp.com/calc/** 选目标和每分钟产量，算出每种设备要几台、要多少原料，点「生成蓝图」把整条线带进生成器排，也能出无带流蓝图（下载的那份是 `calc/index.html`）。配方数据和界面来自[戴森球计划量产量化计算器（DSQ）](https://github.com/122474363/DSQ)。
 
 也嵌在[戴森球计划量产量化计算器](https://dsq.svlik.com/)里：在计算器里点「生成蓝图」打开。
 
@@ -55,4 +58,4 @@ English is new in 3.3. If a name or sentence reads wrong, or a blueprint does no
 
 ## 许可
 
-GPL-3.0，见 `LICENSE`。游戏数据和物品图标的来源见 `data/THIRD_PARTY.md`。
+GPL-3.0，见 `LICENSE`。游戏数据、计算器的配方数据和物品图标的来源见 `data/THIRD_PARTY.md`。

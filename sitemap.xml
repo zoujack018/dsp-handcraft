@@ -12,4 +12,16 @@
     <xhtml:link rel="alternate" hreflang="en" href="https://dspbp.com/en/"/>
     <xhtml:link rel="alternate" hreflang="x-default" href="https://dspbp.com/en/"/>
   </url>
+  <url>
+    <loc>https://dspbp.com/calc/</loc>
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://dspbp.com/calc/"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://dspbp.com/en/calc/"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://dspbp.com/en/calc/"/>
+  </url>
+  <url>
+    <loc>https://dspbp.com/en/calc/</loc>
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://dspbp.com/calc/"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://dspbp.com/en/calc/"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://dspbp.com/en/calc/"/>
+  </url>
 </urlset>
