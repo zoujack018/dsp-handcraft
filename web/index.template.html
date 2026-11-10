@@ -851,7 +851,43 @@ body > div:first-child:not(.app) { color: #ededef !important; background: var(--
   .output { grid-template-columns: minmax(0, 1fr); }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+/* ---------- 语言 ---------- */
+html.i18n-wait body { visibility: hidden; }
+html[lang="en"] .xt.is-goal .sub::before { content: "Target  "; }
+html[lang="en"] .xt.is-ext .sub::before { content: "External  "; }
+html[lang="en"] .pill { gap: 5px; padding: 6px 8px; } /* 英文的名字长：顶上一排按钮收紧一点，宽屏上还排得进一行 */
+html[lang="en"] .sheet-stats > span { padding: 0 9px; }
+html[lang="en"] .xt .nm { font-size: 12px; letter-spacing: -0.01em; }
+html[lang="en"] .tile .nm { -webkit-line-clamp: 3; word-break: normal; overflow-wrap: anywhere; font-size: 10px; line-height: 1.15; letter-spacing: -0.01em; } /* 选目标的格子：英文名按词折行、多给一行 */
+.lang-row { margin-top: auto; padding-top: 4px; }
+.lang-btn { padding: 0; border: 0; background: none; font: inherit; font-size: 12px; line-height: 18px; color: var(--text-3); cursor: pointer; }
+.lang-btn:hover { color: var(--text); text-decoration: underline; }
+.lang-btn:focus-visible { outline: 2px solid var(--accent, currentColor); outline-offset: 2px; }
 </style>
+<script>
+/* 语言：记过的照记的（dsphc-lang），地址带 ?lang=en / zh 的这一次照它；都没有时，浏览器的语言里没有中文才出英文
+   （打包嵌进中文网站的那份 LANG 写死 'zh'，只有自己点了才换）。英文是页面搭好以后整页翻过去的（web/src/i18n），翻好之前先不显示 */
+(function () {
+  var LANG = /*__LANG__*/'auto';
+  var l = null;
+  try { l = new URLSearchParams(location.search).get('lang') || localStorage.getItem('dsphc-lang'); } catch (e) {}
+  if (l !== 'zh' && l !== 'en') {
+    l = 'zh';
+    if (LANG === 'auto') {
+      var ls = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || 'zh'];
+      l = 'en';
+      for (var i = 0; i < ls.length; i++) if (/^zh\b/i.test(ls[i])) l = 'zh';
+    }
+  }
+  window.dsphcLang = l;
+  if (l === 'en') {
+    document.documentElement.lang = 'en';
+    document.documentElement.classList.add('i18n-wait');
+    // 保险：页面脚本万一没跑到翻译那一步，也别一直不显示
+    addEventListener('load', function () { setTimeout(function () { document.documentElement.classList.remove('i18n-wait'); }, 1500); });
+  }
+})();
+</script>
 <script>
 /* 深浅色：平常跟系统（系统设成「自动」就是日出变浅、日落变深）；深色的几段 CSS 是 style.dark-css，媒体条件就是系统深色。
    计算器顶栏的按钮手动选的记在浏览器里（dsphc-theme，连同当时系统是深是浅），计算器和蓝图生成器都认；系统自己换了就作废、又跟系统。
@@ -1095,6 +1131,7 @@ body > div:first-child:not(.app) { color: #ededef !important; background: var(--
         <label><input type="radio" name="pile" value="4"><span data-note="叠 4 层">3 级</span></label>
       </div>
     </fieldset>
+    <div class="lang-row" data-i18n="off"><button type="button" class="lang-btn" id="lang-btn" lang="en">English</button></div>
   </form>
 
   <main class="main">

@@ -6,6 +6,7 @@ import { createViewer } from './viewer.js';
 import { readHandoff, readDefs } from './handoff.js';
 import { beltlessSvg } from './beltless.js';
 import { placeZone, nearestPlace, turn, partsFit } from '../../src/beltless/perimeter.js';
+import { startEnglish } from './i18n/index.js';
 
 const $ = (id) => document.getElementById(id);
 const STORE = 'dsp-handcraft:settings';
@@ -507,6 +508,8 @@ function drawIcon(itemId) {
   return `<svg x="-0.4" y="-0.4" width="0.8" height="0.8" viewBox="0 0 24 24"><use href="#g-${id}" style="--fill:${fill}" stroke="${FINE}" stroke-width="1.5" fill="none" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
 }
 const tileInner = (it) => `${pic(it)}<span class="nm">${esc(it.name)}</span>`;
+// 搜物品：英文模式下也对英文名（不分大小写）
+const nameHas = (name, q) => name.includes(q) || (!!window.dsphcTr && window.dsphcTr(name).toLowerCase().includes(q.toLowerCase()));
 function renderCatalog() {
   const items = catalog.filter((x) => x.page === state.page);
   if (!items.length) {
@@ -525,7 +528,7 @@ function renderCatalog() {
         continue;
       }
       const off = it.status !== 'ok' && it.status !== 'partial';
-      const cls = ['tile', `st-${it.status}`, state.targets.some((t) => t.id === it.id) ? 'is-target' : '', off ? 'is-off' : '', q ? (it.name.includes(q) ? 'is-hit' : 'is-dim') : ''].join(' ');
+      const cls = ['tile', `st-${it.status}`, state.targets.some((t) => t.id === it.id) ? 'is-target' : '', off ? 'is-off' : '', q ? (nameHas(it.name, q) ? 'is-hit' : 'is-dim') : ''].join(' ');
       const tip = `${it.name}：${STATUS_TEXT[it.status]}`;
       html.push(
         `<button type="button" class="${cls}" style="--cat:${CAT_COLOR[it.type] || '#9aa5b1'}" data-id="${it.id}" title="${esc(tip)}" aria-label="${esc(tip)}"${off ? ' aria-disabled="true"' : ''}>${tileInner(it)}</button>`,
@@ -2712,6 +2715,32 @@ if (!window.DSPHC) {
 }
 document.querySelectorAll('[data-page]').forEach((x) => x.setAttribute('aria-pressed', String(Number(x.dataset.page) === state.page)));
 // 多线程：把打包好的脚本源码交给后台线程，由它再开帮手线程（线程数 = 逻辑核数）
+// 语言：英文时把搭好的页面整页翻过去、之后跟着翻；左栏最下面的按钮记下另一种语言、重新打开
+{
+  const en = window.dsphcLang === 'en';
+  const btn = $('lang-btn');
+  btn.textContent = en ? '中文' : 'English';
+  btn.lang = en ? 'zh-CN' : 'en';
+  btn.addEventListener('click', () => {
+    const to = en ? 'zh' : 'en';
+    const url = new URL(location.href);
+    try {
+      localStorage.setItem('dsphc-lang', to);
+      url.searchParams.delete('lang');
+    } catch (e) {
+      url.searchParams.set('lang', to); // 浏览器不让存：带在地址上
+    }
+    if (url.href === location.href) location.reload();
+    else location.replace(url);
+  });
+  if (en) {
+    try {
+      startEnglish();
+    } finally {
+      document.documentElement.classList.remove('i18n-wait');
+    }
+  }
+}
 send({ type: 'init', src: WORKER_SRC, threads: navigator.hardwareConcurrency || 4 });
 if (state.defs) send({ type: 'defs', defs: state.defs });
 send({ type: 'catalog', id: ++catId, raw: [] });

@@ -1,12 +1,34 @@
-# 戴森球计划蓝图生成器
+# DSP Blueprint Generator · 戴森球计划蓝图生成器
 
-选好目标产物和每分钟产量，自动排出产线蓝图，复制后贴进游戏。当前版本 3.2.0（2026/11/07）。
+**English** · [中文](#中文)
 
-## 使用
+Pick a product and a rate per minute, and get a complete production-line blueprint for [Dyson Sphere Program](https://store.steampowered.com/app/1366540/Dyson_Sphere_Program/) that you can paste into the game. It lays the line out the way players build by hand: one belt per item, machines in rows with belt aisles between them, every sorter directly adjacent.
 
-点右上角绿色的 Code → Download ZIP，解压后双击 `index.html` 用浏览器打开。不用联网、不用安装。
+**Use it now: https://zoujack018.github.io/dsp-handcraft/** (add `?lang=en` to force English)
+
+[![The generator with a Gravity Matrix 60/min line](img/screenshot-en.webp)](https://zoujack018.github.io/dsp-handcraft/?lang=en)
+
+- Runs entirely in your browser: one HTML file, no install, no account, works offline. To keep a copy, download the ZIP and open `index.html`.
+- Choose belts, sorters, smelters, assemblers, labs, proliferator, power (Tesla Towers or Satellite Substations) and logistics (belts in and out, storage, or Interstellar Logistics Stations).
+- Every blueprint is checked independently before you copy it: collisions, belt connections, sorter reach, power coverage.
+- Also generates fractionator arrays for deuterium.
+
+English is new in 3.3. If a name or sentence reads wrong, or a blueprint does not paste cleanly, please [open an issue](https://github.com/zoujack018/dsp-handcraft/issues).
+
+## 中文
+
+选好目标产物和每分钟产量，自动排出产线蓝图，复制后贴进游戏。按玩家手搓的风格排：每种物品走自己的带，工厂分行、行间夹传送带通道，分拣器都紧挨着。当前版本 3.3.0（2026/11/10）。
+
+**直接用：https://zoujack018.github.io/dsp-handcraft/** 打不开时点右上角绿色的 Code → Download ZIP，解压后双击 `index.html`，不用联网、不用安装。
 
 也嵌在[戴森球计划量产量化计算器](https://dsq.svlik.com/)里：在计算器里点「生成蓝图」打开。
+
+![蓝图生成器：引力矩阵 60/分](img/screenshot-zh.webp)
+
+## 3.3 更新
+
+- 英文模式：左栏最下面的 English / 中文 切换；浏览器语言里没有中文时默认英文。英文下选目标可以搜英文名。
+- 中文页面没有别的变化。
 
 ## 3.2 更新
 
