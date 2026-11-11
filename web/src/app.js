@@ -7,6 +7,7 @@ import { readHandoff, readDefs } from './handoff.js';
 import { beltlessSvg } from './beltless.js';
 import { placeZone, nearestPlace, turn, partsFit } from '../../src/beltless/perimeter.js';
 import { startEnglish } from './i18n/index.js';
+import { blueprintLabel, relabelBlueprint } from '../../src/codec/relabel.js';
 
 const $ = (id) => document.getElementById(id);
 const STORE = 'dsp-handcraft:settings';
@@ -509,6 +510,14 @@ function drawIcon(itemId) {
   return `<svg x="-0.4" y="-0.4" width="0.8" height="0.8" viewBox="0 0 24 24"><use href="#g-${id}" style="--fill:${fill}" stroke="${FINE}" stroke-width="1.5" fill="none" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
 }
 const tileInner = (it) => `${pic(it)}<span class="nm">${esc(it.name)}</span>`;
+// 英文模式下，蓝图自带的名字和说明也换成英文（建筑数据不动），贴进游戏的蓝图库里看得懂；中文模式原样
+const outBlueprint = (str) => {
+  const tr = window.dsphcTr;
+  const label = tr && blueprintLabel(str);
+  if (!label) return str;
+  const title = tr(label.shortDesc).replace(/([A-Za-z.)])(\d)/g, '$1 $2').replace(/\s*\+\s*/g, ' + '); // 「引力矩阵60」这种名字和数连着写的，英文里隔开
+  return relabelBlueprint(str, { shortDesc: title, desc: tr(label.desc) });
+};
 // 搜物品：英文模式下也对英文名（不分大小写）
 const nameHas = (name, q) => name.includes(q) || (!!window.dsphcTr && window.dsphcTr(name).toLowerCase().includes(q.toLowerCase()));
 function renderCatalog() {
@@ -1676,12 +1685,12 @@ function show(d) {
   fillNotes(d);
   fillPowerCard(d.energy);
   fillSheetStats(d);
-  $('bp').value = d.blueprint;
+  $('bp').value = outBlueprint(d.blueprint);
   $('copy').disabled = false;
   $('copy').textContent = '复制蓝图';
   $('copy-top').hidden = false;
   $('copy-top').textContent = '复制蓝图';
-  $('bp-meta').textContent = `${d.blueprint.length.toLocaleString()} 字符`;
+  $('bp-meta').textContent = `${$('bp').value.length.toLocaleString()} 字符`;
 }
 
 // ---------- 无带蓝图（量产计算器「生成无带蓝图」带过来的输入；点「生成蓝图」时后台出整张、重新摆放） ----------
@@ -2287,8 +2296,8 @@ function patchStationOf(d, k, storage, set) {
       d.stationCfg = r.stationCfg;
       if (last !== d) return; // 又生成了一张，这张不显示了
       // 面板不重画（滑条、按钮已经是新值，重画会丢焦点），只换蓝图字符串和「接口」那栏
-      $('bp').value = d.blueprint;
-      $('bp-meta').textContent = `${d.blueprint.length.toLocaleString()} 字符`;
+      $('bp').value = outBlueprint(d.blueprint);
+      $('bp-meta').textContent = `${$('bp').value.length.toLocaleString()} 字符`;
       fillPorts(d);
     });
 }
@@ -2560,7 +2569,7 @@ $('copy').addEventListener('click', async () => {
   const fresh = zoneMoved() ? regenFlat() : null;
   if (fresh) for (const b of [$('copy'), $('copy-top')]) b.textContent = '复制中…';
   try {
-    await writeClipboard(fresh ?? $('bp').value);
+    await writeClipboard(fresh ? fresh.then(outBlueprint) : $('bp').value);
   } catch (err) {
     for (const b of [$('copy'), $('copy-top')]) b.textContent = '复制蓝图';
     setStatus(`无带蓝图没生成出来：${err.message}`, true);
