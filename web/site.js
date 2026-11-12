@@ -1,6 +1,7 @@
 // 公开网站（发布副本放在 GitHub Pages 上）：蓝图生成器中文在根目录、英文在 en/，量产计算器中文在 calc/、英文在 en/calc/。
 // 打包时（tools/build-web.js、发布副本的 web/build.js）给页面头上加搜索引擎和分享卡片看的标签（canonical、互相指的 hreflang、description、Open Graph），
-// 英文那份写死英文的 lang、标题、默认语言。计算器只有发布副本打包（calcPage）。嵌进 DSQ 的那份不经过这里。
+// 标题换成带游戏名的，默认语言写死成这个入口的（中文入口不跟浏览器语言走：搜索引擎的抓取器自称英文浏览器，跟着走的话 / 和 /en/ 抓到的是同一份英文；
+// 英文浏览器在中文入口看到的是页面开头那段脚本给的一条提示）。英文那份 lang 也写死英文。计算器只有发布副本打包（calcPage）。嵌进 DSQ 的那份不经过这里。
 export const SITE = 'https://dspbp.com/';
 const IMG = { w: 2880, h: 1800 }; // 发布副本 img/ 里的截图
 
@@ -10,6 +11,7 @@ const GEN = {
     hreflang: 'zh-CN',
     locale: 'zh_CN',
     name: '戴森球计划蓝图生成器',
+    title: '戴森球计划蓝图生成器 · 产线自动排布',
     description: '戴森球计划产线蓝图生成器：选好目标产物和每分钟产量，自动排出手搓风格的产线蓝图（每种物品走自己的带，工厂分行、行间夹传送带通道），复制后贴进游戏。在浏览器里运行，不用安装。',
     image: 'img/screenshot-zh.webp',
     imageAlt: '蓝图生成器：引力矩阵 60/分',
@@ -31,6 +33,7 @@ const CALC = {
     hreflang: 'zh-CN',
     locale: 'zh_CN',
     name: '戴森球计划量产计算器',
+    title: '戴森球计划量产计算器 · 产线配比',
     description: '戴森球计划量产计算器：选目标物品和每分钟产量，算出每种设备要几台、要多少原料；点「生成蓝图」接着排成手搓风格的产线蓝图，也能出无带流蓝图，复制后贴进游戏。在浏览器里运行，不用安装。',
     image: 'img/calc-zh.webp',
     imageAlt: '量产计算器：绿矩阵（引力矩阵）60/分的生产清单',
@@ -59,6 +62,9 @@ const alternates = (pages, tag) =>
     ...Object.keys(pages).map((l) => `<${tag} rel="alternate" hreflang="${pages[l].hreflang}" href="${url(pages, l)}"/>`),
     `<${tag} rel="alternate" hreflang="x-default" href="${url(pages, 'en')}"/>`, // 既不是中文也不是英文的用户：给英文
   ];
+/** <html> 标签：这个入口的 lang，另一种语言的标题带在 data-zh-title / data-en-title 上（照记过的选择出另一种语言时，页面开头那段脚本换上） */
+const htmlTag = (pages, lang, rest) =>
+  lang === 'en' ? `<html lang="en"${rest} data-zh-title="${attr(pages.zh.title)}">` : `<html lang="zh-CN"${rest} data-en-title="${attr(pages.en.title)}">`;
 /** 头上加的标签（og:site_name 是整个网站的名字，用生成器的） */
 const headTags = (pages, lang) => {
   const p = pages[lang];
@@ -90,13 +96,10 @@ export function sitePage(page, lang) {
   const p = GEN[lang];
   const up = lang === 'en' ? '../' : '';
   let s = page;
-  if (lang === 'en') {
-    const zhTitle = /<title>([^<]*)<\/title>/.exec(s)[1];
-    s = must(s, '<html lang="zh-CN">', `<html lang="en" data-zh-title="${attr(zhTitle)}">`);
-    s = must(s, `<title>${zhTitle}</title>`, `<title>${attr(p.title)}</title>`);
-    s = must(s, "/*__LANG__*/'auto'", "'en'");
-    s = must(s, '<link rel="icon" href="favicon.ico">', '<link rel="icon" href="../favicon.ico">');
-  }
+  s = must(s, '<html lang="zh-CN">', htmlTag(GEN, lang, ''));
+  s = must(s, /<title>[^<]*<\/title>/.exec(s)[0], `<title>${attr(p.title)}</title>`);
+  s = must(s, "/*__LANG__*/'auto'", `'${lang}'`);
+  if (lang === 'en') s = must(s, '<link rel="icon" href="favicon.ico">', '<link rel="icon" href="../favicon.ico">');
   s = must(s, "/*__ROOT__*/''", JSON.stringify(up));
   s = must(s, '/*__ALT__*/null', JSON.stringify({ lang: OTHER[lang], href: lang === 'en' ? '../' : GEN.en.path }));
   const icon = `<link rel="icon" href="${up}favicon.ico">`;
@@ -112,11 +115,10 @@ export function calcPage(html, lang) {
   const up = lang === 'en' ? '../../' : '../'; // 到网站根目录
   const lib = lang === 'en' ? '../../calc/' : ''; // 到 calc/
   let s = html;
+  s = must(s, '<html lang="zh-CN" class="boot">', htmlTag(CALC, lang, ' class="boot"'));
+  s = must(s, /<title>[^<]*<\/title>/.exec(s)[0], `<title>${attr(p.title)}</title>`);
+  s = must(s, "/*__LANG__*/'auto'", `'${lang}'`);
   if (lang === 'en') {
-    const zhTitle = /<title>([^<]*)<\/title>/.exec(s)[1];
-    s = must(s, '<html lang="zh-CN" class="boot">', `<html lang="en" class="boot" data-zh-title="${attr(zhTitle)}">`);
-    s = must(s, `<title>${zhTitle}</title>`, `<title>${attr(p.title)}</title>`);
-    s = must(s, "/*__LANG__*/'auto'", "'en'");
     for (const f of ['dsq-data.js', 'calc-icons.js', 'calc.js']) s = must(s, `<script defer src="${f}"></script>`, `<script defer src="${lib}${f}"></script>`);
     s = must(s, '<link rel="preload" href="calc-icons.avif"', `<link rel="preload" href="${lib}calc-icons.avif"`);
     s = must(s, 'url(calc-icons.webp);', `url(${lib}calc-icons.webp);`);

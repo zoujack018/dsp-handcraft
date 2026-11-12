@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" class="boot" data-zh-title="量产计算器">
+<html lang="en" class="boot" data-zh-title="戴森球计划量产计算器 · 产线配比">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -594,23 +594,20 @@ html[lang="en"] .tile .nm { word-break: normal; overflow-wrap: anywhere; -webkit
 </style>
 <script>
 /* 语言：同蓝图生成器（web/index.template.html 里有一样的一份），记过的照记的（dsphc-lang，两页共用），地址带 ?lang=en / zh 的这一次照它；
-   都没有时，浏览器的语言里没有中文才出英文（打包进 DSQ 的那份 LANG 写死 'zh'，公开网站的英文入口 en/calc/ 写死 'en'，只有自己点了才换）。
+   都没有时照这一页默认的 LANG：'auto' 是浏览器的语言里没有中文才出英文，打包进 DSQ 的那份和公开网站的中文入口 calc/ 写死 'zh'，英文入口 en/calc/ 写死 'en'，只有自己点了才换。
    英文是 calc.js 搭好页面以后载入 calc-en.js 整页翻过去的，翻好之前先不显示。
    公开网站的两个入口（web/site.js 的 calcPage）打包时填上 ALT（另一种语言那页的相对地址，语言按钮跳过去）和 GEN（同语言的蓝图生成器，相对这一页） */
 (function () {
   var LANG = 'en';
   window.dsphcAlt = {"lang":"zh","href":"../../calc/"};
   window.dsphcGen = "../index.html";
+  var ls = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || 'zh'];
+  var zhUser = false;
+  for (var i = 0; i < ls.length; i++) if (/^zh\b/i.test(ls[i])) zhUser = true;
   var l = null;
   try { l = new URLSearchParams(location.search).get('lang') || localStorage.getItem('dsphc-lang'); } catch (e) {}
-  if (l !== 'zh' && l !== 'en') {
-    l = LANG === 'en' ? 'en' : 'zh';
-    if (LANG === 'auto') {
-      var ls = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || 'zh'];
-      l = 'en';
-      for (var i = 0; i < ls.length; i++) if (/^zh\b/i.test(ls[i])) l = 'zh';
-    }
-  }
+  var chosen = l === 'zh' || l === 'en';
+  if (!chosen) l = LANG === 'auto' ? (zhUser ? 'zh' : 'en') : LANG === 'en' ? 'en' : 'zh';
   window.dsphcLang = l;
   var h = document.documentElement;
   if (l === 'zh' && h.lang === 'en') { // 英文入口照记过的选择出中文
@@ -618,10 +615,33 @@ html[lang="en"] .tile .nm { word-break: normal; overflow-wrap: anywhere; -webkit
     document.title = h.getAttribute('data-zh-title') || document.title;
   }
   if (l === 'en') {
-    document.documentElement.lang = 'en';
-    document.documentElement.classList.add('i18n-wait');
+    if (h.lang !== 'en' && h.getAttribute('data-en-title')) document.title = h.getAttribute('data-en-title'); // 中文入口照记过的选择出英文
+    h.lang = 'en';
+    h.classList.add('i18n-wait');
     // 保险：calc-en.js 万一没载入，也别一直不显示
     addEventListener('load', function () { setTimeout(function () { document.documentElement.classList.remove('i18n-wait'); }, 1500); });
+  }
+  // 网站的中文入口，浏览器语言里没有中文、自己也没选过：页面照旧是中文（搜索引擎抓到的和网址说的是同一种语言），底下浮一条去英文入口的提示
+  window.dsphcLangHint = !chosen && l === 'zh' && !zhUser && !!window.dsphcAlt && window.dsphcAlt.lang === 'en' && window.parent === window;
+  if (window.dsphcLangHint) {
+    addEventListener('DOMContentLoaded', function () {
+      var tip = document.createElement('div');
+      tip.id = 'lang-hint';
+      tip.lang = 'en';
+      tip.setAttribute('data-i18n', 'off');
+      tip.setAttribute('data-nosnippet', '');
+      tip.setAttribute('role', 'region');
+      tip.setAttribute('aria-label', 'Language');
+      tip.style.cssText = 'position:fixed;left:16px;right:16px;bottom:24px;z-index:3000;width:fit-content;margin:0 auto;display:flex;align-items:center;gap:14px;box-sizing:border-box;padding:10px 10px 10px 16px;font:13px/18px system-ui,-apple-system,"Segoe UI",sans-serif;color:#ededef;background:#2a2a2d;border:1px solid rgb(255 255 255 / 0.14);border-radius:10px;box-shadow:0 12px 32px rgb(0 0 0 / 0.35)';
+      var btn = 'font:inherit;border:0;border-radius:6px;cursor:pointer;';
+      tip.innerHTML = '<span>This page is in Chinese.</span>' +
+        '<button type="button" style="' + btn + 'flex:none;padding:6px 12px;font-weight:600;color:#1a1206;background:#f0913a">Switch to English</button>' +
+        '<button type="button" aria-label="Dismiss" title="Dismiss" style="' + btn + 'flex:none;width:28px;height:28px;padding:0;font-size:16px;line-height:1;color:#b4b4b8;background:none">×</button>';
+      var b = tip.getElementsByTagName('button');
+      b[0].onclick = function () { var x = document.getElementById('lang-btn'); if (x) x.click(); }; // 同语言按钮：记下英文、去英文入口
+      b[1].onclick = function () { try { localStorage.setItem('dsphc-lang', 'zh'); } catch (e) {} tip.remove(); };
+      document.body.appendChild(tip);
+    });
   }
 })();
 </script>

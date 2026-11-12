@@ -1,11 +1,11 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-en-title="DSP Blueprint Generator · Dyson Sphere Program">
 <head>
 <meta charset="utf-8">
 <script src="calc/bridge.js" data-calc="calc/index.html"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>产线蓝图生成器</title>
+<title>戴森球计划蓝图生成器 · 产线自动排布</title>
 <link rel="icon" href="favicon.ico">
 <meta name="description" content="戴森球计划产线蓝图生成器：选好目标产物和每分钟产量，自动排出手搓风格的产线蓝图（每种物品走自己的带，工厂分行、行间夹传送带通道），复制后贴进游戏。在浏览器里运行，不用安装。">
 <link rel="canonical" href="https://dspbp.com/">
@@ -14,7 +14,7 @@
 <link rel="alternate" hreflang="x-default" href="https://dspbp.com/en/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="戴森球计划蓝图生成器">
-<meta property="og:title" content="戴森球计划蓝图生成器">
+<meta property="og:title" content="戴森球计划蓝图生成器 · 产线自动排布">
 <meta property="og:description" content="戴森球计划产线蓝图生成器：选好目标产物和每分钟产量，自动排出手搓风格的产线蓝图（每种物品走自己的带，工厂分行、行间夹传送带通道），复制后贴进游戏。在浏览器里运行，不用安装。">
 <meta property="og:url" content="https://dspbp.com/">
 <meta property="og:image" content="https://dspbp.com/img/screenshot-zh.webp">
@@ -884,23 +884,20 @@ html[lang="en"] .tile .nm { -webkit-line-clamp: 3; word-break: normal; overflow-
 .lang-btn:focus-visible { outline: 2px solid var(--accent, currentColor); outline-offset: 2px; }
 </style>
 <script>
-/* 语言：记过的照记的（dsphc-lang），地址带 ?lang=en / zh 的这一次照它；都没有时，浏览器的语言里没有中文才出英文
-   （打包嵌进中文网站的那份 LANG 写死 'zh'，网站的英文入口 en/ 写死 'en'，只有自己点了才换）。英文是页面搭好以后整页翻过去的（web/src/i18n），翻好之前先不显示。
+/* 语言：记过的照记的（dsphc-lang），地址带 ?lang=en / zh 的这一次照它；都没有时照这一页默认的 LANG：'auto' 是浏览器的语言里没有中文才出英文，
+   打包嵌进中文网站的那份和网站的中文入口写死 'zh'，网站的英文入口 en/ 写死 'en'，只有自己点了才换。英文是页面搭好以后整页翻过去的（web/src/i18n），翻好之前先不显示。
    网站的两个入口（web/site.js）打包时填上 ROOT（这页到网站根目录，图标从那儿找）和 ALT（另一种语言那页的相对地址，语言按钮跳过去） */
 (function () {
-  var LANG = /*__LANG__*/'auto';
+  var LANG = 'zh';
   window.dsphcRoot = "";
   window.dsphcAlt = {"lang":"en","href":"en/"};
+  var ls = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || 'zh'];
+  var zhUser = false;
+  for (var i = 0; i < ls.length; i++) if (/^zh\b/i.test(ls[i])) zhUser = true;
   var l = null;
   try { l = new URLSearchParams(location.search).get('lang') || localStorage.getItem('dsphc-lang'); } catch (e) {}
-  if (l !== 'zh' && l !== 'en') {
-    l = LANG === 'en' ? 'en' : 'zh';
-    if (LANG === 'auto') {
-      var ls = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || 'zh'];
-      l = 'en';
-      for (var i = 0; i < ls.length; i++) if (/^zh\b/i.test(ls[i])) l = 'zh';
-    }
-  }
+  var chosen = l === 'zh' || l === 'en';
+  if (!chosen) l = LANG === 'auto' ? (zhUser ? 'zh' : 'en') : LANG === 'en' ? 'en' : 'zh';
   window.dsphcLang = l;
   var h = document.documentElement;
   if (l === 'zh' && h.lang === 'en') { // 英文入口照记过的选择出中文
@@ -908,10 +905,33 @@ html[lang="en"] .tile .nm { -webkit-line-clamp: 3; word-break: normal; overflow-
     document.title = h.getAttribute('data-zh-title') || document.title;
   }
   if (l === 'en') {
-    document.documentElement.lang = 'en';
-    document.documentElement.classList.add('i18n-wait');
+    if (h.lang !== 'en' && h.getAttribute('data-en-title')) document.title = h.getAttribute('data-en-title'); // 中文入口照记过的选择出英文
+    h.lang = 'en';
+    h.classList.add('i18n-wait');
     // 保险：页面脚本万一没跑到翻译那一步，也别一直不显示
     addEventListener('load', function () { setTimeout(function () { document.documentElement.classList.remove('i18n-wait'); }, 1500); });
+  }
+  // 网站的中文入口，浏览器语言里没有中文、自己也没选过：页面照旧是中文（搜索引擎抓到的和网址说的是同一种语言），底下浮一条去英文入口的提示
+  window.dsphcLangHint = !chosen && l === 'zh' && !zhUser && !!window.dsphcAlt && window.dsphcAlt.lang === 'en' && window.parent === window;
+  if (window.dsphcLangHint) {
+    addEventListener('DOMContentLoaded', function () {
+      var tip = document.createElement('div');
+      tip.id = 'lang-hint';
+      tip.lang = 'en';
+      tip.setAttribute('data-i18n', 'off');
+      tip.setAttribute('data-nosnippet', '');
+      tip.setAttribute('role', 'region');
+      tip.setAttribute('aria-label', 'Language');
+      tip.style.cssText = 'position:fixed;left:16px;right:16px;bottom:24px;z-index:3000;width:fit-content;margin:0 auto;display:flex;align-items:center;gap:14px;box-sizing:border-box;padding:10px 10px 10px 16px;font:13px/18px system-ui,-apple-system,"Segoe UI",sans-serif;color:#ededef;background:#2a2a2d;border:1px solid rgb(255 255 255 / 0.14);border-radius:10px;box-shadow:0 12px 32px rgb(0 0 0 / 0.35)';
+      var btn = 'font:inherit;border:0;border-radius:6px;cursor:pointer;';
+      tip.innerHTML = '<span>This page is in Chinese.</span>' +
+        '<button type="button" style="' + btn + 'flex:none;padding:6px 12px;font-weight:600;color:#1a1206;background:#f0913a">Switch to English</button>' +
+        '<button type="button" aria-label="Dismiss" title="Dismiss" style="' + btn + 'flex:none;width:28px;height:28px;padding:0;font-size:16px;line-height:1;color:#b4b4b8;background:none">×</button>';
+      var b = tip.getElementsByTagName('button');
+      b[0].onclick = function () { var x = document.getElementById('lang-btn'); if (x) x.click(); }; // 同语言按钮：记下英文、去英文入口
+      b[1].onclick = function () { try { localStorage.setItem('dsphc-lang', 'zh'); } catch (e) {} tip.remove(); };
+      document.body.appendChild(tip);
+    });
   }
 })();
 </script>

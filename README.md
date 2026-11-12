@@ -9,7 +9,7 @@ Pick a product and a rate per minute, and get a complete production-line bluepri
 [![The generator with a Gravity Matrix 60/min line](img/screenshot-en.webp)](https://dspbp.com/en/)
 
 - Comes with a production calculator: **https://dspbp.com/en/calc/**. Pick targets and rates, see how many of each building and how much raw material you need, then click Generate blueprint to send the line to the generator (or make a beltless blueprint). Its recipe data comes from [DSQ](https://github.com/122474363/DSQ).
-- Runs entirely in your browser: no install, no account, works offline. To keep a copy, download the ZIP and open `index.html` (the calculator is `calc/index.html`).
+- Runs entirely in your browser: no install, no account, works offline. To keep a copy, download the ZIP and open `en/index.html` (the calculator is `en/calc/index.html`).
 - Choose belts, sorters, smelters, assemblers, labs, proliferator, power (Tesla Towers or Satellite Substations) and logistics (belts in and out, storage, or Interstellar Logistics Stations).
 - Every blueprint is checked independently before you copy it: collisions, belt connections, sorter reach, power coverage.
 - Also generates fractionator arrays for deuterium.
@@ -32,7 +32,7 @@ English is new in 3.3. If a name or sentence reads wrong, or a blueprint does no
 
 - 3.3.2：站点带上量产计算器（dspbp.com/calc/，英文 dspbp.com/en/calc/），从计算器点「生成蓝图」接着排；英文模式下蓝图自带的名字和说明也是英文。
 - 3.3.1：网址换成 dspbp.com，英文入口是 dspbp.com/en/；英文里的物品、建筑、科技名照游戏自带的英文核对过。
-- 英文模式：左栏最下面的 English / 中文 切换；浏览器语言里没有中文时默认英文。英文下选目标可以搜英文名。
+- 英文模式：英文入口 dspbp.com/en/，或左栏最下面的 English / 中文 切换。英文下选目标可以搜英文名。
 - 中文页面没有别的变化。
 
 ## 3.2 更新
