@@ -18,7 +18,7 @@ English is new in 3.3. If a name or sentence reads wrong, or a blueprint does no
 
 ## 中文
 
-选好目标产物和每分钟产量，自动排出产线蓝图，复制后贴进游戏。按玩家手搓的风格排：每种物品走自己的带，工厂分行、行间夹传送带通道，分拣器都紧挨着。当前版本 3.3.2（2026/11/11）。
+选好目标产物和每分钟产量，自动排出产线蓝图，复制后贴进游戏。按玩家手搓的风格排：每种物品走自己的带，工厂分行、行间夹传送带通道，分拣器都紧挨着。当前版本 3.3.3（2026/11/13）。
 
 **直接用：https://dspbp.com/** 打不开时点右上角绿色的 Code → Download ZIP，解压后双击 `index.html`，不用联网、不用安装。
 
@@ -30,6 +30,7 @@ English is new in 3.3. If a name or sentence reads wrong, or a blueprint does no
 
 ## 3.3 更新
 
+- 3.3.3：中文入口（dspbp.com、dspbp.com/calc/）固定显示中文，英文浏览器打开时页面底下有一条去英文入口的提示；网页标题带上「戴森球计划」。
 - 3.3.2：站点带上量产计算器（dspbp.com/calc/，英文 dspbp.com/en/calc/），从计算器点「生成蓝图」接着排；英文模式下蓝图自带的名字和说明也是英文。
 - 3.3.1：网址换成 dspbp.com，英文入口是 dspbp.com/en/；英文里的物品、建筑、科技名照游戏自带的英文核对过。
 - 英文模式：英文入口 dspbp.com/en/，或左栏最下面的 English / 中文 切换。英文下选目标可以搜英文名。
