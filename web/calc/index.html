@@ -566,6 +566,20 @@ dialog::backdrop { background: rgb(15 15 16 / 0.4); }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 /* ---------- 语言 ---------- */
 html.i18n-wait body { visibility: hidden; }
+/* 公开网站入口底下的简介和常见问题（内容在 web/faq.js，web/site.js 的 calcPage 打包时按入口的语言放进来；开发仓库和 DSQ 的那份没有）。
+   页面照记过的选择出了另一种语言时不显示 */
+.about { max-width: 760px; margin: 24px 0 0; padding: 0 4px; font-size: 14px; line-height: 24px; color: var(--text-2); }
+.about h2 { margin: 0 0 10px; font-size: 20px; line-height: 28px; font-weight: 600; color: var(--text); }
+.about h3 { margin: 28px 0 4px; font-size: 15px; line-height: 22px; font-weight: 600; color: var(--text); }
+.about p { margin: 0 0 10px; }
+.about a { color: var(--accent); text-underline-offset: 3px; }
+.faq details { border-bottom: 1px solid var(--line); }
+.faq summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; font-weight: 500; color: var(--text); list-style: none; cursor: pointer; }
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::after { content: ""; flex: none; width: 16px; height: 16px; background: var(--text-3); -webkit-mask: var(--u-chevron) center / contain no-repeat; mask: var(--u-chevron) center / contain no-repeat; transform: rotate(-90deg); transition: transform 0.15s; }
+.faq details[open] > summary::after { transform: none; }
+.faq details > p:last-child { margin-bottom: 14px; }
+html[lang="en"] .about[lang="zh-CN"], html[lang="zh-CN"] .about[lang="en"] { display: none; }
 /* 英文的名字长：页头不写「戴森球计划」那行小字（D / S 才放得下），目标名两行，挑目标的格子按词折行 */
 html[lang="en"] .brand span { display: none; }
 html[lang="en"] .brand { gap: 5px; }
@@ -723,6 +737,7 @@ html[lang="en"] .tile .nm { word-break: normal; overflow-wrap: anywhere; -webkit
       <div class="tile-panel" id="tile-panel" role="tabpanel"></div>
     </section>
     <div class="sheet" id="body"><p class="loading">正在载入配方…</p></div>
+    <!--__ABOUT__-->
   </main>
 </div>
 

@@ -253,6 +253,9 @@ button { -webkit-tap-highlight-color: transparent; }
 .empty strong { color: #e6f0ff; font-size: 19px; font-weight: 500; }
 .empty p { margin: 10px 0 0; }
 .empty .on-top { display: none; } /* 窄屏左栏挪到图纸上面：提示里的「左侧」换成「上方」 */
+.empty .steps { display: flex; justify-content: center; gap: 28px; margin: 20px 0 0; padding: 0; list-style: none; counter-reset: step; font-size: 13px; line-height: 20px; } /* 还没生成时：从选目标到贴进游戏的三步 */
+.empty .steps li { display: flex; align-items: center; gap: 8px; counter-increment: step; }
+.empty .steps li::before { content: counter(step); flex: none; display: grid; place-items: center; width: 20px; height: 20px; border: 1px solid currentColor; font: 12px/1 var(--mono); opacity: 0.85; }
 .layer-rail { width: 100px; flex: 0 0 100px; border-left: 1px solid var(--rule); padding: 8px; overflow-y: auto; background: #163a63; }
 .floor-list { display: grid; gap: 6px; }
 .floor-card { background: transparent; color: #e6f0ff; border: 1px solid #3d6084; padding: 6px; cursor: pointer; text-align: left; min-width: 0; }
@@ -529,6 +532,20 @@ body.viewer-expanded { overflow: hidden; }
 .bp-row .btn-2:disabled { color: var(--text-3); border-color: var(--line); cursor: default; transform: none; background: var(--card); }
 .bp-row .meta { font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
 .result-details { background: var(--card); border: 1px solid var(--line); border-radius: 0; }
+/* 网站入口底下的简介和常见问题（内容在 web/faq.js，web/site.js 打包时按入口的语言放进来；嵌在别的网站里的那份没有）。
+   页面照记过的选择出了另一种语言时、在计算器的弹层里时不显示 */
+.about { max-width: 760px; margin: 24px 0 8px; padding: 0 6px; font-size: 14px; line-height: 24px; color: var(--text-2); }
+.about h1 { margin: 0 0 10px; font-size: 20px; line-height: 28px; font-weight: 600; color: var(--text); }
+.about h2 { margin: 28px 0 4px; font-size: 15px; line-height: 22px; font-weight: 600; color: var(--text); }
+.about p { margin: 0 0 10px; }
+.about a { color: var(--accent-ink); text-underline-offset: 3px; }
+.faq details { border-bottom: 1px solid var(--line); }
+.faq summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; font-weight: 500; color: var(--text); list-style: none; cursor: pointer; }
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::after { content: ""; flex: none; width: 16px; height: 16px; background: var(--text-3); -webkit-mask: var(--u-chevron) center / contain no-repeat; mask: var(--u-chevron) center / contain no-repeat; transform: rotate(-90deg); transition: transform 0.15s; }
+.faq details[open] > summary::after { transform: none; }
+.faq details > p:last-child { margin-bottom: 14px; }
+html[lang="en"] .about[lang="zh-CN"], html[lang="zh-CN"] .about[lang="en"], html.in-frame .about { display: none; }
 .result-details > summary { display: flex; align-items: center; gap: 8px; height: 52px; padding: 0 20px; font-size: 15px; font-weight: 500; list-style: none; cursor: pointer; }
 .result-details > summary::-webkit-details-marker { display: none; }
 .result-details > summary::after { content: ""; width: 16px; height: 16px; background: var(--text-3); -webkit-mask: var(--u-chevron) center / contain no-repeat; mask: var(--u-chevron) center / contain no-repeat; transform: rotate(-90deg); transition: transform 0.2s var(--ease); }
@@ -841,6 +858,7 @@ body > div:first-child:not(.app) { color: #ededef !important; background: var(--
   .app { grid-template-columns: minmax(0, 1fr); }
   .side { position: static; height: auto; overflow: visible; border-right: 0; border-bottom: 1px solid var(--line); }
   .empty .on-side { display: none; }
+  .empty .steps { flex-direction: column; gap: 8px; width: fit-content; margin-inline: auto; text-align: left; }
   .empty .on-top { display: inline; }
   .main { padding: 12px; }
   .sheet-foot { grid-template-columns: minmax(0, 1fr); }
@@ -881,6 +899,7 @@ html[lang="en"] .tile .nm { -webkit-line-clamp: 3; word-break: normal; overflow-
   if (!chosen) l = LANG === 'auto' ? (zhUser ? 'zh' : 'en') : LANG === 'en' ? 'en' : 'zh';
   window.dsphcLang = l;
   var h = document.documentElement;
+  if (window.parent !== window) h.classList.add('in-frame'); // 在计算器的弹层里：页面底下的简介不显示
   if (l === 'zh' && h.lang === 'en') { // 英文入口照记过的选择出中文
     h.lang = 'zh-CN';
     document.title = h.getAttribute('data-zh-title') || document.title;
@@ -1192,7 +1211,7 @@ html[lang="en"] .tile .nm { -webkit-line-clamp: 3; word-break: normal; overflow-
       <div class="sheet-workspace">
         <div class="viewer-stage">
           <div class="drawing" id="drawing" tabindex="0" role="region" aria-label="图纸预览，拖动移动、点击线路查看简介，按钮或「大图」里滚轮缩放">
-            <div class="empty"><strong>点击<span class="on-side">左侧</span><span class="on-top">上方</span>「生成蓝图」</strong></div>
+            <div class="empty"><strong>点击<span class="on-side">左侧</span><span class="on-top">上方</span>「生成蓝图」</strong><ol class="steps"><li>选目标产物和每分钟产量</li><li>生成蓝图</li><li>复制蓝图，贴进游戏</li></ol></div>
           </div>
           <section class="station-info" id="station-info" aria-labelledby="station-title" hidden>
             <header><h2 id="station-title"></h2><button type="button" id="close-station" aria-label="关闭物流站简介">×</button></header>
@@ -1250,6 +1269,7 @@ html[lang="en"] .tile .nm { -webkit-line-clamp: 3; word-break: normal; overflow-
       </div>
     </section>
     <details class="result-details" id="result-details" open hidden><summary>图纸数据与物品表</summary><div id="result-body"></div></details>
+    <!--__ABOUT__-->
   </main>
 </div>
 

@@ -1,7 +1,10 @@
 // 公开网站（发布副本放在 GitHub Pages 上）：蓝图生成器中文在根目录、英文在 en/，量产计算器中文在 calc/、英文在 en/calc/。
 // 打包时（tools/build-web.js、发布副本的 web/build.js）给页面头上加搜索引擎和分享卡片看的标签（canonical、互相指的 hreflang、description、Open Graph），
 // 标题换成带游戏名的，默认语言写死成这个入口的（中文入口不跟浏览器语言走：搜索引擎的抓取器自称英文浏览器，跟着走的话 / 和 /en/ 抓到的是同一份英文；
-// 英文浏览器在中文入口看到的是页面开头那段脚本给的一条提示）。英文那份 lang 也写死英文。计算器只有发布副本打包（calcPage）。嵌进 DSQ 的那份不经过这里。
+// 英文浏览器在中文入口看到的是页面开头那段脚本给的一条提示）。英文那份 lang 也写死英文。页面底下再放一段这个入口语言的简介和常见问题（内容在 web/faq.js），
+// 带 FAQPage 结构化数据。计算器只有发布副本打包（calcPage）。嵌进 DSQ 的那份不经过这里。
+import { ABOUT } from './faq.js';
+
 export const SITE = 'https://dspbp.com/';
 const IMG = { w: 2880, h: 1800 }; // 发布副本 img/ 里的截图
 
@@ -65,6 +68,35 @@ const alternates = (pages, tag) =>
 /** <html> 标签：这个入口的 lang，另一种语言的标题带在 data-zh-title / data-en-title 上（照记过的选择出另一种语言时，页面开头那段脚本换上） */
 const htmlTag = (pages, lang, rest) =>
   lang === 'en' ? `<html lang="en"${rest} data-zh-title="${attr(pages.zh.title)}">` : `<html lang="zh-CN"${rest} data-en-title="${attr(pages.en.title)}">`;
+const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const LINK = /\[([^\]]+)\]\(([^)\s]+)\)/g; // 文字里唯一认的标记：[文字](网址)
+const rich = (s) => esc(s).replace(LINK, (_, text, href) => `<a href="${href}"${/^https?:/.test(href) ? ' target="_blank" rel="noopener"' : ''}>${text}</a>`);
+const plain = (s) => s.replace(LINK, '$1');
+/**
+ * 入口页面底下的简介和常见问题（web/faq.js 里这一页、这种语言的那份），后面跟 FAQPage 结构化数据。
+ * 标题的级别：生成器页面没有别的 h1，简介的标题就是 h1；计算器顶栏已经有 h1，这里用 h2。
+ */
+const about = (kind, pages, lang) => {
+  const a = ABOUT[kind][lang];
+  const h = kind === 'gen' ? 1 : 2;
+  const ld = {
+    '@context': 'https://schema.org',
+    '@type': 'FAQPage',
+    inLanguage: pages[lang].hreflang,
+    mainEntity: a.faq.map((x) => ({ '@type': 'Question', name: x.q, acceptedAnswer: { '@type': 'Answer', text: x.a.map(plain).join(lang === 'en' ? ' ' : '') } })),
+  };
+  return [
+    `<section class="about" lang="${lang === 'en' ? 'en' : 'zh-CN'}" data-i18n="off" aria-labelledby="about-title">`,
+    `<h${h} id="about-title">${esc(a.title)}</h${h}>`,
+    ...a.lead.map((p) => `<p>${rich(p)}</p>`),
+    `<h${h + 1}>${esc(a.faqTitle)}</h${h + 1}>`,
+    '<div class="faq">',
+    ...a.faq.map((x) => `<details><summary>${esc(x.q)}</summary>${x.a.map((p) => `<p>${rich(p)}</p>`).join('')}</details>`),
+    '</div>',
+    '</section>',
+    `<script type="application/ld+json">${JSON.stringify(ld).replace(/</g, '\\u003c')}</script>`,
+  ].join('\n');
+};
 /** 头上加的标签（og:site_name 是整个网站的名字，用生成器的） */
 const headTags = (pages, lang) => {
   const p = pages[lang];
@@ -102,6 +134,7 @@ export function sitePage(page, lang) {
   if (lang === 'en') s = must(s, '<link rel="icon" href="favicon.ico">', '<link rel="icon" href="../favicon.ico">');
   s = must(s, "/*__ROOT__*/''", JSON.stringify(up));
   s = must(s, '/*__ALT__*/null', JSON.stringify({ lang: OTHER[lang], href: lang === 'en' ? '../' : GEN.en.path }));
+  s = must(s, '<!--__ABOUT__-->', about('gen', GEN, lang));
   const icon = `<link rel="icon" href="${up}favicon.ico">`;
   return must(s, icon, `${icon}\n${headTags(GEN, lang).join('\n')}`);
 }
@@ -127,6 +160,7 @@ export function calcPage(html, lang) {
   s = must(s, '<img class="logo" src="favicon.ico"', `<img class="logo" src="${up}favicon.ico"`);
   s = must(s, '/*__ALT__*/null', JSON.stringify({ lang: OTHER[lang], href: lang === 'en' ? '../../calc/' : '../en/calc/' }));
   s = must(s, "/*__GEN__*/'generator.html'", JSON.stringify('../index.html'));
+  s = must(s, '<!--__ABOUT__-->', about('calc', CALC, lang));
   const desc = /<meta name="description" content="[^"]*">\n/.exec(s);
   if (!desc) throw new Error('没找到计算器原来的 description');
   s = s.replace(desc[0], ''); // 换成下面网站的那句

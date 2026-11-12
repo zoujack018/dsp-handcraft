@@ -583,6 +583,20 @@ dialog::backdrop { background: rgb(15 15 16 / 0.4); }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 /* ---------- 语言 ---------- */
 html.i18n-wait body { visibility: hidden; }
+/* 公开网站入口底下的简介和常见问题（内容在 web/faq.js，web/site.js 的 calcPage 打包时按入口的语言放进来；开发仓库和 DSQ 的那份没有）。
+   页面照记过的选择出了另一种语言时不显示 */
+.about { max-width: 760px; margin: 24px 0 0; padding: 0 4px; font-size: 14px; line-height: 24px; color: var(--text-2); }
+.about h2 { margin: 0 0 10px; font-size: 20px; line-height: 28px; font-weight: 600; color: var(--text); }
+.about h3 { margin: 28px 0 4px; font-size: 15px; line-height: 22px; font-weight: 600; color: var(--text); }
+.about p { margin: 0 0 10px; }
+.about a { color: var(--accent); text-underline-offset: 3px; }
+.faq details { border-bottom: 1px solid var(--line); }
+.faq summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; font-weight: 500; color: var(--text); list-style: none; cursor: pointer; }
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::after { content: ""; flex: none; width: 16px; height: 16px; background: var(--text-3); -webkit-mask: var(--u-chevron) center / contain no-repeat; mask: var(--u-chevron) center / contain no-repeat; transform: rotate(-90deg); transition: transform 0.15s; }
+.faq details[open] > summary::after { transform: none; }
+.faq details > p:last-child { margin-bottom: 14px; }
+html[lang="en"] .about[lang="zh-CN"], html[lang="zh-CN"] .about[lang="en"] { display: none; }
 /* 英文的名字长：页头不写「戴森球计划」那行小字（D / S 才放得下），目标名两行，挑目标的格子按词折行 */
 html[lang="en"] .brand span { display: none; }
 html[lang="en"] .brand { gap: 5px; }
@@ -740,6 +754,19 @@ html[lang="en"] .tile .nm { word-break: normal; overflow-wrap: anywhere; -webkit
       <div class="tile-panel" id="tile-panel" role="tabpanel"></div>
     </section>
     <div class="sheet" id="body"><p class="loading">正在载入配方…</p></div>
+    <section class="about" lang="en" data-i18n="off" aria-labelledby="about-title">
+<h2 id="about-title">Dyson Sphere Program Production Calculator</h2>
+<p>Pick target items and a rate per minute to see how many of each building the whole line needs, how much of each raw material per minute, and roughly how much power. You can hand the line straight to the blueprint generator and get a blueprint to paste into the game. Free, runs in your browser, no install and no account.</p>
+<h3>Questions and answers</h3>
+<div class="faq">
+<details><summary>How do I use it?</summary><p>Add target items on the left and set a rate per minute. The production list on the right shows how much of every intermediate product you need per minute and how many buildings make it. The buttons above the list change the belt, smelter, assembler and other building tiers and the proliferator, and the numbers follow.</p></details>
+<details><summary>What does External mean?</summary><p>If you would rather not make something in the list yourself, click External at the right end of its row. It is then brought in from elsewhere, and the buildings and raw materials upstream of it are no longer counted.</p></details>
+<details><summary>What is the difference between the D and S modes?</summary><p>D is demand mode: it just shows what the whole line needs. S is supply mode: every time you generate a blueprint, what it makes is marked Done and taken off the list, so the list shows what is still left to build. That suits building a large line as several blueprints.</p></details>
+<details><summary>How do I turn the result into a blueprint?</summary><p>Click the items in the list that you want to build (you can pick several; what they use is built along with them), then click Generate blueprint. The <a href="../">blueprint generator</a> opens in an overlay with the line filled in. Generate beltless blueprint makes a beltless layout instead.</p></details>
+<details><summary>Where does the recipe data come from?</summary><p>The recipe data and the interface come from <a href="https://github.com/122474363/DSQ" target="_blank" rel="noopener">DSQ</a>, an open-source (GPL-3.0) Dyson Sphere Program calculator.</p></details>
+</div>
+</section>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","inLanguage":"en","mainEntity":[{"@type":"Question","name":"How do I use it?","acceptedAnswer":{"@type":"Answer","text":"Add target items on the left and set a rate per minute. The production list on the right shows how much of every intermediate product you need per minute and how many buildings make it. The buttons above the list change the belt, smelter, assembler and other building tiers and the proliferator, and the numbers follow."}},{"@type":"Question","name":"What does External mean?","acceptedAnswer":{"@type":"Answer","text":"If you would rather not make something in the list yourself, click External at the right end of its row. It is then brought in from elsewhere, and the buildings and raw materials upstream of it are no longer counted."}},{"@type":"Question","name":"What is the difference between the D and S modes?","acceptedAnswer":{"@type":"Answer","text":"D is demand mode: it just shows what the whole line needs. S is supply mode: every time you generate a blueprint, what it makes is marked Done and taken off the list, so the list shows what is still left to build. That suits building a large line as several blueprints."}},{"@type":"Question","name":"How do I turn the result into a blueprint?","acceptedAnswer":{"@type":"Answer","text":"Click the items in the list that you want to build (you can pick several; what they use is built along with them), then click Generate blueprint. The blueprint generator opens in an overlay with the line filled in. Generate beltless blueprint makes a beltless layout instead."}},{"@type":"Question","name":"Where does the recipe data come from?","acceptedAnswer":{"@type":"Answer","text":"The recipe data and the interface come from DSQ, an open-source (GPL-3.0) Dyson Sphere Program calculator."}}]}</script>
   </main>
 </div>
 

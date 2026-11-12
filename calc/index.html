@@ -583,6 +583,20 @@ dialog::backdrop { background: rgb(15 15 16 / 0.4); }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 /* ---------- 语言 ---------- */
 html.i18n-wait body { visibility: hidden; }
+/* 公开网站入口底下的简介和常见问题（内容在 web/faq.js，web/site.js 的 calcPage 打包时按入口的语言放进来；开发仓库和 DSQ 的那份没有）。
+   页面照记过的选择出了另一种语言时不显示 */
+.about { max-width: 760px; margin: 24px 0 0; padding: 0 4px; font-size: 14px; line-height: 24px; color: var(--text-2); }
+.about h2 { margin: 0 0 10px; font-size: 20px; line-height: 28px; font-weight: 600; color: var(--text); }
+.about h3 { margin: 28px 0 4px; font-size: 15px; line-height: 22px; font-weight: 600; color: var(--text); }
+.about p { margin: 0 0 10px; }
+.about a { color: var(--accent); text-underline-offset: 3px; }
+.faq details { border-bottom: 1px solid var(--line); }
+.faq summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; font-weight: 500; color: var(--text); list-style: none; cursor: pointer; }
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::after { content: ""; flex: none; width: 16px; height: 16px; background: var(--text-3); -webkit-mask: var(--u-chevron) center / contain no-repeat; mask: var(--u-chevron) center / contain no-repeat; transform: rotate(-90deg); transition: transform 0.15s; }
+.faq details[open] > summary::after { transform: none; }
+.faq details > p:last-child { margin-bottom: 14px; }
+html[lang="en"] .about[lang="zh-CN"], html[lang="zh-CN"] .about[lang="en"] { display: none; }
 /* 英文的名字长：页头不写「戴森球计划」那行小字（D / S 才放得下），目标名两行，挑目标的格子按词折行 */
 html[lang="en"] .brand span { display: none; }
 html[lang="en"] .brand { gap: 5px; }
@@ -740,6 +754,19 @@ html[lang="en"] .tile .nm { word-break: normal; overflow-wrap: anywhere; -webkit
       <div class="tile-panel" id="tile-panel" role="tabpanel"></div>
     </section>
     <div class="sheet" id="body"><p class="loading">正在载入配方…</p></div>
+    <section class="about" lang="zh-CN" data-i18n="off" aria-labelledby="about-title">
+<h2 id="about-title">戴森球计划量产计算器</h2>
+<p>选目标物品和每分钟产量，算出整条线每种设备要几台、每种原料每分钟要多少、大约用多少电。算好的产线可以直接交给蓝图生成器，排成能贴进游戏的蓝图。免费，在浏览器里运行，不用安装也不用注册。</p>
+<h3>常见问题</h3>
+<div class="faq">
+<details><summary>怎么用？</summary><p>左边加目标物品、填每分钟产量，右边就是生产清单：每样中间产物每分钟要多少、要几台设备。清单上方那排按钮换传送带、熔炉、制造台这些设备的型号和增产剂，数字跟着变。</p></details>
+<details><summary>「外部」是什么意思？</summary><p>清单里不想自己造的东西，点那一行右边的「外部」，它就改成从别处运来，不再算它上游的设备和原料。</p></details>
+<details><summary>D 和 S 两个模式有什么区别？</summary><p>D 是需求模式，只算整条线要多少。S 是供给模式：每生成一张蓝图，它做的东西就标成已完成、从清单里扣掉，清单剩下的就是还要做的，适合把一条大产线分成几张蓝图慢慢建。</p></details>
+<details><summary>算好了怎么变成蓝图？</summary><p>在清单里点选要做的物品（可以多选，它要用的东西一起做），点「生成蓝图」，<a href="../">蓝图生成器</a>会在弹层里打开并填好这条线。点「生成无带蓝图」出的是无带流蓝图。</p></details>
+<details><summary>配方数据从哪来？</summary><p>配方数据和界面来自<a href="https://github.com/122474363/DSQ" target="_blank" rel="noopener">戴森球计划量产量化计算器（DSQ）</a>，开源（GPL-3.0）。</p></details>
+</div>
+</section>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","inLanguage":"zh-CN","mainEntity":[{"@type":"Question","name":"怎么用？","acceptedAnswer":{"@type":"Answer","text":"左边加目标物品、填每分钟产量，右边就是生产清单：每样中间产物每分钟要多少、要几台设备。清单上方那排按钮换传送带、熔炉、制造台这些设备的型号和增产剂，数字跟着变。"}},{"@type":"Question","name":"「外部」是什么意思？","acceptedAnswer":{"@type":"Answer","text":"清单里不想自己造的东西，点那一行右边的「外部」，它就改成从别处运来，不再算它上游的设备和原料。"}},{"@type":"Question","name":"D 和 S 两个模式有什么区别？","acceptedAnswer":{"@type":"Answer","text":"D 是需求模式，只算整条线要多少。S 是供给模式：每生成一张蓝图，它做的东西就标成已完成、从清单里扣掉，清单剩下的就是还要做的，适合把一条大产线分成几张蓝图慢慢建。"}},{"@type":"Question","name":"算好了怎么变成蓝图？","acceptedAnswer":{"@type":"Answer","text":"在清单里点选要做的物品（可以多选，它要用的东西一起做），点「生成蓝图」，蓝图生成器会在弹层里打开并填好这条线。点「生成无带蓝图」出的是无带流蓝图。"}},{"@type":"Question","name":"配方数据从哪来？","acceptedAnswer":{"@type":"Answer","text":"配方数据和界面来自戴森球计划量产量化计算器（DSQ），开源（GPL-3.0）。"}}]}</script>
   </main>
 </div>
 

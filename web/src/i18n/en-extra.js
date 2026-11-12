@@ -2,6 +2,8 @@
 export default {
   // 空图纸上那句：点击 + 左侧 / 上方（样式表只显示一个）+「生成蓝图」
   '点击': 'Click ',
+  '选目标产物和每分钟产量': 'Pick a product and a rate',
+  '复制蓝图，贴进游戏': 'Copy it, paste it into the game',
   '左侧': '',
   '上方': '',
   '「生成蓝图」': '"Generate blueprint"',
