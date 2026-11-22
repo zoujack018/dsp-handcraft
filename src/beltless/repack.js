@@ -7,7 +7,7 @@
 import { factory, powerApart, powerCells, substationPad, STATION_CLEAR, STATION_EW } from '../gamedata.js';
 import { POWER, powerReach } from '../plan/power.js';
 import { SIDES, turn as quarter, placeZone, offsetRange, partsFit } from './perimeter.js';
-import { attachStations, linkWarpers, linkSpray, STATION, SPAN } from './station.js';
+import { attachStations, linkWarpers, linkSpray, STATION, SPAN, setStation } from './station.js';
 
 const SORTERS = new Set([2011, 2012, 2013, 2014]);
 const BELTS = new Set([2001, 2002, 2003]);
@@ -364,6 +364,8 @@ function packShelves(units, W, overBody, street = null, holes = null, band = nul
  *   parts: [{ kind, members 建筑编号, box, center 站心, shift }]（接了站时）, span 站心至少隔几格 } }
  */
 export function repack(buildings, opt = {}) {
+  // 站型（星际/行星内）：station.js 的 STATION 决定出哪座站、SPAN 决定两站至少隔几格，接站前按 opt.station.type 设好
+  setStation(opt.station?.type);
   if (opt.street !== undefined) return repackOnce(buildings, opt);
   // 先试行里留空位（从稀往密），再试供电道
   const type = opt.power === 'substation' ? 'substation' : 'tesla';

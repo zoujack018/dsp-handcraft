@@ -23,15 +23,18 @@ const LIFT_SHIFT = 0.0016;
 // 站口那头先接几节空带子（不挂分拣器）：站立着的时候，拆了带子原地再贴，落在站身碰撞体里的带子放不下（站口那节和往外一节），
 // 留着站和这几节不拆，挂分拣器的带子都在站身外面
 const PORT_BUFFER = 4;
-export const STATION = 2104;
-const MAX_ITEMS = 5;
+// 站型：星际物流运输站 2104 / 行星内物流运输站 2103（repack.js 接站前按 opt.station.type 设 STATION）
+export let STATION = 2104;
+export const stationIdOf = (type) => (type === 'pls' ? 2103 : 2104);
+export function setStation(type) { STATION = stationIdOf(type); }
+const MAX_ITEMS = (id = STATION) => (id === 2103 ? 4 : 5);
 // 站心至少隔几格：贴到哪条纬度带、东西隔还是南北隔都够 29 m（蓝图多高、带子区转到哪边都不知道，按最坏的算，同独立检查）
 export let SPAN = Math.ceil(STATION_GAP);
 while (stationWorstM(SPAN, 0, 1).m < STATION_M || stationWorstM(0, SPAN, 1).m < STATION_M) SPAN++;
 const SLOTS = [4, 10, 3, 9, 5, 11, 1, 0, 2]; // 西、东两侧先中间再上下，再用上面一排
 const SIDE = 6; // 左右两侧的口数
 const HEADING = { '1,0': 90, '-1,0': 270, '0,1': 0, '0,-1': 180 }; // 往东、西、北、南流
-const TEMPLATE = Object.values(buildingsData.buildings).find((b) => b.itemId === STATION);
+const TEMPLATE = (id) => Object.values(buildingsData.buildings).find((b) => b.itemId === id);
 
 /** 带子区里的带子按链分：带头贴了标签的是原料（in），带尾贴了标签的是产物（out），别的是中间产物（mid）；有并线时返回 null */
 function chainsOf(B, zone) {
@@ -59,7 +62,7 @@ function groupsOf(chains) {
   for (const c of chains) {
     const kinds = (g) => new Set(g.map((q) => `${q.itemId}${q.kind}`));
     let g = groups.find((g) => g.length < SLOTS.length && kinds(g).has(`${c.itemId}${c.kind}`));
-    g ||= groups.find((g) => g.length < SLOTS.length && kinds(g).size < MAX_ITEMS && !g.some((q) => q.itemId === c.itemId));
+    g ||= groups.find((g) => g.length < SLOTS.length && kinds(g).size < MAX_ITEMS(STATION) && !g.some((q) => q.itemId === c.itemId));
     if (!g) groups.push((g = []));
     g.push(c);
   }
@@ -132,13 +135,13 @@ export function attachStations(B, zone, opt = {}) {
   const groups = groupsOf(chains.filter((c) => c.kind !== 'mid'));
   if (!groups.length) return null;
   const kinds = (g) => new Set(g.map((c) => `${c.itemId}${c.kind}`)).size;
-  if (opt.warper && groups.every((g) => kinds(g) >= MAX_ITEMS)) {
+  if (opt.warper && groups.every((g) => kinds(g) >= MAX_ITEMS(STATION))) {
     const last = groups[groups.length - 1];
     const k = `${last[last.length - 1].itemId}${last[last.length - 1].kind}`;
     groups.push(last.filter((c) => `${c.itemId}${c.kind}` === k));
     groups[groups.length - 2] = last.filter((c) => `${c.itemId}${c.kind}` !== k);
   }
-  const warperAt = opt.warper ? groups.findIndex((g) => kinds(g) < MAX_ITEMS) : -1;
+  const warperAt = opt.warper ? groups.findIndex((g) => kinds(g) < MAX_ITEMS(STATION)) : -1;
   const place = (b, x, y, yaw) => {
     b.localOffset = [{ x, y, z: 0 }, { x, y, z: 0 }];
     b.yaw = [yaw, yaw];
@@ -171,7 +174,7 @@ export function attachStations(B, zone, opt = {}) {
   };
   groups.forEach((g, k) => {
     const cx = xs[k];
-    const st = structuredClone(TEMPLATE);
+    const st = structuredClone(TEMPLATE(STATION));
     delete st.itemName;
     delete st.attributes;
     st.index = B.length;

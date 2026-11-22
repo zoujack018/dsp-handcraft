@@ -62,7 +62,7 @@ export default {
   '传送带+箱子': 'Belts + storage',
   '物流站': 'Logistics station',
   '不接': 'None',
-  '星际物流站（放进空地）': 'Interstellar Logistics Station (in free space)',
+  '接物流站时选站型：星际站 5 格、带翘曲器仓；行星内站 4 格、只在星球内送': 'When connecting a station, pick the type: the interstellar station has 5 slots and a warper bay; the planetary station has 4 slots and only serves one planet',
   '供电': 'Power',
   '不配电': 'No power',
   '电力塔': 'Tesla Tower',

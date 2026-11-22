@@ -1139,13 +1139,15 @@ html[lang="en"] .tile .nm { -webkit-line-clamp: 3; word-break: normal; overflow-
         <label><input type="radio" name="logistics" value="station"><span data-pill="物流站">物流站</span></label>
       </div>
     </fieldset>
-    <!-- 物流站一律放进空地：这组单选不显示，只给「物流方式」记接不接站 -->
-    <fieldset class="seg" data-name="station" hidden>
+    <!-- 物流站一律放进空地：接不接站由「物流方式」决定，这里只选站型（星际/行星内），不接站时这组不显示 -->
+    <fieldset class="seg" data-name="station" id="station-field" hidden>
       <legend>物流站</legend>
       <div class="opts">
         <label hidden><input type="radio" name="station" value=""><span>不接</span></label>
-        <label><input type="radio" name="station" value="ils"><span>星际物流站（放进空地）</span></label>
+        <label><input type="radio" name="station" value="ils"><span>星际物流运输站</span></label>
+        <label><input type="radio" name="station" value="pls"><span>行星内物流运输站</span></label>
       </div>
+      <p class="hint">接物流站时选站型：星际站 5 格、带翘曲器仓；行星内站 4 格、只在星球内送</p>
     </fieldset>
     <fieldset class="seg" data-name="power" hidden>
       <legend>供电</legend>
