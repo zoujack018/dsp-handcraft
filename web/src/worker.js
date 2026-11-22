@@ -883,7 +883,7 @@ async function planOne(calc, p, helpers, effort, restarts, onRound = null, previ
         ...(sorterStackOf(p) > 1 ? { sorterStack: sorterStackOf(p) } : {}), // 集装分拣器往带上叠几层（route.js 的 sorterStack），1 层时不写
         ...(pilerTechOf(p) > 0 ? { pileTech: pilerTechOf(p) } : {}), // 「集装分拣器改良」等级（以后按它算分拣器速度，现在规划器还不读），没研究时不写
       },
-      station: p.station ? { place: p.station === 'ils-side' ? 'side' : 'edge', stack: Number(p.pile || 1), slots: { warper: p.warper === '1', keepFree: Number(p.spray || 0) > 0 } } : null,
+      station: p.station ? { type: p.station === 'pls' ? 'pls' : 'ils', place: p.station === 'ils-side' ? 'side' : 'edge', stack: Number(p.pile || 1), slots: { warper: p.station !== 'pls' && p.warper === '1', keepFree: Number(p.spray || 0) > 0 } } : null,
       power: p.power || null,
       // 供货：不接物流站时原料、成品接储物仓 / 储液罐（plan/storage.js 的 SUPPLY）；左栏「物流配送器」选了放在仓顶就是 dist-s / dist-l
       supply: supplyOf(p),
@@ -1366,7 +1366,7 @@ self.onmessage = async (ev) => {
         const { text, zone } = beltlessBlueprint(plan, {
           zoneAt: msg.zoneAt,
           partShift: msg.partShift,
-          station: p.station === 'ils' ? { pile: Number(p.pile) || 1, warper: p.warper === '1', belt: Number(p.belt) } : null,
+          station: p.station === 'ils' || p.station === 'pls' ? { type: p.station, pile: Number(p.pile) || 1, warper: p.warper === '1', belt: Number(p.belt) } : null,
           sorter: Number(p.sorter),
           belt: Number(p.belt),
           power: p.power,

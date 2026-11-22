@@ -214,11 +214,13 @@ export function emitBlueprint(graph, layout, opt = {}) {
     return x ? { ...(role(x.localRole) != null ? { localRole: x.localRole } : null), ...(role(x.remoteRole) != null ? { remoteRole: x.remoteRole } : null), ...(x.max >= 0 && x.max <= 100000 ? { max: Math.round(x.max) } : null) } : null;
   };
   const stationB = [];
+  // 站型：星际物流运输站（2104，5 格 + 翘曲器仓）或行星内物流运输站（2103，4 格），plan/stations.js 接站时记在 layout.stationType
+  const stationId = layout.stationType === 'pls' ? 2103 : 2104;
   for (const st of layout.stations || []) {
-    const b = fresh(2104);
+    const b = fresh(stationId);
     b.localOffset = at(st.x, st.y);
     b.yaw = [0, 0];
-    const tpl = TEMPLATE.get(2104).parameters;
+    const tpl = TEMPLATE.get(stationId).parameters;
     const params = Object.assign(structuredClone(tpl), stationSettings(opt.stationPrefs?.station)); // 整站设置：玩家改过、记住的
     params.storage = params.storage.map(() => ({ itemId: 0, localRole: 0, remoteRole: 0, max: 0, lockAmount: 0 }));
     st.items.forEach((it, i) => {

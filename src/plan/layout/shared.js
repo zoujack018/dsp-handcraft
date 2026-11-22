@@ -15,13 +15,14 @@ export const WARPER = 1210; // 空间翘曲器
  *   keepFree：喷增产剂时至少留一个空格给增产剂（增产剂带从站里出来；站都满了的话原料就喷不上）。
  * 所以每座站最多 5 种产线物品，分完组后整张一共留够空格。
  */
-export const stationItemCap = () => STATION_SLOTS;
+export const stationItemCap = (slots) => (slots && slots.cap != null ? slots.cap : STATION_SLOTS);
 /** 整张要留几个空格：增产剂一格、翘曲器一格 */
 export const reservedSlots = (slots) => (slots?.keepFree ? 1 : 0) + (slots?.warper ? 1 : 0);
 /** 分完组空格不够留（增产剂、翘曲器）时，从最后一座挪最后一种出来单开一座，直到够 */
 export function keepFreeSlot(groups, slots) {
+  const cap = stationItemCap(slots);
   const need = reservedSlots(slots);
-  const free = () => groups.reduce((n, g) => n + STATION_SLOTS - g.length, 0);
+  const free = () => groups.reduce((n, g) => n + cap - g.length, 0);
   while (groups.length && free() < need) groups.push([groups[groups.length - 1].pop()]);
   return groups;
 }

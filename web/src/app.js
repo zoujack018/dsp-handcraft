@@ -177,8 +177,9 @@ function loadSettings() {
   // 物流站一律放进空地、网页不切块：旧设置里的「靠左侧站列」改回放进空地，
   // 切分的几项和记的「上次选的站位」删掉，存设置时不再带
   if (state.station === 'ils-side') state.station = 'ils';
-  for (const k of ['split', 'stitch', 'splitPicked', 'stationPick']) delete state[k];
+  for (const k of ['split', 'stitch', 'splitPicked']) delete state[k];
   state.boxPick = ['side-s', 'side-l'].includes(s.boxPick) ? s.boxPick : state.supply || 'side-s';
+  state.stationPick = ['ils', 'pls'].includes(s.stationPick) ? s.stationPick : (state.station === 'pls' ? 'pls' : 'ils');
   // 旧版本存的是物品名和逗号分隔的外部供应
   // 新配方：{ 物品 ID: 配方 ID }，只记开了新配方的物品
   state.recipes = s.recipes && typeof s.recipes === 'object' ? Object.fromEntries(Object.entries(s.recipes).filter(([, v]) => Number(v) > 0)) : {};
@@ -436,7 +437,7 @@ function syncLogistics() {
   syncOptionSelects();
 }
 document.querySelectorAll('input[name="logistics"]').forEach((el) => el.addEventListener('change', () => {
-  setRadio('station', el.value === 'station' ? 'ils' : '');
+  setRadio('station', el.value === 'station' ? (state.stationPick || 'ils') : '');
   setRadio('supply', el.value === 'box' ? state.boxPick || 'side-s' : '');
   syncOptionSelects();
   readOptions();
@@ -446,6 +447,7 @@ document.querySelectorAll('input[name="logistics"]').forEach((el) => el.addEvent
 }));
 document.querySelectorAll('input[name="station"], input[name="supply"]').forEach((el) => el.addEventListener('change', () => {
   if (el.value && el.name === 'supply') state.boxPick = el.value;
+  if (el.value && el.name === 'station') state.stationPick = el.value; // 记住上次选的站类型（星际/行星内），再点「物流站」沿用
   syncLogistics();
   saveSettings();
 }));
@@ -1457,6 +1459,7 @@ function togglePile() {
   $('supply-field').hidden = !boxed; // 箱子（左侧一列仓组）的大小只在传送带+箱子时有
   $('dist-field').hidden = !boxed; // 物流配送器：同上
   $('warper-field').hidden = !connected; // 翘曲器格只在接物流站时有意义（增产剂格不用选：喷增产剂就留）
+  $('station-field').hidden = !connected; // 站型（星际/行星内）只在接物流站时选
 }
 document.querySelectorAll('input[name="station"], input[name="supply"]').forEach((el) => el.addEventListener('change', togglePile));
 $('ext-list').addEventListener('click', (e) => {

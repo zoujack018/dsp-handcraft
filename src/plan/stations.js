@@ -3,8 +3,14 @@
 import { chainTiles } from '../emit/blueprint.js';
 import { translateLayout } from './coordinates.js';
 import { sprayGuards } from './layout/elevation.js';
-import { STATION_CLEAR, STATION_EW, STATION_GAP, STATION_HALF, stationSpan, realItem } from '../gamedata.js';
+import { STATION_CLEAR, STATION_EW, STATION_GAP, STATION_GAP_PLS, STATION_HALF, stationSpan, realItem } from '../gamedata.js';
 import { WARPER, STATION_SLOTS, gapEnd, keepFreeSlot, stationItemCap } from './layout/shared.js';
+
+// 站型：星际物流运输站（2104，5 格 + 翘曲器仓，两站 ≥ 29 m）与行星内物流运输站（2103，4 格，两站 ≥ 15 m）
+export const STATION_TYPES = { ils: 2104, pls: 2103 };
+export const stationItemId = (type) => STATION_TYPES[type] ?? 2104;
+export const stationSlots = (type) => (type === 'pls' ? 4 : STATION_SLOTS);
+export const stationGap = (type) => (type === 'pls' ? STATION_GAP_PLS : STATION_GAP);
 
 export const STATION_PORTS = [
   { slot: 0, dx: 1, dy: 2, nx: 0, ny: 1 },
@@ -737,7 +743,7 @@ export function attachStations(source, opts = {}) {
     budgetCap = PATH_BUDGET;
   }
 }
-function attachStations0(source, { stack = 1, maxWidth = null, maxHeight = null, maxLevel = 6, siteLimit = 10, diagnostics = null, reserve = [], reserveItem = null, slots = null } = {}) {
+function attachStations0(source, { type = 'ils', stack = 1, maxWidth = null, maxHeight = null, maxLevel = 6, siteLimit = 10, diagnostics = null, reserve = [], reserveItem = null, slots = null } = {}) {
   // 要诊断信息时每个站位都接到底（哪个口接不上都记下来）；不要时，注定比已有最好站位贵的站位中途就放弃（见下）
   const prune = !diagnostics;
   const L = structuredClone(source);
@@ -752,7 +758,10 @@ function attachStations0(source, { stack = 1, maxWidth = null, maxHeight = null,
   const fitCells = [];
   for (const set of [O.solid, O.ground, O.projection, O.gapNear]) if (set) intCells(set, fitCells);
   L.stations = [];
-  const groups = stationGroups(L, slots);
+  L.stationType = type; // 出蓝图时按它选站型（emit/blueprint.js）
+  const gap = stationGap(type);
+  const capSlots = slots && slots.cap == null ? { ...slots, cap: stationSlots(type) } : slots;
+  const groups = stationGroups(L, capSlots);
   // 只有一段的原料带（不串通道、不喷涂、段上全是取料口）流向无所谓：接站时哪头离站位近就从哪头进料，用了另一头就把这一段翻过来
   // （不翻的话站在另一边时，接线要沿着段绕回段头，成一个「小 C」白费一截带子）。段间高架、产物的段一律不动；搜索不管这个
   const single = new Set();
@@ -782,7 +791,7 @@ function attachStations0(source, { stack = 1, maxWidth = null, maxHeight = null,
       if (!fits(x, y)) continue;
       // 预留的是卫星配电站时，它的格子不进站身外那 1 格碰撞圈（电力感应塔可以贴着站身）
       if (reserveItem === 2212 && reserve.some(([rx, ry]) => (Math.abs(rx + 1 - x) <= STATION_CLEAR && Math.abs(ry + 1 - y) <= STATION_CLEAR) || (Math.abs(rx + 1 - x) <= STATION_EW.x && Math.abs(ry + 1 - y) <= STATION_EW.y))) continue;
-      if (L.stations.some((st) => stationSpan(st.x - x, st.y - y) < STATION_GAP)) continue; // 游戏要求两站隔开（东西向按最窄格宽折算，gamedata.js）
+      if (L.stations.some((st) => stationSpan(st.x - x, st.y - y) < gap)) continue; // 游戏要求两站隔开（东西向按最窄格宽折算，gamedata.js）
       const area = Math.max(L.width, x + 4) * Math.max(L.height, y + 4);
       // 候选站位按到原来段头的距离排（按近的那头排的话，离边远、撑大外框的站位会挤进前几名）
       const distance = ports.reduce((n, p) => n + Math.abs(p.x - x) + Math.abs(p.y - y), 0);

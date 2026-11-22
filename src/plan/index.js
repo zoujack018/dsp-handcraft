@@ -37,7 +37,7 @@ export const PILE_LADDER = [3, 1];
 export function stationOption(options = {}) {
   const s = options.station ?? options.routeOptions?.station ?? null;
   if (!s) return null;
-  return { place: s.place === 'side' ? 'side' : 'edge', stack: Math.max(1, Number(s.stack) || 1), slots: s.slots ?? null };
+  return { type: s.type === 'pls' ? 'pls' : 'ils', place: s.place === 'side' ? 'side' : 'edge', stack: Math.max(1, Number(s.stack) || 1), slots: s.slots ?? null };
 }
 
 /**
@@ -133,7 +133,7 @@ export function finishOne(cand, ctx) {
       reserve = pre.nodes.flatMap((n) => powerCells(pre.itemId, n.x, n.y));
       reserveItem = pre.itemId;
     }
-    const opts = { stack: station.stack, maxWidth, maxHeight, maxLevel: L.noLift ? 0 : 6, siteLimit: 6, slots: station.slots };
+    const opts = { type: station.type, stack: station.stack, maxWidth, maxHeight, maxLevel: L.noLift ? 0 : 6, siteLimit: 6, slots: station.slots };
     // 预留的塔位挡住了所有站位或接线时，不预留再试一次（塔位之后另找）
     L = attachStations(L, { ...opts, reserve, reserveItem }) ?? (reserve.length ? attachStations(L, opts) : null);
     if (!L) return null;
@@ -296,8 +296,8 @@ function* planFrame(calc, options) {
   const target = options.targetSpace ?? TARGET_SPACE;
   const routeOptions = { ...options.routeOptions };
   delete routeOptions.station;
-  if (station?.place === 'side') routeOptions.station = { stack: station.stack, slots: station.slots };
-  if (station?.place === 'edge') Object.assign(routeOptions, { externalStack: station.stack, stationHoles: options.stationHoles ?? true, freeEnds: options.freeEnds ?? true, stationSlots: station.slots });
+  if (station?.place === 'side') routeOptions.station = { type: station.type, stack: station.stack, slots: station.slots };
+  if (station?.place === 'edge') Object.assign(routeOptions, { externalStack: station.stack, stationHoles: options.stationHoles ?? true, freeEnds: options.freeEnds ?? true, stationSlots: station.slots, stationType: station.type });
   // 箱子供货的左侧一列仓组（不接物流站时，plan/storage.js 的 isColumnSupply）：出入口都在左边（route.js 的 leftPorts；routeOptions 里写明的为准）
   if (!station && isColumnSupply(options.supply) && routeOptions.leftPorts == null) routeOptions.leftPorts = true;
   const power = options.power && options.power !== 'none' ? options.power : null;
@@ -546,7 +546,7 @@ function* planFrame(calc, options) {
 /** 一份搜索任务（options 是发给帮手线程的那份：物流站已经折进 routeOptions）对应的后处理参数，和 planFrame 里的 ctx 一样 */
 export function finishContext(calc, options) {
   const ro = options.routeOptions || {};
-  const station = ro.station ? { place: 'side', stack: ro.station.stack, slots: ro.station.slots } : ro.externalStack != null ? { place: 'edge', stack: ro.externalStack, slots: ro.stationSlots } : null;
+  const station = ro.station ? { type: ro.station.type ?? 'ils', place: 'side', stack: ro.station.stack, slots: ro.station.slots } : ro.externalStack != null ? { type: ro.stationType ?? 'ils', place: 'edge', stack: ro.externalStack, slots: ro.stationSlots } : null;
   return { station, power: ro.power ?? null, powerOptions: ro.powerOptions, maxWidth: ro.maxWidth, maxHeight: ro.maxHeight, noGrounding: !!options.noGrounding, ground: groundOptions(ro), aw: ro.areaWeight ?? 1, spray: calc.spray ? calc.spray.level : 0, sprayItems: calc.spray?.items ?? null, sprayTo: calc.spray?.to ?? null, pile: !!options.pile, sprayRate: calc.spray?.rate ?? 0, allowMissed: !!ro.allowMissed, supply: options.supply ?? null, sorter: ro.sorter ?? options.sorter ?? 2013, storeLayers: options.storeLayers ?? 15, stackCap: stackCapOf(ro), ...sorterStackCtx(ro), ...rerouteCtx(ro) };
 }
 /** 集装分拣器叠层（route.js 的 sorterStackOf）进 ctx：1 层时不加这一项 */
